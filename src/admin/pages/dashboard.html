@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    body {
+      background: var(--bg-primary);
+    }
+
+    .page-container {
+      padding: var(--space-8);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .page-header {
+      margin-bottom: var(--space-8);
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-4);
+      margin-bottom: var(--space-8);
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: var(--space-4);
+      margin-bottom: var(--space-8);
+    }
+
+    .chart-container {
+      position: relative;
+      height: 300px;
+      margin-top: var(--space-4);
+    }
+
+    .channel-table {
+      margin-bottom: var(--space-8);
+    }
+
+    .last-updated {
+      font-size: var(--text-xs);
+      color: var(--text-tertiary);
+      text-align: right;
+      margin-top: var(--space-2);
+    }
+
+    @media (max-width: 1024px) {
+      .stat-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .chart-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1>Dashboard</h1>
+      <p class="text-secondary">系统总览 - 实时监控所有渠道状态</p>
+    </div>
+
+    <!-- 统计卡片网格 -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">请求总数</div>
+        <div class="stat-value" id="stat-requests">-</div>
+        <div class="stat-change" id="stat-requests-change"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">成功率</div>
+        <div class="stat-value" id="stat-success-rate">-</div>
+        <div class="stat-change positive" id="stat-success-change"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">活跃 Token</div>
+        <div class="stat-value" id="stat-tokens">-</div>
+        <div class="stat-change" id="stat-tokens-change"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">队列</div>
+        <div class="stat-value" id="stat-queue">0</div>
+        <div class="stat-change" id="stat-queue-status"></div>
+      </div>
+    </div>
+
+    <!-- 图表网格 -->
+    <div class="chart-grid">
+      <!-- 请求趋势 -->
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">请求趋势</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="requestChart"></canvas>
+        </div>
+        <div class="last-updated" id="chart-updated">-</div>
+      </div>
+
+      <!-- Token 分布 -->
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Token 分布</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="tokenChart"></canvas>
+        </div>
+        <div class="last-updated" id="token-updated">-</div>
+      </div>
+    </div>
+
+    <!-- 渠道状态表格 -->
+    <div class="card channel-table">
+      <div class="card-header">
+        <h3 class="card-title">渠道状态</h3>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>渠道</th>
+            <th>状态</th>
+            <th>Token 数</th>
+            <th>活跃会话</th>
+            <th>请求数</th>
+            <th>成功率</th>
+          </tr>
+        </thead>
+        <tbody id="channel-table-body">
+          <tr>
+            <td colspan="6" class="empty-state">
+              <div class="loading"></div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 系统信息 -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">系统信息</h3>
+      </div>
+      <div class="card-body">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-6);">
+          <div>
+            <div class="text-secondary text-sm">版本</div>
+            <div class="text-primary" id="system-version">-</div>
+          </div>
+          <div>
+            <div class="text-secondary text-sm">运行时间</div>
+            <div class="text-primary" id="system-uptime">-</div>
+          </div>
+          <div>
+            <div class="text-secondary text-sm">总容量</div>
+            <div class="text-primary" id="system-capacity">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import API from '/admin/scripts/api.js';
+    import PollingManager from '/admin/scripts/polling.js';
+    import { CHART_THEME, initChartDefaults, createLineChartConfig, createDoughnutChartConfig } from '/admin/scripts/charts.js';
+
+    // 初始化 Chart.js
+    initChartDefaults();
+
+    // 历史数据（用于趋势图）
+    const requestHistory = {
+      labels: [],
+      data: [],
+      maxPoints: 12, // 保留最近 12 个数据点（1 小时，每 5 秒一个点）
+    };
+
+    // 初始化请求趋势图
+    const requestChart = new Chart(
+      document.getElementById('requestChart'),
+      createLineChartConfig(
+        requestHistory.labels,
+        [{
+          label: '请求数',
+          data: requestHistory.data,
+        }]
+      )
+    );
+
+    // 初始化 Token 分布图
+    const tokenChart = new Chart(
+      document.getElementById('tokenChart'),
+      createDoughnutChartConfig(
+        ['活跃', '空闲', '死亡'],
+        [0, 0, 0],
+        [CHART_THEME.colors.success, CHART_THEME.colors.primary, CHART_THEME.colors.error]
+      )
+    );
+
+    // 格式化数字
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+
+    // 格式化运行时间
+    function formatUptime(seconds) {
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+
+      if (days > 0) return `${days}天 ${hours}小时`;
+      if (hours > 0) return `${hours}小时 ${minutes}分钟`;
+      return `${minutes}分钟`;
+    }
+
+    // 更新 Dashboard
+    async function updateDashboard() {
+      try {
+        const stats = await API.getStats();
+        const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        // 更新统计卡片
+        const totalRequests = stats.logStats?.totalRequests || 0;
+        const successCount = stats.logStats?.successCount || 0;
+        const successRate = totalRequests > 0 ? (successCount / totalRequests * 100) : 0;
+        const aliveTokens = stats.pool?.filter(t => !t.dead).length || 0;
+        const queuedCount = stats.queue?.queued || 0;
+
+        document.getElementById('stat-requests').textContent = formatNumber(totalRequests);
+        document.getElementById('stat-success-rate').textContent = successRate.toFixed(1) + '%';
+        document.getElementById('stat-tokens').textContent = aliveTokens;
+        document.getElementById('stat-queue').textContent = queuedCount;
+
+        // 队列状态提示
+        const queueStatus = document.getElementById('stat-queue-status');
+        if (queuedCount > 0) {
+          queueStatus.textContent = `${queuedCount} 个等待中`;
+          queueStatus.className = 'stat-change negative';
+        } else {
+          queueStatus.textContent = '无等待';
+          queueStatus.className = 'stat-change positive';
+        }
+
+        // 更新请求趋势图
+        requestHistory.labels.push(now);
+        requestHistory.data.push(totalRequests);
+
+        // 保持最近 N 个点
+        if (requestHistory.labels.length > requestHistory.maxPoints) {
+          requestHistory.labels.shift();
+          requestHistory.data.shift();
+        }
+
+        requestChart.data.labels = requestHistory.labels;
+        requestChart.data.datasets[0].data = requestHistory.data;
+        requestChart.update('none'); // 无动画更新，性能更好
+
+        // 更新 Token 分布图
+        const alive = stats.pool?.filter(t => !t.dead && t.activeRequests > 0).length || 0;
+        const idle = stats.pool?.filter(t => !t.dead && t.activeRequests === 0).length || 0;
+        const dead = stats.pool?.filter(t => t.dead).length || 0;
+
+        tokenChart.data.datasets[0].data = [alive, idle, dead];
+        tokenChart.update('none');
+
+        // 更新渠道状态表格
+        updateChannelTable(stats);
+
+        // 更新系统信息
+        document.getElementById('system-version').textContent = stats.version || '2.0.0';
+        document.getElementById('system-uptime').textContent = formatUptime(stats.uptimeSeconds || 0);
+        document.getElementById('system-capacity').textContent = stats.totalCapacity || '-';
+
+        // 更新时间戳
+        document.getElementById('chart-updated').textContent = `更新于 ${now}`;
+        document.getElementById('token-updated').textContent = `更新于 ${now}`;
+
+      } catch (err) {
+        console.error('[Dashboard] Failed to update:', err);
+        // 显示错误提示
+        document.getElementById('stat-requests').textContent = 'Error';
+      }
+    }
+
+    // 更新渠道状态表格
+    function updateChannelTable(stats) {
+      const tbody = document.getElementById('channel-table-body');
+
+      // DeepSeek 渠道
+      const deepseekTokens = stats.pool?.length || 0;
+      const deepseekAlive = stats.pool?.filter(t => !t.dead).length || 0;
+      const deepseekSessions = stats.sessions?.active || 0;
+      const deepseekRequests = stats.logStats?.totalRequests || 0;
+      const deepseekSuccess = stats.logStats?.successCount || 0;
+      const deepseekSuccessRate = deepseekRequests > 0 ? (deepseekSuccess / deepseekRequests * 100) : 0;
+
+      // GLM 渠道（暂时使用模拟数据，后续需要添加 API）
+      const glmStatus = '活跃'; // TODO: 从 API 获取
+      const glmTokens = 0; // TODO: 从 API 获取
+
+      tbody.innerHTML = `
+        <tr>
+          <td><strong>DeepSeek</strong></td>
+          <td><span class="badge badge-success">活跃</span></td>
+          <td>${deepseekAlive} / ${deepseekTokens}</td>
+          <td>${deepseekSessions}</td>
+          <td>${formatNumber(deepseekRequests)}</td>
+          <td><span class="text-success">${deepseekSuccessRate.toFixed(1)}%</span></td>
+        </tr>
+        <tr>
+          <td><strong>GLM</strong></td>
+          <td><span class="badge badge-info">访客模式</span></td>
+          <td>${glmTokens}</td>
+          <td>-</td>
+          <td>-</td>
+          <td>-</td>
+        </tr>
+      `;
+    }
+
+    // 启动轮询（每 5 秒更新一次）
+    const poller = new PollingManager(5000);
+    poller.start(updateDashboard);
+
+    // 页面卸载时停止轮询
+    window.addEventListener('beforeunload', () => {
+      poller.stop();
+    });
+  </script>
+</body>
+</html>

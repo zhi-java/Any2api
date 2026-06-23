@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>性能监控</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    body {
+      background: var(--bg-primary);
+    }
+
+    .page-container {
+      padding: var(--space-8);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-4);
+      margin-bottom: var(--space-8);
+    }
+
+    .chart-section {
+      margin-bottom: var(--space-8);
+    }
+
+    .chart-container {
+      position: relative;
+      height: 300px;
+      margin-top: var(--space-4);
+    }
+
+    @media (max-width: 1024px) {
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1>性能监控</h1>
+      <p class="text-secondary">实时监控系统性能指标和请求延迟</p>
+    </div>
+
+    <!-- 指标卡片 -->
+    <div class="metrics-grid">
+      <div class="stat-card">
+        <div class="stat-label">P50 延迟</div>
+        <div class="stat-value" id="metric-p50">-</div>
+        <div class="stat-change">中位数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">P95 延迟</div>
+        <div class="stat-value" id="metric-p95">-</div>
+        <div class="stat-change">95 百分位</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">P99 延迟</div>
+        <div class="stat-value" id="metric-p99">-</div>
+        <div class="stat-change">99 百分位</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">请求速率</div>
+        <div class="stat-value" id="metric-rps">-</div>
+        <div class="stat-change">请求/秒</div>
+      </div>
+    </div>
+
+    <!-- 请求延迟趋势 -->
+    <div class="chart-section">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">请求延迟趋势</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="latencyChart"></canvas>
+        </div>
+        <div style="padding: var(--space-2); text-align: right; color: var(--text-tertiary); font-size: var(--text-xs);" id="latency-updated">
+          -
+        </div>
+      </div>
+    </div>
+
+    <!-- 请求速率和错误率 -->
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-8);">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">请求速率</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="rpsChart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">错误率</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="errorChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 详细指标 -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">详细指标</h3>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>指标</th>
+            <th>当前值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-table-body">
+          <tr>
+            <td colspan="3" class="empty-state">
+              <div class="loading"></div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script type="module">
+    import API from '/admin/scripts/api.js';
+    import PollingManager from '/admin/scripts/polling.js';
+    import { CHART_THEME, initChartDefaults, createLineChartConfig } from '/admin/scripts/charts.js';
+
+    // 初始化 Chart.js
+    initChartDefaults();
+
+    // 历史数据
+    const latencyHistory = {
+      labels: [],
+      p50: [],
+      p95: [],
+      p99: [],
+      maxPoints: 20,
+    };
+
+    const rpsHistory = {
+      labels: [],
+      data: [],
+      maxPoints: 20,
+    };
+
+    const errorHistory = {
+      labels: [],
+      data: [],
+      maxPoints: 20,
+    };
+
+    // 初始化延迟趋势图
+    const latencyChart = new Chart(
+      document.getElementById('latencyChart'),
+      createLineChartConfig(
+        latencyHistory.labels,
+        [
+          { label: 'P50', data: latencyHistory.p50, borderColor: CHART_THEME.colors.success },
+          { label: 'P95', data: latencyHistory.p95, borderColor: CHART_THEME.colors.warning },
+          { label: 'P99', data: latencyHistory.p99, borderColor: CHART_THEME.colors.error },
+        ]
+      )
+    );
+
+    // 初始化请求速率图
+    const rpsChart = new Chart(
+      document.getElementById('rpsChart'),
+      createLineChartConfig(
+        rpsHistory.labels,
+        [{ label: 'RPS', data: rpsHistory.data }]
+      )
+    );
+
+    // 初始化错误率图
+    const errorChart = new Chart(
+      document.getElementById('errorChart'),
+      createLineChartConfig(
+        errorHistory.labels,
+        [{ label: '错误率 (%)', data: errorHistory.data, borderColor: CHART_THEME.colors.error }]
+      )
+    );
+
+    // 格式化延迟（毫秒）
+    function formatLatency(ms) {
+      if (ms === null || ms === undefined || isNaN(ms)) return '-';
+      if (ms < 1000) return Math.round(ms) + 'ms';
+      return (ms / 1000).toFixed(2) + 's';
+    }
+
+    // 更新性能数据
+    async function updatePerformance() {
+      try {
+        const metrics = await API.getMetrics();
+        const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        // 更新指标卡片
+        const p50 = metrics.latency_p50 || 0;
+        const p95 = metrics.latency_p95 || 0;
+        const p99 = metrics.latency_p99 || 0;
+        const rps = metrics.requests_per_second || 0;
+
+        document.getElementById('metric-p50').textContent = formatLatency(p50);
+        document.getElementById('metric-p95').textContent = formatLatency(p95);
+        document.getElementById('metric-p99').textContent = formatLatency(p99);
+        document.getElementById('metric-rps').textContent = rps.toFixed(2);
+
+        // 更新延迟趋势
+        latencyHistory.labels.push(now);
+        latencyHistory.p50.push(p50);
+        latencyHistory.p95.push(p95);
+        latencyHistory.p99.push(p99);
+
+        if (latencyHistory.labels.length > latencyHistory.maxPoints) {
+          latencyHistory.labels.shift();
+          latencyHistory.p50.shift();
+          latencyHistory.p95.shift();
+          latencyHistory.p99.shift();
+        }
+
+        latencyChart.data.labels = latencyHistory.labels;
+        latencyChart.data.datasets[0].data = latencyHistory.p50;
+        latencyChart.data.datasets[1].data = latencyHistory.p95;
+        latencyChart.data.datasets[2].data = latencyHistory.p99;
+        latencyChart.update('none');
+
+        // 更新请求速率
+        rpsHistory.labels.push(now);
+        rpsHistory.data.push(rps);
+
+        if (rpsHistory.labels.length > rpsHistory.maxPoints) {
+          rpsHistory.labels.shift();
+          rpsHistory.data.shift();
+        }
+
+        rpsChart.data.labels = rpsHistory.labels;
+        rpsChart.data.datasets[0].data = rpsHistory.data;
+        rpsChart.update('none');
+
+        // 更新错误率
+        const errorRate = metrics.error_rate || 0;
+        errorHistory.labels.push(now);
+        errorHistory.data.push(errorRate * 100);
+
+        if (errorHistory.labels.length > errorHistory.maxPoints) {
+          errorHistory.labels.shift();
+          errorHistory.data.shift();
+        }
+
+        errorChart.data.labels = errorHistory.labels;
+        errorChart.data.datasets[0].data = errorHistory.data;
+        errorChart.update('none');
+
+        // 更新详细指标表格
+        updateMetricsTable(metrics);
+
+        // 更新时间戳
+        document.getElementById('latency-updated').textContent = `更新于 ${now}`;
+
+      } catch (err) {
+        console.error('[Performance] Failed to update:', err);
+      }
+    }
+
+    // 更新指标表格
+    function updateMetricsTable(metrics) {
+      const tbody = document.getElementById('metrics-table-body');
+
+      const metricsData = [
+        { name: '总请求数', value: metrics.total_requests || 0, desc: '自启动以来的总请求数' },
+        { name: '成功请求数', value: metrics.successful_requests || 0, desc: '返回 2xx 状态码的请求' },
+        { name: '失败请求数', value: metrics.failed_requests || 0, desc: '返回 4xx/5xx 状态码的请求' },
+        { name: '平均延迟', value: formatLatency(metrics.avg_latency), desc: '所有请求的平均延迟' },
+        { name: '最大延迟', value: formatLatency(metrics.max_latency), desc: '单次请求的最大延迟' },
+        { name: '最小延迟', value: formatLatency(metrics.min_latency), desc: '单次请求的最小延迟' },
+        { name: '错误率', value: ((metrics.error_rate || 0) * 100).toFixed(2) + '%', desc: '失败请求占总请求的比例' },
+        { name: '请求速率', value: (metrics.requests_per_second || 0).toFixed(2) + ' req/s', desc: '每秒处理的请求数' },
+      ];
+
+      tbody.innerHTML = metricsData.map(m => `
+        <tr>
+          <td><strong>${m.name}</strong></td>
+          <td>${m.value}</td>
+          <td class="text-secondary">${m.desc}</td>
+        </tr>
+      `).join('');
+    }
+
+    // 启动轮询（每 10 秒更新一次）
+    const poller = new PollingManager(10000);
+    poller.start(updatePerformance);
+
+    // 页面卸载时停止轮询
+    window.addEventListener('beforeunload', () => {
+      poller.stop();
+    });
+  </script>
+</body>
+</html>

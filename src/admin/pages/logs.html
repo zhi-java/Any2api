@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日志查询</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <style>
+    body {
+      background: var(--bg-primary);
+    }
+
+    .page-container {
+      padding: var(--space-8);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .log-line {
+      font-family: 'Courier New', monospace;
+      font-size: var(--text-xs);
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      gap: var(--space-3);
+      align-items: flex-start;
+    }
+
+    .log-line:hover {
+      background: var(--accent-light);
+    }
+
+    .log-time {
+      color: var(--text-tertiary);
+      flex-shrink: 0;
+      min-width: 80px;
+    }
+
+    .log-level {
+      flex-shrink: 0;
+      min-width: 60px;
+      font-weight: 600;
+    }
+
+    .log-level.INFO { color: var(--info); }
+    .log-level.ERROR { color: var(--error); }
+    .log-level.WARN { color: var(--warning); }
+    .log-level.SUCCESS { color: var(--success); }
+
+    .log-message {
+      flex: 1;
+      color: var(--text-primary);
+      word-break: break-all;
+    }
+
+    .log-container {
+      max-height: 600px;
+      overflow-y: auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-4);
+      margin-bottom: var(--space-6);
+    }
+
+    @media (max-width: 1024px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1>日志查询</h1>
+      <p class="text-secondary">查看系统请求日志和错误记录</p>
+    </div>
+
+    <!-- 统计信息 -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">总请求数</div>
+        <div class="stat-value" id="stat-total">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">成功数</div>
+        <div class="stat-value text-success" id="stat-success">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">错误数</div>
+        <div class="stat-value text-error" id="stat-error">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">成功率</div>
+        <div class="stat-value" id="stat-rate">-</div>
+      </div>
+    </div>
+
+    <!-- 工具栏 -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <select class="select" id="logCountSelect" onchange="changeLogCount()">
+          <option value="50">最近 50 条</option>
+          <option value="100">最近 100 条</option>
+          <option value="200">最近 200 条</option>
+        </select>
+
+        <select class="select" id="logTypeSelect" onchange="filterLogs()">
+          <option value="all">全部类型</option>
+          <option value="INFO">INFO</option>
+          <option value="ERROR">ERROR</option>
+          <option value="WARN">WARN</option>
+          <option value="SUCCESS">SUCCESS</option>
+        </select>
+
+        <input
+          type="text"
+          class="input"
+          placeholder="搜索日志..."
+          id="searchInput"
+          onkeyup="filterLogs()"
+          style="min-width: 300px;"
+        />
+      </div>
+
+      <div class="toolbar-right">
+        <button class="btn btn-secondary" onclick="refreshLogs()">
+          🔄 刷新
+        </button>
+        <button class="btn btn-secondary" onclick="exportLogs()">
+          📥 导出
+        </button>
+      </div>
+    </div>
+
+    <!-- 日志列表 -->
+    <div class="card">
+      <div class="log-container" id="log-container">
+        <div style="padding: var(--space-8); text-align: center;">
+          <div class="loading"></div>
+        </div>
+      </div>
+
+      <div style="padding: var(--space-4); text-align: center; color: var(--text-tertiary); font-size: var(--text-sm);">
+        <span id="log-count">-</span> 条日志
+        <span style="margin: 0 var(--space-2);">·</span>
+        <span id="log-updated">-</span>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import API from '/admin/scripts/api.js';
+    import PollingManager from '/admin/scripts/polling.js';
+
+    let allLogs = [];
+    let filteredLogs = [];
+
+    // 更新日志
+    async function updateLogs() {
+      try {
+        const count = parseInt(document.getElementById('logCountSelect').value);
+        const result = await API.getLogs(count);
+
+        allLogs = result.logs || [];
+
+        // 更新统计
+        const stats = result.stats || {};
+        document.getElementById('stat-total').textContent = stats.totalRequests || 0;
+        document.getElementById('stat-success').textContent = stats.successCount || 0;
+        document.getElementById('stat-error').textContent = stats.errorCount || 0;
+
+        const successRate = stats.totalRequests > 0
+          ? (stats.successCount / stats.totalRequests * 100).toFixed(1)
+          : 0;
+        document.getElementById('stat-rate').textContent = successRate + '%';
+
+        // 应用过滤
+        filterLogs();
+
+        // 更新时间戳
+        const now = new Date().toLocaleTimeString('zh-CN');
+        document.getElementById('log-updated').textContent = `更新于 ${now}`;
+
+      } catch (err) {
+        console.error('[Logs] Failed to update:', err);
+      }
+    }
+
+    // 过滤日志
+    window.filterLogs = () => {
+      const typeFilter = document.getElementById('logTypeSelect').value;
+      const searchText = document.getElementById('searchInput').value.toLowerCase();
+
+      filteredLogs = allLogs.filter(log => {
+        // 类型过滤
+        if (typeFilter !== 'all' && log.level !== typeFilter) {
+          return false;
+        }
+
+        // 搜索过滤
+        if (searchText) {
+          const logText = `${log.time} ${log.level} ${log.message}`.toLowerCase();
+          if (!logText.includes(searchText)) {
+            return false;
+          }
+        }
+
+        return true;
+      });
+
+      renderLogs();
+    };
+
+    // 渲染日志
+    function renderLogs() {
+      const container = document.getElementById('log-container');
+      document.getElementById('log-count').textContent = filteredLogs.length;
+
+      if (filteredLogs.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📭</div>
+            <div class="empty-state-text">无匹配日志</div>
+            <div class="empty-state-hint">尝试调整过滤条件</div>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filteredLogs.map(log => `
+        <div class="log-line">
+          <span class="log-time">${log.time}</span>
+          <span class="log-level ${log.level}">${log.level}</span>
+          <span class="log-message">${escapeHtml(log.message)}</span>
+        </div>
+      `).join('');
+    }
+
+    // HTML 转义
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // 改变日志数量
+    window.changeLogCount = () => {
+      updateLogs();
+    };
+
+    // 刷新日志
+    window.refreshLogs = () => {
+      updateLogs();
+    };
+
+    // 导出日志
+    window.exportLogs = () => {
+      if (filteredLogs.length === 0) {
+        alert('无日志可导出');
+        return;
+      }
+
+      const text = filteredLogs.map(log =>
+        `${log.time} [${log.level}] ${log.message}`
+      ).join('\n');
+
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `logs-${new Date().toISOString()}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    // 启动轮询（每 2 秒更新一次，日志更新频率较高）
+    const poller = new PollingManager(2000);
+    poller.start(updateLogs);
+
+    // 页面卸载时停止轮询
+    window.addEventListener('beforeunload', () => {
+      poller.stop();
+    });
+  </script>
+</body>
+</html>

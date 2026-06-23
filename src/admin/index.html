@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin - DeepSeek 2API</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/layout.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <style>
+    /* 登录遮罩层 */
+    .auth-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(30, 34, 39, 0.95);
+      backdrop-filter: blur(10px);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .auth-overlay.active {
+      display: flex;
+    }
+
+    .auth-dialog {
+      background: var(--bg-surface);
+      border-radius: var(--radius-xl);
+      padding: var(--space-12);
+      max-width: 450px;
+      width: 90%;
+      box-shadow: var(--shadow-lg);
+      text-align: center;
+    }
+
+    .auth-dialog h2 {
+      font-size: var(--text-2xl);
+      margin-bottom: var(--space-4);
+      color: var(--text-primary);
+    }
+
+    .auth-dialog p {
+      color: var(--text-secondary);
+      margin-bottom: var(--space-8);
+    }
+
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-4);
+    }
+
+    .auth-error {
+      background: var(--error-light);
+      color: var(--error);
+      padding: var(--space-3);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      display: none;
+    }
+
+    .auth-error.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+      <!-- 头部 -->
+      <div class="sidebar-header">
+        <h1 class="logo">DeepSeek 2API</h1>
+        <span class="version">v2.0.0</span>
+      </div>
+
+      <!-- 导航 -->
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-page="dashboard">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="#" class="nav-item" data-page="deepseek">
+          <span class="nav-icon">🤖</span>
+          <span class="nav-label">DeepSeek</span>
+        </a>
+        <a href="#" class="nav-item" data-page="glm">
+          <span class="nav-icon">🌐</span>
+          <span class="nav-label">GLM</span>
+        </a>
+        <a href="#" class="nav-item" data-page="logs">
+          <span class="nav-icon">📝</span>
+          <span class="nav-label">日志</span>
+        </a>
+        <a href="#" class="nav-item" data-page="performance">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-label">性能</span>
+        </a>
+      </nav>
+
+      <!-- 底部 -->
+      <div class="sidebar-footer">
+        <a href="chat-legacy.html" class="btn btn-secondary" target="_blank">聊天测试</a>
+        <a href="legacy.html" class="link-secondary" target="_blank">旧版管理</a>
+      </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="content">
+      <iframe id="content-frame" src="/admin/pages/dashboard.html"></iframe>
+    </main>
+  </div>
+
+  <!-- 登录弹窗 -->
+  <div id="authOverlay" class="auth-overlay active">
+    <div class="auth-dialog">
+      <h2>Admin 登录</h2>
+      <p>请输入 API Key 以访问管理面板</p>
+
+      <div class="auth-form">
+        <div class="auth-error" id="authError">API Key 无效，请重试</div>
+
+        <input
+          type="password"
+          id="apiKeyInput"
+          class="input"
+          placeholder="输入 API Key (sk-...)"
+          autocomplete="off"
+        />
+
+        <button class="btn btn-primary" onclick="handleLogin()">
+          登录
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let apiKey = localStorage.getItem('admin_api_key');
+
+    // 检查 API Key
+    async function checkAuth() {
+      if (!apiKey) {
+        document.getElementById('authOverlay').classList.add('active');
+        return false;
+      }
+
+      // 验证 API Key（通过调用一个需要认证的 API）
+      try {
+        const response = await fetch('/admin/api/stats', {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          }
+        });
+
+        if (response.ok) {
+          document.getElementById('authOverlay').classList.remove('active');
+          return true;
+        } else {
+          // API Key 无效
+          localStorage.removeItem('admin_api_key');
+          apiKey = null;
+          document.getElementById('authOverlay').classList.add('active');
+          return false;
+        }
+      } catch (err) {
+        console.error('Auth check failed:', err);
+        document.getElementById('authOverlay').classList.add('active');
+        return false;
+      }
+    }
+
+    // 登录处理
+    window.handleLogin = async () => {
+      const input = document.getElementById('apiKeyInput');
+      const errorDiv = document.getElementById('authError');
+      const key = input.value.trim();
+
+      if (!key) {
+        errorDiv.textContent = '请输入 API Key';
+        errorDiv.classList.add('active');
+        return;
+      }
+
+      // 验证 API Key
+      try {
+        const response = await fetch('/admin/api/stats', {
+          headers: {
+            'Authorization': `Bearer ${key}`
+          }
+        });
+
+        if (response.ok) {
+          // 登录成功
+          localStorage.setItem('admin_api_key', key);
+          apiKey = key;
+          document.getElementById('authOverlay').classList.remove('active');
+          errorDiv.classList.remove('active');
+          input.value = '';
+        } else {
+          // 登录失败
+          errorDiv.textContent = 'API Key 无效，请检查后重试';
+          errorDiv.classList.add('active');
+        }
+      } catch (err) {
+        errorDiv.textContent = '网络错误，请重试';
+        errorDiv.classList.add('active');
+      }
+    };
+
+    // 按 Enter 键登录
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('apiKeyInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          handleLogin();
+        }
+      });
+
+      // 检查认证状态
+      checkAuth();
+    });
+
+    // 导航切换
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+
+        // 更新激活状态
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+
+        // 加载页面
+        const page = item.dataset.page;
+        const iframe = document.getElementById('content-frame');
+        iframe.src = `/admin/pages/${page}.html`;
+      });
+    });
+
+    // 监听 iframe 加载完成
+    document.getElementById('content-frame').addEventListener('load', () => {
+      console.log('[Admin] Page loaded');
+    });
+
+    // 注入 API Key 到 iframe
+    window.addEventListener('message', (event) => {
+      if (event.data.type === 'getApiKey') {
+        event.source.postMessage({
+          type: 'apiKey',
+          key: apiKey
+        }, event.origin);
+      }
+    });
+  </script>
+</body>
+</html>
