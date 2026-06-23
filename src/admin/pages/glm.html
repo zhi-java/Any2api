@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GLM 渠道管理</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <style>
+    body {
+      background: var(--bg-primary);
+    }
+
+    .page-container {
+      padding: var(--space-8);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-4);
+      margin-bottom: var(--space-8);
+    }
+
+    .section {
+      margin-bottom: var(--space-8);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-4);
+    }
+
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: var(--space-3);
+    }
+
+    .model-badge {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: var(--space-3) var(--space-4);
+      text-align: center;
+      font-size: var(--text-sm);
+      font-weight: 500;
+      transition: all var(--transition-fast);
+    }
+
+    .model-badge:hover {
+      border-color: var(--accent);
+      box-shadow: var(--shadow-sm);
+    }
+
+    @media (max-width: 1024px) {
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1>GLM 渠道管理</h1>
+      <p class="text-secondary">管理智谱清言 Token 和模型配置</p>
+    </div>
+
+    <!-- 概览卡片 -->
+    <div class="overview-grid">
+      <div class="stat-card">
+        <div class="stat-label">运行模式</div>
+        <div class="stat-value" id="overview-mode" style="font-size: 1.5rem;">-</div>
+        <div class="stat-change" id="overview-mode-status"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Token 数</div>
+        <div class="stat-value" id="overview-tokens">-</div>
+        <div class="stat-change" id="overview-tokens-status"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">请求统计</div>
+        <div class="stat-value" id="overview-requests">-</div>
+        <div class="stat-change" id="overview-requests-status"></div>
+      </div>
+    </div>
+
+    <!-- Token 管理 -->
+    <div class="section">
+      <div class="section-header">
+        <h2>Refresh Token 管理</h2>
+        <div>
+          <button class="btn btn-secondary" onclick="switchToGuest()" id="guestModeBtn">
+            切换访客模式
+          </button>
+          <button class="btn btn-primary" onclick="alert('Token 管理功能开发中')">
+            ➕ 添加 Token
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="alert alert-info">
+          <strong>提示：</strong>
+          GLM 渠道当前支持访客模式（自动获取临时 Token）和用户模式（配置 Refresh Token）。
+          配置方法请参考 <code>docs/GLM模型调用接入指南.md</code>。
+        </div>
+
+        <table class="table" style="margin-top: var(--space-4);">
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th>缓存状态</th>
+              <th>过期时间</th>
+              <th>用户ID</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="token-table-body">
+            <tr>
+              <td colspan="5" class="empty-state">
+                <div class="loading"></div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 模型配置 -->
+    <div class="section">
+      <div class="section-header">
+        <h2>支持的模型</h2>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">GLM 模型列表</h3>
+        </div>
+        <div class="card-body">
+          <div class="model-grid" id="model-grid">
+            <div class="loading"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 配置说明 -->
+    <div class="section">
+      <div class="section-header">
+        <h2>配置说明</h2>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">如何配置 GLM Token</h3>
+        </div>
+        <div class="card-body">
+          <h4 style="margin-bottom: var(--space-4); color: var(--text-primary);">方式 1: 访客模式（当前默认）</h4>
+          <p style="margin-bottom: var(--space-3); color: var(--text-secondary);">
+            无需配置，系统自动获取临时访客 Token。适合测试和低频使用。
+          </p>
+
+          <h4 style="margin-bottom: var(--space-4); margin-top: var(--space-6); color: var(--text-primary);">方式 2: 用户模式（推荐）</h4>
+          <p style="margin-bottom: var(--space-3); color: var(--text-secondary);">
+            在 <code>.env</code> 文件中配置：
+          </p>
+          <pre style="background: var(--bg-sidebar); padding: var(--space-4); border-radius: var(--radius-md); overflow-x: auto; font-size: var(--text-sm);">
+# 单个 Token
+GLM_REFRESH_TOKEN=your_refresh_token_here
+
+# 或多个 Token（逗号分隔，自动负载均衡）
+GLM_REFRESH_TOKENS=token1,token2,token3</pre>
+
+          <h4 style="margin-bottom: var(--space-4); margin-top: var(--space-6); color: var(--text-primary);">获取 Refresh Token</h4>
+          <ol style="margin-left: var(--space-6); color: var(--text-secondary);">
+            <li style="margin-bottom: var(--space-2);">登录 <a href="https://chatglm.cn" target="_blank" style="color: var(--accent);">https://chatglm.cn</a></li>
+            <li style="margin-bottom: var(--space-2);">打开浏览器开发者工具（F12）→ Network</li>
+            <li style="margin-bottom: var(--space-2);">在请求中找到包含 <code>Authorization</code> 头的请求</li>
+            <li>复制 <code>Bearer</code> 后面的 Token 到 .env 文件</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import API from '/admin/scripts/api.js';
+    import PollingManager from '/admin/scripts/polling.js';
+
+    // GLM 模型列表（从 docs/GLM模型调用接入指南.md 获取）
+    const GLM_MODELS = [
+      { id: 'glm-5.2', name: 'GLM-5.2' },
+      { id: 'glm-4-plus', name: 'GLM-4-Plus' },
+      { id: 'glm-4-0520', name: 'GLM-4-0520' },
+      { id: 'glm-4', name: 'GLM-4' },
+      { id: 'glm-4-air', name: 'GLM-4-Air' },
+      { id: 'glm-4-airx', name: 'GLM-4-AirX' },
+      { id: 'glm-4-flash', name: 'GLM-4-Flash' },
+    ];
+
+    // 切换访客模式
+    window.switchToGuest = () => {
+      alert('访客模式切换功能开发中\n\n当前已默认使用访客模式（如果未配置 Token）');
+    };
+
+    // 更新页面数据
+    async function updateGLM() {
+      try {
+        const stats = await API.getStats();
+
+        // 检查是否配置了 GLM Token（通过环境变量或其他方式）
+        // 这里暂时使用模拟数据，实际需要后端提供 GLM 专用 API
+        const hasToken = false; // TODO: 从后端 API 获取
+        const tokenCount = hasToken ? 1 : 0;
+
+        // 更新概览卡片
+        const mode = hasToken ? '用户模式' : '访客模式';
+        const modeStatus = hasToken ? '长期有效' : '临时 Token';
+
+        document.getElementById('overview-mode').textContent = mode;
+        document.getElementById('overview-mode-status').textContent = modeStatus;
+        document.getElementById('overview-mode-status').className = hasToken
+          ? 'stat-change positive'
+          : 'stat-change';
+
+        document.getElementById('overview-tokens').textContent = tokenCount;
+        document.getElementById('overview-tokens-status').textContent = hasToken
+          ? '已配置'
+          : '未配置';
+
+        // 请求统计（暂时从总统计中提取，后续需要分渠道统计）
+        const glmRequests = 0; // TODO: 从后端获取 GLM 专用统计
+        document.getElementById('overview-requests').textContent = glmRequests || '-';
+        document.getElementById('overview-requests-status').textContent = '待统计';
+
+        // 更新 Token 表格
+        updateTokenTable(hasToken);
+
+        // 更新模型列表
+        updateModelGrid();
+
+      } catch (err) {
+        console.error('[GLM] Failed to update:', err);
+      }
+    }
+
+    // 更新 Token 表格
+    function updateTokenTable(hasToken) {
+      const tbody = document.getElementById('token-table-body');
+
+      if (!hasToken) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="5" class="empty-state">
+              <div class="empty-state-icon">🔑</div>
+              <div class="empty-state-text">当前使用访客模式</div>
+              <div class="empty-state-hint">系统自动获取临时 Token，无需手动配置</div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      // TODO: 显示实际的 Token 列表
+      tbody.innerHTML = `
+        <tr>
+          <td><code>xxx...xxx</code></td>
+          <td><span class="badge badge-success">已缓存</span></td>
+          <td>55 分钟后</td>
+          <td>user_xxx</td>
+          <td>
+            <button class="btn btn-sm btn-ghost">🗑️ 删除</button>
+          </td>
+        </tr>
+      `;
+    }
+
+    // 更新模型列表
+    function updateModelGrid() {
+      const grid = document.getElementById('model-grid');
+      grid.innerHTML = GLM_MODELS.map(model => `
+        <div class="model-badge">
+          ${model.name}
+        </div>
+      `).join('');
+    }
+
+    // 启动轮询（每 10 秒更新一次，GLM 更新频率可以低一些）
+    const poller = new PollingManager(10000);
+    poller.start(updateGLM);
+
+    // 页面卸载时停止轮询
+    window.addEventListener('beforeunload', () => {
+      poller.stop();
+    });
+  </script>
+</body>
+</html>

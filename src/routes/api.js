@@ -1,0 +1,93 @@
+/**
+ * API 路由
+ *
+ * 处理所有 /v1/* 端点
+ * - POST /v1/chat/completions (OpenAI 格式)
+ * - POST /v1/messages (Claude 格式)
+ * - GET /v1/models (模型列表)
+ */
+
+import express from 'express';
+import { routeModel } from '../utils/model-router.js';
+import deepseek from '../channels/deepseek/index.js';
+import { handleGLMCompletion, handleGLMClaudeMessages, GLM_MODEL_MAP } from '../channels/glm/index.js';
+
+const router = express.Router();
+
+// ============= OpenAI 格式 - 统一端点（支持所有渠道） =============
+router.post('/chat/completions', async (req, res) => {
+  try {
+    // 1. 路由模型到正确的渠道
+    const { channel } = routeModel(req.body.model);
+
+    // 2. 分发到对应处理器
+    if (channel === 'deepseek') {
+      return await deepseek.handleOpenAI(req, res);
+    } else if (channel === 'glm') {
+      return await handleGLMCompletion(req, res);
+    }
+
+  } catch (err) {
+    // 3. 错误处理（OpenAI 格式）
+    return res.status(400).json({
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        param: 'model',
+        code: 'model_not_found'
+      }
+    });
+  }
+});
+
+// ============= Claude 格式 - 统一端点（支持所有渠道） =============
+router.post('/messages', async (req, res) => {
+  try {
+    // 1. 路由模型到正确的渠道
+    const { channel } = routeModel(req.body.model);
+
+    // 2. 分发到对应处理器
+    if (channel === 'deepseek') {
+      return await deepseek.handleClaude(req, res);
+    } else if (channel === 'glm') {
+      return await handleGLMClaudeMessages(req, res);
+    }
+
+  } catch (err) {
+    // 3. 错误处理（Claude 格式）
+    return res.status(400).json({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: err.message
+      }
+    });
+  }
+});
+
+// ============= 模型列表 - 统一端点（所有渠道的模型） =============
+router.get('/models', (req, res) => {
+  // DeepSeek 模型（动态从 MODEL_MAP 生成）
+  const deepseekModels = Object.keys(deepseek.models).map(id => ({
+    id,
+    object: 'model',
+    created: 1700000000,
+    owned_by: 'deepseek',
+  }));
+
+  // GLM 模型（动态从 MODEL_MAP 生成）
+  const glmModels = Object.keys(GLM_MODEL_MAP).map(id => ({
+    id,
+    object: 'model',
+    created: 1700000000,
+    owned_by: 'zhipu',
+  }));
+
+  // 合并（按渠道分组：DeepSeek 在前，GLM 在后）
+  res.json({
+    object: 'list',
+    data: [...deepseekModels, ...glmModels]
+  });
+});
+
+export default router;
