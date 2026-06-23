@@ -41,3 +41,9 @@ CUsersPC-1deepseek-2apitmp_main.js
 # logs
 logs/
 *.log
+
+# AI
+.claude/
+.cursor/
+.idea/
+.trellis/
