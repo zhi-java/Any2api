@@ -90,4 +90,19 @@ app.listen(PORT, async () => {
   await prewarmSessions(aliveTokens);
 
   startHealthCheck();
+
+  // ============= Notion 渠道初始化 =============
+
+  const notionProbePath = process.env.NOTION_PROBE_PATH;
+  if (notionProbePath) {
+    try {
+      const { loadSession } = await import('./channels/notion/session.js');
+      const session = loadSession(notionProbePath);
+      console.log(`Notion channel ready: ${session.email} (${session.userName})`);
+    } catch (err) {
+      console.warn(`\n⚠️  Notion channel UNAVAILABLE: ${err.message}\n`);
+    }
+  } else {
+    console.log('Notion channel: disabled (set NOTION_PROBE_PATH to enable)');
+  }
 });
