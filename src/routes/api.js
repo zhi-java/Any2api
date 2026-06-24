@@ -67,23 +67,23 @@ router.post('/messages', async (req, res) => {
 
 // ============= 模型列表 - 统一端点（所有渠道的模型） =============
 router.get('/models', (req, res) => {
-  // DeepSeek 模型（动态从 MODEL_MAP 生成）
+  // DeepSeek 模型
   const deepseekModels = Object.keys(deepseek.models).map(id => ({
     id,
     object: 'model',
-    created: 1700000000,
+    created: 1718000000,
     owned_by: 'deepseek',
   }));
 
-  // GLM 模型（动态从 MODEL_MAP 生成）
+  // GLM 模型
   const glmModels = Object.keys(GLM_MODEL_MAP).map(id => ({
     id,
     object: 'model',
-    created: 1700000000,
+    created: 1718000000,
     owned_by: 'zhipu',
   }));
 
-  // 合并（按渠道分组：DeepSeek 在前，GLM 在后）
+  // 合并
   res.json({
     object: 'list',
     data: [...deepseekModels, ...glmModels]

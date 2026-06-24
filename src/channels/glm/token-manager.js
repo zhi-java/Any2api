@@ -130,10 +130,25 @@ export class GlmTokenManager {
       return cached.accessToken;
     }
 
-    // 获取新的访客 token
+    // 获取新的访客凭证（含 refresh_token + access_token）
     const guest = await this._guestAccess();
 
-    // 缓存访客 token
+    // 优先用 guest refresh_token 调 user/refresh 换取正式 access_token
+    if (guest.refresh_token) {
+      try {
+        const result = await this._refresh(guest.refresh_token);
+        this.tokenCache.set('guest', {
+          accessToken: result.access_token,
+          expiresAt: Date.now() + 3600 * 1000,
+          userId: result.user_id || guest.user_id,
+        });
+        return result.access_token;
+      } catch (refreshErr) {
+        console.warn('[GLM] Guest refresh failed, using direct access token:', refreshErr.message);
+      }
+    }
+
+    // 降级：直接使用 guest/access 返回的 access_token
     this.tokenCache.set('guest', {
       accessToken: guest.access_token,
       expiresAt: Date.now() + 3600 * 1000,
@@ -180,7 +195,7 @@ export class GlmTokenManager {
       body: '{}',
     });
     const json = await res.json();
-    if (json.code !== 0) {
+    if (json.status !== 0) {
       throw new Error(`GLM token refresh failed: ${JSON.stringify(json)}`);
     }
     return json.result;

@@ -7,7 +7,10 @@ import { prewarmSessions } from './services/session.js';
 import { getQueueInfo } from './services/queue.js';
 import { requestLogger } from './middleware/logger.js';
 import { getDispatcher } from './utils/headers.js';
+import { setupUnhandledRejectionHandler } from './utils/response-utils.js';
 import routes from './routes/index.js';
+
+setupUnhandledRejectionHandler();
 
 const app = express();
 const PORT = process.env.PORT || 3000;

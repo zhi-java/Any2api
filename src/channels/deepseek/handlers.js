@@ -10,6 +10,7 @@ import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
 import { recordTTFB, recordTokenSpeed } from '../../middleware/metrics.js';
 import { getConversationId, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
 import { convertClaudeRequest, convertOpenAIResponse, streamOpenAIToClaude, writeClaudeSSE } from '../../adapters/claude.js';
+import { parseToolCallsFromText } from '../../utils/response-utils.js';
 import { mapModel, DEEPSEEK_MODEL_MAP } from './models.js';
 
 // Flush SSE data immediately - prevents buffering in Node.js, nginx, and Cloudflare
@@ -206,34 +207,6 @@ function stripToolBlocks(text) {
     .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls>/gi, '')
     .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi, '')
     .trim();
-}
-
-function parseToolCallsFromText(text) {
-  if (!text) return null;
-
-  const blocks = [
-    extractJsonBlock(text, 'tool_calls'),
-    extractJsonBlock(text, 'tool_call'),
-  ].filter(Boolean);
-
-  for (const block of blocks) {
-    const parsed = tryParseJson(block);
-    if (!parsed) continue;
-    const calls = Array.isArray(parsed) ? parsed : [parsed];
-    const toolCalls = toOpenAIToolCalls(calls);
-    if (toolCalls.length) return { toolCalls, content: stripToolBlocks(text) };
-  }
-
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
-  const parsed = tryParseJson(trimmed);
-  if (parsed) {
-    const rawCalls = parsed.tool_calls || parsed.tools || parsed.calls || parsed.function_call || parsed;
-    const calls = Array.isArray(rawCalls) ? rawCalls : [rawCalls];
-    const toolCalls = toOpenAIToolCalls(calls);
-    if (toolCalls.length) return { toolCalls, content: '' };
-  }
-
-  return null;
 }
 
 // Stream parsed tool_calls incrementally per the OpenAI streaming protocol:
@@ -645,14 +618,43 @@ export async function handleDeepSeekClaude(req, res) {
 
     try {
       if (stream) {
-        // 流式响应
+        // 流式响应：先缓冲所有内容，结束时解析工具调用再按序输出
+        // 注意：必须先消费完 streamBody 才能 writeHead，避免 headers 已发送却出错
+
+        let contentBuffer = '';
+        let thinkingBuffer = '';
+        let hasStreamError = null;
+
+        for await (const event of parseSSEStream(streamBody)) {
+          if (clientGone) break;
+
+          if (event.type === 'content' && event.content) {
+            contentBuffer += event.content;
+          } else if (event.type === 'thinking' && event.content) {
+            thinkingBuffer += event.content;
+          } else if (event.type === 'done') {
+            break;
+          } else if (event.type === 'error') {
+            hasStreamError = event.message || 'DeepSeek stream error';
+            break;
+          }
+        }
+
+        if (clientGone) return;
+        if (hasStreamError) throw new Error(hasStreamError);
+
+        // 现在才发送 response headers
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
         });
 
-        // 发送 message_start 事件
+        // 解析工具调用
+        const parsed = parseToolCallsFromText(contentBuffer);
+        const hasValidToolCalls = parsed?.toolCalls?.length;
+
+        // 发送 message_start
         writeClaudeSSE(res, {
           type: 'message_start',
           message: {
@@ -665,65 +667,163 @@ export async function handleDeepSeekClaude(req, res) {
           },
         });
 
-        // 发送 content_block_start
-        writeClaudeSSE(res, {
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '' },
-        });
+        if (hasValidToolCalls) {
+          // 有工具调用
 
-        // 转换 SSE 流
-        for await (const event of parseSSEStream(streamBody)) {
-          if (clientGone) break;
-
-          if (event.choices?.[0]?.delta?.content) {
+          // 先输出文本 block（工具调用之前的 assistant 回复）
+          let blockIdx = 0;
+          if (parsed.content) {
+            writeClaudeSSE(res, {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'text', text: '' },
+            });
             writeClaudeSSE(res, {
               type: 'content_block_delta',
               index: 0,
-              delta: { type: 'text_delta', text: event.choices[0].delta.content },
+              delta: { type: 'text_delta', text: parsed.content },
             });
+            writeClaudeSSE(res, { type: 'content_block_stop', index: 0 });
+            blockIdx = 1;
           }
+
+          // 输出 tool_use blocks
+          for (const tc of parsed.toolCalls) {
+            let args = {};
+            try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
+
+            writeClaudeSSE(res, {
+              type: 'content_block_start',
+              index: blockIdx,
+              content_block: {
+                type: 'tool_use',
+                id: tc.id || `toolu_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+                name: tc.function.name,
+              },
+            });
+
+            const argsJson = JSON.stringify(args);
+            if (argsJson) {
+              writeClaudeSSE(res, {
+                type: 'content_block_delta',
+                index: blockIdx,
+                delta: { type: 'input_json_delta', partial_json: argsJson },
+              });
+            }
+
+            writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+            blockIdx++;
+          }
+
+          writeClaudeSSE(res, {
+            type: 'message_delta',
+            delta: { stop_reason: 'tool_use' },
+            usage: { output_tokens: 0 },
+          });
+        } else {
+          // 无工具调用：纯文本
+          let blockIdx = 0;
+
+          if (thinkingBuffer) {
+            writeClaudeSSE(res, {
+              type: 'content_block_start',
+              index: blockIdx,
+              content_block: { type: 'text', text: '' },
+            });
+            writeClaudeSSE(res, {
+              type: 'content_block_delta',
+              index: blockIdx,
+              delta: { type: 'text_delta', text: `[思考过程]\n${thinkingBuffer}\n\n` },
+            });
+            writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+            blockIdx++;
+          }
+
+          writeClaudeSSE(res, {
+            type: 'content_block_start',
+            index: blockIdx,
+            content_block: { type: 'text', text: '' },
+          });
+          writeClaudeSSE(res, {
+            type: 'content_block_delta',
+            index: blockIdx,
+            delta: { type: 'text_delta', text: contentBuffer },
+          });
+          writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+
+          writeClaudeSSE(res, {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { output_tokens: 0 },
+          });
         }
 
-        // 发送 content_block_stop
-        writeClaudeSSE(res, {
-          type: 'content_block_stop',
-          index: 0,
-        });
-
-        // 发送 message_delta
-        writeClaudeSSE(res, {
-          type: 'message_delta',
-          delta: { stop_reason: 'end_turn' },
-          usage: { output_tokens: 0 },
-        });
-
-        // 发送 message_stop
         writeClaudeSSE(res, { type: 'message_stop' });
-
         res.end();
       } else {
         // 非流式响应：收集完整响应
         let fullText = '';
+        let fullThinking = '';
         for await (const event of parseSSEStream(streamBody)) {
-          if (event.choices?.[0]?.delta?.content) {
-            fullText += event.choices[0].delta.content;
+          if (clientGone) break;
+          if (event.type === 'content' && event.content) {
+            fullText += event.content;
+          }
+          if (event.type === 'thinking' && event.content) {
+            fullThinking += event.content;
           }
         }
 
-        // 转换为 Claude 格式
-        const claudeResp = {
-          id: requestId,
-          type: 'message',
-          role: 'assistant',
-          model,
-          content: [{ type: 'text', text: fullText }],
-          stop_reason: 'end_turn',
-          usage: {
-            input_tokens: 0,
-            output_tokens: 0,
-          },
-        };
+        // 解析工具调用
+        const parsed = parseToolCallsFromText(fullText);
+        const hasValidToolCalls = parsed?.toolCalls?.length;
+
+        let claudeResp;
+        if (hasValidToolCalls) {
+          // 有工具调用 → 构建包含 tool_use 的响应
+          const contentBlocks = [];
+
+          // 文本部分（工具调用之前的 assistant 回复）
+          if (parsed.content) {
+            contentBlocks.push({ type: 'text', text: parsed.content });
+          }
+          if (fullThinking) {
+            contentBlocks.push({ type: 'text', text: `[思考过程]\n${fullThinking}` });
+          }
+
+          // 工具调用
+          for (const tc of parsed.toolCalls) {
+            let args = {};
+            try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
+            contentBlocks.push({
+              type: 'tool_use',
+              id: tc.id || `toolu_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              name: tc.function.name,
+              input: args,
+            });
+          }
+
+          claudeResp = {
+            id: requestId,
+            type: 'message',
+            role: 'assistant',
+            model,
+            content: contentBlocks,
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        } else {
+          // 无工具调用 → 纯文本响应
+          claudeResp = {
+            id: requestId,
+            type: 'message',
+            role: 'assistant',
+            model,
+            content: [{ type: 'text', text: fullText }],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        }
 
         res.json(claudeResp);
       }
