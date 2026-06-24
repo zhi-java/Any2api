@@ -54,8 +54,12 @@ function loadAccountTokens() {
   const extStr = process.env.DS_ACCOUNTS_EXTENDED?.trim();
   if (!extStr) return [];
   return extStr.split(',').map(entry => {
-    const parts = entry.trim().split(':');
-    if (parts.length >= 3) return { email: parts[0], password: parts[1], tokenPrefix: parts[2] };
+    const [email, ...rest] = entry.trim().split(':');
+    if (rest.length >= 2) {
+      const tokenPrefix = rest.pop();
+      const password = rest.join(':');
+      return email && password && tokenPrefix ? { email, password, tokenPrefix } : null;
+    }
     return null;
   }).filter(Boolean);
 }
@@ -391,25 +395,67 @@ export async function loginAndAddToken(email, password) {
   return token;
 }
 
+export function buildPersistedTokenEnv(pool) {
+  const seenTokens = new Set();
+  const dsTokens = [];
+  const dsAccountsExtended = [];
+  const seenAccountLinks = new Set();
+
+  for (const entry of pool) {
+    const token = entry.token?.trim();
+    if (!token || entry.dead || seenTokens.has(token)) continue;
+    seenTokens.add(token);
+    dsTokens.push(token);
+
+    if (entry.email && entry.password) {
+      const tokenPrefix = token.slice(0, 12);
+      const linkKey = `${entry.email}:${tokenPrefix}`;
+      if (!seenAccountLinks.has(linkKey)) {
+        seenAccountLinks.add(linkKey);
+        dsAccountsExtended.push(`${entry.email}:${entry.password}:${tokenPrefix}`);
+      }
+    }
+  }
+
+  return { dsTokens, dsAccountsExtended };
+}
+
+export function upsertEnvValues(content, updates) {
+  const lines = content.split(/\r?\n/);
+  const pending = new Map(Object.entries(updates));
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^([^#=\s][^=]*)=/);
+    if (!match) continue;
+
+    const key = match[1].trim();
+    if (pending.has(key)) {
+      lines[i] = `${key}=${pending.get(key)}`;
+      pending.delete(key);
+    }
+  }
+
+  for (const [key, value] of pending) {
+    lines.push(`${key}=${value}`);
+  }
+
+  return lines.join('\n');
+}
+
 function persistTokensToEnv() {
   try {
     let content = readFileSync(ENV_PATH, 'utf-8');
-    const aliveTokens = tokenPool.filter(t => t.token && !t.dead).map(t => t.token);
-    if (aliveTokens.length === 0) return;
+    const { dsTokens, dsAccountsExtended } = buildPersistedTokenEnv(tokenPool);
+    if (dsTokens.length === 0) return;
 
-    const line = `DS_TOKENS=
-    const lines = content.split(/\r?\n/);
-    let found = false;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('DS_TOKENS=
-        lines[i] = line;
-        found = true;
-        break;
-      }
-    }
-    if (!found) lines.push(line);
+    content = upsertEnvValues(content, {
+      DS_TOKENS: dsTokens.join(','),
+      // Keep account-issued tokens linked on next boot; otherwise DS_ACCOUNTS
+      // logs in again and appends another token for the same account.
+      DS_ACCOUNTS_EXTENDED: dsAccountsExtended.join(','),
+    });
 
-    writeFileSync(ENV_PATH, lines.join('\n'));
+    writeFileSync(ENV_PATH, content);
   } catch (err) {
     console.warn('Failed to persist tokens to .env:', err.message);
   }

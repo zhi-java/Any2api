@@ -1,141 +1,76 @@
 /**
  * Claude API 格式适配器
  *
- * 将 Claude API 格式 ↔ OpenAI API 格式相互转换
- * 支持流式和非流式两种模式
+ * 将 Claude/Anthropic Messages API 格式 ↔ OpenAI Chat Completions API 格式相互转换。
+ * 支持流式和非流式两种模式。
+ *
+ * 重构要点：
+ * - 使用标准 response 构建工具
+ * - 完善流式 tool_use input_json_delta 支持
+ * - 正确的 content_block_start/stop 序列
+ * - 修复 content block index 跟踪
  */
 
-// ============================================================
-// 工具函数
-// ============================================================
-
-/**
- * 提取文本内容（支持字符串或 content 数组）
- */
-function extractText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (part.type === 'text') return part.text || '';
-        if (part.type === 'image') return '[Image]';
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  return '';
-}
-
-/**
- * 映射 finish_reason
- */
-function mapFinishReason(openaiReason) {
-  const mapping = {
-    stop: 'end_turn',
-    tool_calls: 'tool_use',
-    length: 'max_tokens',
-    content_filter: 'end_turn',
-  };
-  return mapping[openaiReason] || 'end_turn';
-}
-
-/**
- * 映射 stop_reason 到 finish_reason
- */
-function mapStopReasonToFinish(claudeReason) {
-  const mapping = {
-    end_turn: 'stop',
-    tool_use: 'tool_calls',
-    max_tokens: 'length',
-  };
-  return mapping[claudeReason] || 'stop';
-}
+import { parseToolCallsFromText, textFromContent, writeClaudeSSE } from '../utils/response-utils.js';
+import {
+  buildClaudeResponse,
+  buildClaudeResponseFromContent,
+  generateMessageId,
+  mapFinishReason,
+  mapStopReason,
+  openAIToolCallsToClaude,
+  writeClaudeMessageStart,
+  writeClaudeTextBlockStart,
+  writeClaudeTextDelta,
+  writeClaudeToolUseBlockStart,
+  writeClaudeInputJsonDelta,
+  writeClaudeContentBlockStop,
+  writeClaudeMessageDelta,
+  writeClaudeMessageStop,
+  writeClaudeStreamEndFromContent,
+} from '../utils/claude-response.js';
 
 // ============================================================
 // 请求格式转换：Claude → OpenAI
 // ============================================================
 
 /**
- * 将 Claude messages 转换为 OpenAI messages
+ * 将 Claude 消息转换为 OpenAI 格式
  */
 function convertClaudeMessages(claudeMessages, systemPrompt) {
   const openaiMessages = [];
 
-  // 添加 system 消息（如果有）
   if (systemPrompt) {
-    openaiMessages.push({
-      role: 'system',
-      content: systemPrompt,
-    });
+    openaiMessages.push({ role: 'system', content: textFromContent(systemPrompt) });
   }
 
   for (const msg of claudeMessages) {
     if (msg.role === 'user') {
-      // 处理 user 消息
-      const content = [];
-
-      if (typeof msg.content === 'string') {
-        content.push({ type: 'text', text: msg.content });
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (part.type === 'text') {
-            content.push({ type: 'text', text: part.text });
-          } else if (part.type === 'image') {
-            // Claude 图片格式 → OpenAI 图片格式
-            content.push({
-              type: 'image_url',
-              image_url: {
-                url: part.source?.type === 'base64'
-                  ? `data:${part.source.media_type};base64,${part.source.data}`
-                  : part.source?.url || '',
-              },
-            });
-          } else if (part.type === 'tool_result') {
-            // 工具结果：转换为独立的 tool 消息（稍后处理）
-            // 暂时跳过，后面统一处理
-          }
-        }
-      }
-
-      // 检查是否有 tool_result
-      const toolResults = Array.isArray(msg.content)
-        ? msg.content.filter((p) => p.type === 'tool_result')
-        : [];
+      const { textParts, contentArray, toolResults, hasImages } = parseClaudeUserContent(msg.content);
 
       if (toolResults.length > 0) {
-        // 先添加文本内容（如果有）
-        const textContent = content.filter((c) => c.type === 'text' || c.type === 'image_url');
-        if (textContent.length > 0) {
+        // 文本和图片作为 user 消息
+        if (textParts.length || hasImages) {
           openaiMessages.push({
             role: 'user',
-            content: textContent.length === 1 && textContent[0].type === 'text'
-              ? textContent[0].text
-              : textContent,
+            content: hasImages ? contentArray : (textParts.join('\n') || ''),
           });
         }
-
-        // 添加工具结果
+        // 工具结果作为单独 tool 消息
         for (const result of toolResults) {
           openaiMessages.push({
             role: 'tool',
             tool_call_id: result.tool_use_id,
-            content: typeof result.content === 'string'
-              ? result.content
-              : JSON.stringify(result.content),
+            content: typeof result.content === 'string' ? result.content : JSON.stringify(result.content),
           });
         }
       } else {
-        // 普通 user 消息
         openaiMessages.push({
           role: 'user',
-          content: content.length === 1 && content[0].type === 'text'
-            ? content[0].text
-            : (content.length > 0 ? content : ''),
+          content: hasImages ? contentArray : (textParts.join('\n') || ''),
         });
       }
     } else if (msg.role === 'assistant') {
-      // 处理 assistant 消息
       let textContent = '';
       const toolCalls = [];
 
@@ -143,10 +78,8 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
         textContent = msg.content;
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
-          if (part.type === 'text') {
-            textContent += part.text;
-          } else if (part.type === 'tool_use') {
-            // Claude tool_use → OpenAI tool_calls
+          if (part.type === 'text') textContent += part.text;
+          else if (part.type === 'tool_use') {
             toolCalls.push({
               id: part.id,
               type: 'function',
@@ -159,15 +92,8 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
         }
       }
 
-      const assistantMsg = {
-        role: 'assistant',
-        content: textContent || null,
-      };
-
-      if (toolCalls.length > 0) {
-        assistantMsg.tool_calls = toolCalls;
-      }
-
+      const assistantMsg = { role: 'assistant', content: textContent || null };
+      if (toolCalls.length) assistantMsg.tool_calls = toolCalls;
       openaiMessages.push(assistantMsg);
     }
   }
@@ -176,12 +102,50 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
 }
 
 /**
+ * 解析 Claude user 消息的 content 数组
+ */
+function parseClaudeUserContent(content) {
+  const textParts = [];
+  const contentArray = [];
+  const toolResults = [];
+  let hasImages = false;
+
+  if (typeof content === 'string') {
+    textParts.push(content);
+    contentArray.push({ type: 'text', text: content });
+    return { textParts, contentArray, toolResults, hasImages };
+  }
+
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part.type === 'text') {
+        textParts.push(part.text);
+        contentArray.push({ type: 'text', text: part.text });
+      } else if (part.type === 'image') {
+        hasImages = true;
+        contentArray.push({
+          type: 'image_url',
+          image_url: {
+            url: part.source?.type === 'base64'
+              ? `data:${part.source.media_type};base64,${part.source.data}`
+              : part.source?.url || '',
+          },
+        });
+      } else if (part.type === 'tool_result') {
+        toolResults.push(part);
+      }
+    }
+  }
+
+  return { textParts, contentArray, toolResults, hasImages };
+}
+
+/**
  * 将 Claude tools 转换为 OpenAI tools
  */
 function convertClaudeTools(claudeTools) {
   if (!Array.isArray(claudeTools)) return [];
-
-  return claudeTools.map((tool) => ({
+  return claudeTools.map(tool => ({
     type: 'function',
     function: {
       name: tool.name,
@@ -192,26 +156,18 @@ function convertClaudeTools(claudeTools) {
 }
 
 /**
- * 将 Claude 请求转换为 OpenAI 格式
+ * 将完整的 Claude 请求转换为 OpenAI 格式
  */
 export function convertClaudeRequest(claudeReq) {
   if (!claudeReq) {
     throw new Error('Invalid Claude request: request body is required');
   }
-
   if (!Array.isArray(claudeReq.messages) || claudeReq.messages.length === 0) {
     throw new Error('Invalid Claude request: messages array is required and must not be empty');
   }
 
   const {
-    messages,
-    system,
-    max_tokens,
-    temperature,
-    top_p,
-    tools,
-    stream,
-    model,
+    messages, system, max_tokens, temperature, top_p, tools, stream, model,
   } = claudeReq;
 
   const openaiMessages = convertClaudeMessages(messages, system);
@@ -234,9 +190,13 @@ export function convertClaudeRequest(claudeReq) {
 
 /**
  * 将 OpenAI 非流式响应转换为 Claude 格式
+ *
+ * @param {object} openaiResp - OpenAI 格式响应
+ * @param {string} [model] - 模型名称
+ * @returns {object} Claude 格式响应
  */
 export function convertOpenAIResponse(openaiResp, model) {
-  if (!openaiResp || !Array.isArray(openaiResp.choices) || openaiResp.choices.length === 0) {
+  if (!openaiResp || !Array.isArray(openaiResp.choices) || !openaiResp.choices[0]) {
     throw new Error('Invalid OpenAI response: missing choices array');
   }
 
@@ -246,48 +206,18 @@ export function convertOpenAIResponse(openaiResp, model) {
   }
 
   const message = choice.message;
+  const text = message.content || '';
+  const toolUses = openAIToolCallsToClaude(message.tool_calls);
 
-  // 构建 content 数组
-  const content = [];
-
-  if (message.content) {
-    content.push({
-      type: 'text',
-      text: message.content,
-    });
-  }
-
-  if (message.tool_calls && message.tool_calls.length > 0) {
-    for (const tc of message.tool_calls) {
-      let input = {};
-      try {
-        input = JSON.parse(tc.function.arguments);
-      } catch {
-        input = { raw: tc.function.arguments };
-      }
-
-      content.push({
-        type: 'tool_use',
-        id: tc.id.replace('call_', 'toolu_'),
-        name: tc.function.name,
-        input,
-      });
-    }
-  }
-
-  return {
-    id: openaiResp.id.replace('chatcmpl-', 'msg_'),
-    type: 'message',
-    role: 'assistant',
-    content,
+  return buildClaudeResponse({
+    id: generateMessageId(),
     model: model || openaiResp.model,
-    stop_reason: mapFinishReason(choice.finish_reason),
-    stop_sequence: null,
-    usage: {
-      input_tokens: openaiResp.usage?.prompt_tokens || 0,
-      output_tokens: openaiResp.usage?.completion_tokens || 0,
-    },
-  };
+    text,
+    toolUses,
+    stopReason: mapFinishReason(choice.finish_reason),
+    inputTokens: openaiResp.usage?.prompt_tokens || 0,
+    outputTokens: openaiResp.usage?.completion_tokens || 0,
+  });
 }
 
 // ============================================================
@@ -295,7 +225,7 @@ export function convertOpenAIResponse(openaiResp, model) {
 // ============================================================
 
 /**
- * 解析 OpenAI SSE 流
+ * 解析 OpenAI SSE 流（从 ReadableStream）
  */
 async function* parseOpenAIStream(stream) {
   const reader = stream.getReader();
@@ -316,13 +246,10 @@ async function* parseOpenAIStream(stream) {
         if (!trimmed || trimmed === 'data: [DONE]') continue;
         if (!trimmed.startsWith('data: ')) continue;
 
-        const jsonStr = trimmed.slice(6);
         try {
-          const parsed = JSON.parse(jsonStr);
+          const parsed = JSON.parse(trimmed.slice(6));
           yield parsed;
-        } catch {
-          // 忽略解析错误
-        }
+        } catch { /* 忽略解析错误 */ }
       }
     }
   } finally {
@@ -331,12 +258,20 @@ async function* parseOpenAIStream(stream) {
 }
 
 /**
- * 将 OpenAI 流式响应转换为 Claude SSE 事件流
+ * 将 OpenAI 流式响应转换为 Claude SSE 事件序列
+ *
+ * 按 Anthropic 标准事件顺序输出：
+ * message_start
+ *   → content_block_start (text|tool_use)
+ *     → content_block_delta (text_delta|input_json_delta)
+ *   → content_block_stop
+ * → message_delta
+ * → message_stop
  */
 export async function* streamOpenAIToClaude(openaiStream, model) {
-  const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const messageId = generateMessageId();
 
-  // 1. 发送 message_start 事件
+  // 1. message_start
   yield {
     type: 'message_start',
     message: {
@@ -351,146 +286,108 @@ export async function* streamOpenAIToClaude(openaiStream, model) {
     },
   };
 
-  let contentBlockIndex = 0;
-  let currentBlockType = null;
-  let toolCallsBuffer = {}; // { index: { id, name, arguments } }
-  let hasContent = false;
+  let textBlockOpen = false;
+  let toolCallBlockOpen = new Map(); // index → { id, name }
+  let currentBlockIndex = 0;
   let outputTokens = 0;
 
   for await (const chunk of parseOpenAIStream(openaiStream)) {
     const delta = chunk.choices?.[0]?.delta;
     const finishReason = chunk.choices?.[0]?.finish_reason;
 
-    // 处理文本内容
+    // 处理文本 delta
     if (delta?.content) {
-      if (currentBlockType !== 'text') {
-        // 开始新的文本块
-        yield {
-          type: 'content_block_start',
-          index: contentBlockIndex,
-          content_block: { type: 'text', text: '' },
-        };
-        currentBlockType = 'text';
-        hasContent = true;
+      if (!textBlockOpen && !toolCallBlockOpen.size) {
+        // 尚无任何 block 打开，启动文本 block
+        yield { type: 'content_block_start', index: currentBlockIndex, content_block: { type: 'text', text: '' } };
+        textBlockOpen = true;
       }
-
-      // 发送文本增量
-      yield {
-        type: 'content_block_delta',
-        index: contentBlockIndex,
-        delta: { type: 'text_delta', text: delta.content },
-      };
+      if (textBlockOpen) {
+        yield { type: 'content_block_delta', index: currentBlockIndex, delta: { type: 'text_delta', text: delta.content } };
+      }
     }
 
-    // 处理工具调用
+    // 处理工具调用 delta
     if (delta?.tool_calls) {
       for (const tc of delta.tool_calls) {
         const tcIndex = tc.index;
 
-        if (!toolCallsBuffer[tcIndex]) {
-          // 开始新的工具调用块
-          if (currentBlockType === 'text') {
-            // 结束之前的文本块
-            yield {
-              type: 'content_block_stop',
-              index: contentBlockIndex,
-            };
-            contentBlockIndex++;
+        if (!toolCallBlockOpen.has(tcIndex)) {
+          // 关闭文本 block（如果有）
+          if (textBlockOpen) {
+            yield { type: 'content_block_stop', index: currentBlockIndex };
+            textBlockOpen = false;
+            currentBlockIndex++;
           }
 
-          toolCallsBuffer[tcIndex] = {
-            id: tc.id,
-            name: tc.function?.name || '',
-            arguments: '',
-          };
+          // 工具 ID 和名称在第一个块中出现
+          const toolId = tc.id || `toolu_${Date.now().toString(36)}_${tcIndex}`;
+          const toolName = tc.function?.name || '';
+
+          toolCallBlockOpen.set(tcIndex, { id: toolId, name: toolName });
 
           yield {
             type: 'content_block_start',
-            index: contentBlockIndex + tcIndex,
-            content_block: {
-              type: 'tool_use',
-              id: tc.id.replace('call_', 'toolu_'),
-              name: tc.function?.name || '',
-            },
+            index: currentBlockIndex + tcIndex,
+            content_block: { type: 'tool_use', id: toolId, name: toolName },
           };
-
-          currentBlockType = 'tool_use';
-          hasContent = true;
         }
 
-        // 累积工具参数
+        // 参数增量
         if (tc.function?.arguments) {
-          toolCallsBuffer[tcIndex].arguments += tc.function.arguments;
-
           yield {
             type: 'content_block_delta',
-            index: contentBlockIndex + tcIndex,
-            delta: {
-              type: 'input_json_delta',
-              partial_json: tc.function.arguments,
-            },
+            index: currentBlockIndex + tcIndex,
+            delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
           };
         }
       }
     }
 
-    // 处理结束
+    // 结束处理
     if (finishReason) {
-      // 结束当前内容块
-      if (hasContent) {
-        // 结束文本块（如果有）
-        if (currentBlockType === 'text') {
-          yield {
-            type: 'content_block_stop',
-            index: contentBlockIndex,
-          };
-        }
-
-        // 结束所有工具调用块
-        const toolCallIndices = Object.keys(toolCallsBuffer).map(Number);
-        for (const tcIndex of toolCallIndices) {
-          yield {
-            type: 'content_block_stop',
-            index: contentBlockIndex + tcIndex + (currentBlockType === 'text' ? 1 : 0),
-          };
-        }
+      // 关闭所有打开的 block
+      if (textBlockOpen) {
+        yield { type: 'content_block_stop', index: currentBlockIndex };
+        textBlockOpen = false;
       }
 
-      // 发送 message_delta
+      for (const [index] of toolCallBlockOpen) {
+        yield { type: 'content_block_stop', index: currentBlockIndex + index };
+      }
+      toolCallBlockOpen.clear();
+
+      // message_delta
       yield {
         type: 'message_delta',
-        delta: {
-          stop_reason: mapFinishReason(finishReason),
-          stop_sequence: null,
-        },
+        delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null },
         usage: { output_tokens: outputTokens },
       };
 
-      // 发送 message_stop
-      yield {
-        type: 'message_stop',
-      };
-
-      break;
+      // message_stop
+      yield { type: 'message_stop' };
+      return;
     }
 
-    // 累积 token 统计
+    // token 统计
     if (chunk.usage?.completion_tokens) {
       outputTokens = chunk.usage.completion_tokens;
     }
   }
+
+  // 流意外结束的兜底
+  if (textBlockOpen) {
+    yield { type: 'content_block_stop', index: currentBlockIndex };
+  }
+  for (const [index] of toolCallBlockOpen) {
+    yield { type: 'content_block_stop', index: currentBlockIndex + index };
+  }
+  yield {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn', stop_sequence: null },
+    usage: { output_tokens: outputTokens },
+  };
+  yield { type: 'message_stop' };
 }
 
-/**
- * 将 Claude SSE 事件写入响应流
- */
-export function writeClaudeSSE(res, event) {
-  res.write(`event: ${event.type}\n`);
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
-
-  // 立即刷新
-  if (res.flush) res.flush();
-  else if (res._flush) res._flush();
-  const socket = res.socket || res._socket;
-  if (socket && typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
-}
+export { writeClaudeSSE };

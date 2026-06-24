@@ -2,9 +2,14 @@
  * GLM API 客户端
  *
  * 封装 GLM API 调用逻辑，包括消息转换、流解析等
+ *
+ * 重构要点：
+ * - 使用共享工具函数（response-utils.js）处理工具相关的逻辑
+ * - 使用共享的 textFromContent 和 buildToolInstructions
  */
 
-import { makeUuid } from './utils.js';
+import { makeTimestamp, makeNonce, makeSign, makeAuthHeaders } from './utils.js';
+import { textFromContent, buildToolInstructions, normalizeTools } from '../../utils/response-utils.js';
 
 const ASSISTANT_STREAM_URL = 'https://chatglm.cn/chatglm/backend-api/assistant/stream';
 const DEFAULT_ASSISTANT_ID = '65940acff94777010aa6b796';
@@ -12,31 +17,6 @@ const DEFAULT_ASSISTANT_ID = '65940acff94777010aa6b796';
 // ============================================================
 // 消息格式转换 — OpenAI → GLM
 // ============================================================
-
-function textFromContent(content) {
-  if (content == null) return '';
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (part.type === 'text') return part.text || '';
-      if (part.type === 'image_url') return '[Image]';
-      return JSON.stringify(part);
-    }).filter(Boolean).join('\n');
-  }
-  return JSON.stringify(content);
-}
-
-function extractText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (part.type === 'text') return part.text || '';
-      if (part.type === 'image_url') return '[Image]';
-      return JSON.stringify(part);
-    }).filter(Boolean).join('\n');
-  }
-  return JSON.stringify(content);
-}
 
 /**
  * Step 1: 工具调用转换
@@ -48,10 +28,9 @@ function convertToolMessages(messages) {
   for (const msg of messages) {
     if (msg.role === 'tool') {
       const name = msg.name || msg.tool_call_id || 'tool';
-      const content = textFromContent(msg.content);
       result.push({
         role: 'user',
-        content: [{ type: 'text', text: `[Tool result from ${name}]: ${content}` }],
+        content: [{ type: 'text', text: `[Tool result from ${name}]: ${textFromContent(msg.content)}` }],
       });
     } else if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
       const text = textFromContent(msg.content);
@@ -61,20 +40,11 @@ function convertToolMessages(messages) {
       const desc = text
         ? `${text}\n\n[Assistant called tools: ${calls}]`
         : `[Assistant called tools: ${calls}]`;
-      result.push({
-        role: 'assistant',
-        content: [{ type: 'text', text: desc }],
-      });
+      result.push({ role: 'assistant', content: [{ type: 'text', text: desc }] });
     } else if (msg.role === 'system') {
-      result.push({
-        role: 'user',
-        content: [{ type: 'text', text: `[System]: ${textFromContent(msg.content)}` }],
-      });
+      result.push({ role: 'user', content: [{ type: 'text', text: `[System]: ${textFromContent(msg.content)}` }] });
     } else if (msg.role === 'function') {
-      result.push({
-        role: 'user',
-        content: [{ type: 'text', text: `[Function result ${msg.name || 'function'}]: ${textFromContent(msg.content)}` }],
-      });
+      result.push({ role: 'user', content: [{ type: 'text', text: `[Function result ${msg.name || 'function'}]: ${textFromContent(msg.content)}` }] });
     } else {
       const content = Array.isArray(msg.content)
         ? msg.content
@@ -93,66 +63,44 @@ function messagesPrepare(converted) {
   const parts = [];
   for (const msg of converted) {
     const tag = msg.role === 'user' ? 'user' : 'assistant';
-    const text = extractText(msg.content);
-    parts.push(`<|${tag}|>\n${text}`);
+    parts.push(`<|${tag}|>\n${textFromContent(msg.content)}`);
   }
   parts.push('<|assistant|>\n');
 
   return [
-    {
-      role: 'user',
-      content: [{ type: 'text', text: parts.join('\n') }],
-    },
+    { role: 'user', content: [{ type: 'text', text: parts.join('\n') }] },
   ];
 }
 
 /**
  * 将 OpenAI 格式消息转换为 GLM 格式
+ * @param {Array} messages - OpenAI 格式消息
+ * @param {Array} [tools=[]] - 工具定义，非空时附加工具调用指令
  */
-export function convertMessages(messages) {
-  const step1 = convertToolMessages(messages);
-  return messagesPrepare(step1);
+export function convertMessages(messages, tools = []) {
+  const result = messagesPrepare(convertToolMessages(messages));
+  // 将工具定义指令注入到最后一条 user 消息末尾
+  if (tools.length) {
+    const instructions = buildToolInstructions(tools);
+    if (instructions) {
+      const lastMsg = result[result.length - 1];
+      if (lastMsg?.content?.[0]?.text) {
+        lastMsg.content[0].text += '\n\n' + instructions;
+      }
+    }
+  }
+  return result;
 }
 
 // ============================================================
-// 工具调用支持
+// 构建最终发送给 GLM 的 prompt
 // ============================================================
-
-function normalizeTools(tools) {
-  if (!Array.isArray(tools)) return [];
-  return tools
-    .filter((t) => t?.type === 'function' && t.function?.name)
-    .map((t) => ({
-      type: 'function',
-      function: {
-        name: t.function.name,
-        description: t.function.description || '',
-        parameters: t.function.parameters || { type: 'object', properties: {} },
-      },
-    }));
-}
-
-function buildToolInstructions(tools) {
-  if (!tools.length) return '';
-
-  return (
-    `\n\n[Tool calling instructions]\nYou have access to these tools:\n${JSON.stringify(tools, null, 2)}\n\n` +
-    'Use a tool only when it is helpful or required to answer correctly.\n\n' +
-    'If you decide to call tools, do not answer normally. Output exactly one XML block and nothing else:\n' +
-    '<tool_calls>[{"name":"tool_name","arguments":{"arg":"value"}}]</tool_calls>\n\n' +
-    'Rules:\n' +
-    '- The content inside <tool_calls> must be valid JSON.\n' +
-    '- "arguments" must be a JSON object matching the tool schema.\n' +
-    '- For a single tool call, still use a JSON array with one item.\n' +
-    '- If no tool is needed, answer normally without the <tool_calls> block.'
-  );
-}
 
 /**
  * 构建最终发送给 GLM 的 prompt
  * 将系统消息、对话历史和工具定义合并
  */
-export function buildPrompt(messages, tools) {
+export function buildPrompt(messages, tools = []) {
   let prompt = '';
   for (const msg of messages) {
     const content = textFromContent(msg.content);
@@ -170,93 +118,7 @@ export function buildPrompt(messages, tools) {
       prompt += `[Tool result ${name}]: ${textFromContent(msg.content)}\n\n`;
     }
   }
-  return (prompt.trim() + buildToolInstructions(normalizeTools(tools))).trim();
-}
-
-// ============================================================
-// 工具调用解析
-// ============================================================
-
-function tryParseJson(value) {
-  try { return JSON.parse(value); } catch { return null; }
-}
-
-function extractJsonBlock(text, tag) {
-  const open = `<${tag}`;
-  const close = `</${tag}>`;
-  const lastClose = text.toLowerCase().lastIndexOf(close);
-  if (lastClose === -1) return null;
-  const lastOpen = text.toLowerCase().lastIndexOf(open, lastClose);
-  if (lastOpen === -1) return null;
-  const inner = text.slice(lastOpen + open.length, lastClose);
-  const gt = inner.indexOf('>');
-  const body = gt === -1 ? inner : inner.slice(gt + 1);
-  const trimmed = body.trim();
-  return trimmed || null;
-}
-
-function stripToolBlocks(text) {
-  return text
-    .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls>/gi, '')
-    .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi, '')
-    .trim();
-}
-
-function normalizeToolArguments(args) {
-  if (args == null) return '{}';
-  if (typeof args === 'string') {
-    const trimmed = args.trim();
-    if (!trimmed) return '{}';
-    const parsed = tryParseJson(trimmed);
-    return parsed === null ? trimmed : JSON.stringify(parsed);
-  }
-  try { return JSON.stringify(args); } catch { return '{}'; }
-}
-
-function toOpenAIToolCalls(calls) {
-  return calls
-    .map((call, index) => {
-      const fn = call.function || call;
-      const name = fn.name;
-      if (!name || typeof name !== 'string') return null;
-      return {
-        id: call.id || `call_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 8)}`,
-        type: 'function',
-        function: {
-          name,
-          arguments: normalizeToolArguments(fn.arguments ?? call.arguments ?? {}),
-        },
-      };
-    })
-    .filter(Boolean);
-}
-
-export function parseToolCallsFromText(text) {
-  if (!text) return null;
-
-  const blocks = [
-    extractJsonBlock(text, 'tool_calls'),
-    extractJsonBlock(text, 'tool_call'),
-  ].filter(Boolean);
-
-  for (const block of blocks) {
-    const parsed = tryParseJson(block);
-    if (!parsed) continue;
-    const calls = Array.isArray(parsed) ? parsed : [parsed];
-    const toolCalls = toOpenAIToolCalls(calls);
-    if (toolCalls.length) return { toolCalls, content: stripToolBlocks(text) };
-  }
-
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
-  const parsed = tryParseJson(trimmed);
-  if (parsed) {
-    const rawCalls = parsed.tool_calls || parsed.tools || parsed.calls || parsed.function_call || parsed;
-    const calls = Array.isArray(rawCalls) ? rawCalls : [rawCalls];
-    const toolCalls = toOpenAIToolCalls(calls);
-    if (toolCalls.length) return { toolCalls, content: '' };
-  }
-
-  return null;
+  return (prompt.trim() + buildToolInstructions(tools)).trim();
 }
 
 // ============================================================
@@ -305,13 +167,14 @@ export async function glmChatCompletion(glmMessages, options = {}) {
     },
   };
 
+  const ts = makeTimestamp();
+  const nonce = makeNonce();
+  const sign = makeSign(ts, nonce);
   const headers = {
+    ...makeAuthHeaders(ts, nonce, sign),
     Authorization: `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    Origin: 'https://chatglm.cn',
     Referer: 'https://chatglm.cn/',
-    'X-Request-Id': makeUuid(),
   };
 
   const res = await fetch(ASSISTANT_STREAM_URL, {
@@ -343,3 +206,6 @@ export async function glmChatCompletion(glmMessages, options = {}) {
 
   return res.body;
 }
+
+// 导出共享的 normalizeTools、buildToolInstructions、textFromContent 供 handlers 使用
+export { normalizeTools, textFromContent };

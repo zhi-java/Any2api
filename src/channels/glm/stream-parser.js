@@ -1,7 +1,10 @@
 /**
  * GLM SSE 流解析器
  *
- * 解析 GLM API 返回的 SSE 流，yield 统一事件
+ * 解析 GLM API 返回的 SSE 流，yield 统一事件。
+ * 自动处理：
+ * - 完整快照 → 增量 delta 转换（GLM 网页版行为）
+ * - <think>...</think> 提取为独立的 thinking 事件
  */
 
 /**
@@ -15,6 +18,76 @@ export async function* parseGLMStream(body) {
   const decoder = new TextDecoder();
   let buffer = '';
   let accumulatedContent = '';
+  let accumulatedThinking = '';
+  let lastRawContent = ''; // 完整快照去重
+
+  /**
+   * 从完整文本中分离 <think>...</think> 推理部分
+   * 返回 { thinking, text }
+   * - thinking: 推理内容（可能为 null）
+   * - text: 排除 thinking 标签后的纯文本
+   */
+  function splitThinking(text) {
+    const match = text.match(/<think>([\s\S]*?)<\/think>/);
+    if (match) {
+      return {
+        thinking: match[1].trim(),
+        text: text.slice(match.index + match[0].length).trim(),
+      };
+    }
+    // 标签未闭合（仍在思考中）
+    const openMatch = text.match(/<think>([\s\S]*)$/);
+    if (openMatch) {
+      return { thinking: openMatch[1].trim(), text: '' };
+    }
+    return { thinking: null, text };
+  }
+
+  /**
+   * 处理新收到的完整内容文本，生成增量事件数组
+   *
+   * GLM 网页版返回的是「完整内容快照」（每个事件含当前全部文本），
+   * 这里提取增量并自动分离 thinking 与 content。
+   *
+   * @returns {Array|null} 事件数组，或 null（去重/无变化）
+   */
+  function processContent(newContent) {
+    // 去重
+    if (!newContent || newContent === lastRawContent) return null;
+    lastRawContent = newContent;
+
+    // 分离 thinking 和 text
+    const { thinking, text } = splitThinking(newContent);
+    const events = [];
+
+    // --- 处理 thinking delta ---
+    if (thinking !== null) {
+      if (thinking !== accumulatedThinking) {
+        const delta = accumulatedThinking
+          ? thinking.slice(accumulatedThinking.length)
+          : thinking;
+        accumulatedThinking = thinking;
+        if (delta) events.push({ type: 'thinking', content: delta });
+      }
+    }
+
+    // --- 处理 content delta ---
+    if (text) {
+      // 快照模式：text 以 accumulatedContent 开头，取增量
+      if (accumulatedContent && text.startsWith(accumulatedContent)) {
+        const delta = text.slice(accumulatedContent.length);
+        accumulatedContent = text;
+        if (delta) events.push({ type: 'content', content: delta });
+      } else if (text !== accumulatedContent) {
+        // 标准模式或首次
+        const delta = text.slice(accumulatedContent.length);
+        accumulatedContent = text;
+        if (delta) events.push({ type: 'content', content: delta });
+      }
+    }
+
+    return events.length ? events : null;
+  }
 
   try {
     while (true) {
@@ -25,16 +98,20 @@ export async function* parseGLMStream(body) {
         if (leftover) {
           try {
             const parsed = JSON.parse(leftover);
-            const result = parseGLMEvent(parsed, accumulatedContent);
+            const result = parseGLMEvent(parsed);
             if (result) yield result;
           } catch { /* 忽略无法解析的剩余数据 */ }
         }
+        // GLM 网页版格式：最后一条 SSE 事件可能同时包含内容+status:"finish"，
+        // parseGLMEvent 优先返回 content 而不发射 done。
+        // 因此 TCP 流结束时显式发射 done 确保 handler 收到结束信号。
+        yield { type: 'done', finishReason: 'stop' };
         break;
       }
 
       buffer += decoder.decode(value, { stream: true });
 
-      // 尝试以换行符分割
+      // 以换行符分割
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -51,13 +128,17 @@ export async function* parseGLMStream(body) {
           }
           try {
             const parsed = JSON.parse(jsonStr);
-            const result = parseGLMEvent(parsed, accumulatedContent);
+            const result = parseGLMEvent(parsed);
             if (result) {
-              // 累积 content 用于工具调用解析
+              // 处理 content 事件的增量 + thinking 提取
               if (result.type === 'content') {
-                accumulatedContent += result.content;
+                const events = processContent(result.content);
+                if (events) {
+                  for (const evt of events) yield evt;
+                }
+              } else {
+                yield result;
               }
-              yield result;
             }
           } catch { /* 忽略无法解析的行 */ }
           continue;
@@ -66,12 +147,16 @@ export async function* parseGLMStream(body) {
         // 尝试直接解析整行 JSON
         try {
           const parsed = JSON.parse(trimmed);
-          const result = parseGLMEvent(parsed, accumulatedContent);
+          const result = parseGLMEvent(parsed);
           if (result) {
             if (result.type === 'content') {
-              accumulatedContent += result.content;
+              const events = processContent(result.content);
+              if (events) {
+                for (const evt of events) yield evt;
+              }
+            } else {
+              yield result;
             }
-            yield result;
           }
         } catch { /* 忽略无法解析的行 */ }
       }
@@ -85,7 +170,7 @@ export async function* parseGLMStream(body) {
  * 解析单个 GLM SSE 事件
  * 兼容多种可能的 GLM 响应格式
  */
-function parseGLMEvent(parsed, accumulatedContent) {
+function parseGLMEvent(parsed) {
   // 格式1: { choices: [{ delta: { content: "..." }, finish_reason: "stop" }] }
   if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
     const choice = parsed.choices[0];
@@ -163,6 +248,53 @@ function parseGLMEvent(parsed, accumulatedContent) {
     return { type: 'content', content: parsed.content };
   }
 
+  // 格式8: GLM 网页版格式 { parts: [{ content: [{ type, text, tool_calls }], status }] }
+  if (Array.isArray(parsed.parts)) {
+    // 空 parts 数组 → 会话初始化事件，跳过
+    if (parsed.parts.length === 0) return null;
+
+    const part = parsed.parts[0];
+    if (part && part.content) {
+      const items = Array.isArray(part.content) ? part.content : [part.content];
+
+      let fullText = '';
+      let hasToolCalls = false;
+      let toolCalls = [];
+
+      for (const item of items) {
+        if (item.type === 'text' && item.text) {
+          fullText += item.text;
+
+          // 检查 tool_calls（空对象 {} 表示无工具调用）
+          if (item.tool_calls && typeof item.tool_calls === 'object' && !Array.isArray(item.tool_calls)) {
+            const tcKeys = Object.keys(item.tool_calls);
+            if (tcKeys.length > 0) {
+              const tcArray = item.tool_calls.tool_calls || item.tool_calls.calls || null;
+              if (Array.isArray(tcArray) && tcArray.length > 0) {
+                hasToolCalls = true;
+                toolCalls = toOpenAIToolCalls(tcArray);
+              }
+            }
+          }
+        }
+      }
+
+      if (fullText && hasToolCalls) {
+        return { type: 'tool_calls', toolCalls };
+      }
+      if (fullText) {
+        return { type: 'content', content: fullText };
+      }
+    }
+
+    // status = finish → done
+    if (part?.status === 'finish' || part?.status === 'done') {
+      return { type: 'done', finishReason: 'stop' };
+    }
+
+    return null;
+  }
+
   // 格式6: 完成信号
   if (parsed.status === 'FINISHED' || parsed.status === 'finished' || parsed.status === 'done') {
     return { type: 'done', finishReason: 'stop' };
@@ -176,7 +308,7 @@ function parseGLMEvent(parsed, accumulatedContent) {
   return null;
 }
 
-// 工具调用辅助函数（从 client.js 引用）
+// 工具调用辅助函数
 function tryParseJson(value) {
   try { return JSON.parse(value); } catch { return null; }
 }

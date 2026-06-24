@@ -1,50 +1,61 @@
 /**
  * GLM Express 请求处理器
  *
- * 处理 OpenAI 和 Claude 格式的请求，转换为 GLM API 调用
+ * 处理 OpenAI 和 Claude 格式的请求，转换为 GLM API 调用。
+ *
+ * 重构要点：
+ * - 使用共享工具函数（response-utils.js）消除与 DeepSeek 处理器的重复代码
+ * - 使用标准响应构建器（openai-response.js, claude-response.js）
+ * - 完善流式工具调用输出
+ * - 完善 Claude 格式的 tool_use 块支持
  */
 
-import { convertMessages, buildPrompt, glmChatCompletion, parseToolCallsFromText } from './client.js';
+import { convertMessages, glmChatCompletion } from './client.js';
 import { parseGLMStream } from './stream-parser.js';
 import { resolveModel } from './models.js';
-import { convertClaudeRequest, convertOpenAIResponse, streamOpenAIToClaude, writeClaudeSSE } from '../../adapters/claude.js';
+import { convertClaudeRequest, streamOpenAIToClaude, writeClaudeSSE } from '../../adapters/claude.js';
+
+import {
+  normalizeTools,
+  setTCPNoDelay,
+  writeSSE,
+  flushSSE,
+  setupClientDisconnect,
+  safeAppendToBuffer,
+  parseToolCallsFromText,
+} from '../../utils/response-utils.js';
+
+import {
+  generateChatCompletionId,
+  buildOpenAIResponse,
+  buildOpenAIResponseFromContent,
+  writeStreamingHeader,
+  writeStreamingContent,
+  writeStreamingReasoning,
+  writeStreamingFinish,
+  writeStreamingDone,
+  writeStreamingToolCalls,
+  sendOpenAIError,
+} from '../../utils/openai-response.js';
+
+import {
+  generateMessageId,
+  buildClaudeResponseFromContent,
+  writeClaudeMessageStart,
+  writeClaudeTextBlockStart,
+  writeClaudeTextDelta,
+  writeClaudeToolUseBlockStart,
+  writeClaudeInputJsonDelta,
+  writeClaudeContentBlockStop,
+  writeClaudeMessageDelta,
+  writeClaudeMessageStop,
+  writeClaudeStreamEndFromContent,
+  openAIToolCallsToClaude,
+  sendClaudeError,
+} from '../../utils/claude-response.js';
 
 // ============================================================
-// 工具调用支持
-// ============================================================
-
-function normalizeTools(tools) {
-  if (!Array.isArray(tools)) return [];
-  return tools
-    .filter((t) => t?.type === 'function' && t.function?.name)
-    .map((t) => ({
-      type: 'function',
-      function: {
-        name: t.function.name,
-        description: t.function.description || '',
-        parameters: t.function.parameters || { type: 'object', properties: {} },
-      },
-    }));
-}
-
-// ============================================================
-// SSE 辅助
-// ============================================================
-
-function flushSSE(res) {
-  if (res.flush) res.flush();
-  else if (res._flush) res._flush();
-  const socket = res.socket || res._socket;
-  if (socket && typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
-}
-
-function writeSSE(res, payload) {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  flushSSE(res);
-}
-
-// ============================================================
-// 请求处理器
+// OpenAI 格式处理器 (POST /v1/chat/completions)
 // ============================================================
 
 /**
@@ -52,319 +63,196 @@ function writeSSE(res, payload) {
  * GLM 渠道处理器
  */
 export async function handleGLMOpenAI(req, res, tokenManager) {
-  const { model, messages, stream = false, max_tokens } = req.body;
+  const { model, messages, stream = true } = req.body;
   const tools = normalizeTools(req.body.tools);
   const toolChoice = req.body.tool_choice ?? 'auto';
   const toolCallingEnabled = tools.length > 0 && toolChoice !== 'none';
 
   if (!model || !messages || !messages.length) {
-    return res.status(400).json({ error: { message: 'model and messages are required' } });
+    return sendOpenAIError(res, 400, 'model and messages are required');
   }
 
   const modelConfig = resolveModel(model);
   const conversationId = req.headers['x-conversation-id'] || '';
-
-  const requestId = `glm-chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const requestId = generateChatCompletionId();
   const requestStart = Date.now();
 
-  // 构建完整 prompt（含工具定义）
-  const fullPrompt = buildPrompt(messages, tools);
-  const glmMessages = convertMessages(messages);
+  const glmMessages = convertMessages(messages, tools);
 
   try {
-    // 调用 GLM API
     const streamBody = await glmChatCompletion(glmMessages, {
       assistantId: modelConfig.assistantId,
       plusModel: modelConfig.plusModel,
       searchEnabled: modelConfig.search,
+      chatMode: modelConfig.chatMode || '',
       conversationId,
       tokenManager,
     });
 
-    // 检测客户端断开
-    let clientGone = false;
-    const onClose = () => {
-      clientGone = true;
-      try { streamBody.cancel(); } catch {}
-    };
-    req.on('close', onClose);
+    const { clientGone, cleanup } = setupClientDisconnect(req, streamBody);
 
     try {
       if (stream) {
-        await handleStreamingResponse(req, res, streamBody, {
-          requestId, model, toolCallingEnabled, requestStart,
+        await handleGLMStreamingOpenAI(req, res, streamBody, {
+          requestId, model, toolCallingEnabled, requestStart, clientGone,
         });
       } else {
-        await handleNonStreamingResponse(req, res, streamBody, {
-          requestId, model, toolCallingEnabled, requestStart,
+        await handleGLMNonStreamingOpenAI(res, streamBody, {
+          requestId, model, toolCallingEnabled, requestStart, clientGone,
         });
       }
     } finally {
-      req.off('close', onClose);
+      cleanup();
     }
   } catch (err) {
     console.error('[GLM] Completion error:', err.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: { message: err.message } });
+      sendOpenAIError(res, 500, err.message, 'api_error');
     } else {
-      res.end();
+      if (!res.writableEnded) res.end();
     }
   }
 }
 
 /**
- * 流式响应处理
+ * GLM 流式 OpenAI 响应处理
+ *
+ * 内容缓冲策略：
+ * - 非工具调用请求 → 实时流式输出（打字机效果）
+ * - 工具调用请求 → 缓冲到 done，解析工具调用后统一输出
+ *   （因为 GLM 把工具调用 JSON 嵌入文本中，需要先解析再分别输出）
  */
-async function handleStreamingResponse(req, res, streamBody, { requestId, model, toolCallingEnabled, requestStart }) {
-  const _socket = req.socket || req.connection;
-  if (_socket && typeof _socket.setNoDelay === 'function') _socket.setNoDelay(true);
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-
-  // 初始 chunk
-  writeSSE(res, {
-    id: requestId,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-  });
+async function handleGLMStreamingOpenAI(req, res, streamBody, { requestId, model, toolCallingEnabled, requestStart, clientGone }) {
+  setTCPNoDelay(req);
+  writeStreamingHeader(res, requestId, model);
 
   let contentBuffer = '';
-  let inThinkingPhase = false;
+  let toolCallsEmitted = false;
 
   for await (const event of parseGLMStream(streamBody)) {
-    if (req.clientGone) break;
+    if (clientGone) break;
 
     switch (event.type) {
       case 'content': {
-        if (toolCallingEnabled) {
-          contentBuffer += event.content;
-          continue;
+        // 始终缓冲（用于结束时工具调用解析）
+        const { buffer } = safeAppendToBuffer(contentBuffer, event.content);
+        contentBuffer = buffer;
+        // 无工具调用时实时输出
+        if (!toolCallingEnabled && event.content) {
+          writeStreamingContent(res, requestId, model, event.content);
+          flushSSE(res);
         }
-        inThinkingPhase = false;
-        writeSSE(res, {
-          id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-          choices: [{ index: 0, delta: { content: event.content }, finish_reason: null }],
-        });
         break;
       }
 
-      case 'thinking': {
-        writeSSE(res, {
-          id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-          choices: [{ index: 0, delta: { reasoning_content: event.content }, finish_reason: null }],
-        });
+      case 'thinking':
+        writeStreamingReasoning(res, requestId, model, event.content);
+        flushSSE(res);
         break;
-      }
 
-      case 'tool_calls': {
-        // 工具调用 — 直接输出
-        const tc = event.toolCalls;
-        if (Array.isArray(tc)) {
+      case 'tool_calls':
+        if (Array.isArray(event.toolCalls)) {
+          toolCallsEmitted = true;
           const ARGS_CHUNK_SIZE = 24;
-          for (let i = 0; i < tc.length; i++) {
-            const call = tc[i];
+          for (let i = 0; i < event.toolCalls.length; i++) {
+            const call = event.toolCalls[i];
             writeSSE(res, {
               id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-              choices: [{
-                index: 0, delta: {
-                  tool_calls: [{
-                    index: i, id: call.id, type: 'function',
-                    function: { name: call.function.name, arguments: '' },
-                  }],
-                }, finish_reason: null,
-              }],
+              choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: call.id, type: 'function', function: { name: call.function.name, arguments: '' } }] }, finish_reason: null }],
             });
             const args = call.function.arguments || '';
             for (let j = 0; j < args.length; j += ARGS_CHUNK_SIZE) {
               writeSSE(res, {
                 id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-                choices: [{
-                  index: 0, delta: {
-                    tool_calls: [{ index: i, function: { arguments: args.slice(j, j + ARGS_CHUNK_SIZE) } }],
-                  }, finish_reason: null,
-                }],
+                choices: [{ index: 0, delta: { tool_calls: [{ index: i, function: { arguments: args.slice(j, j + ARGS_CHUNK_SIZE) } }] }, finish_reason: null }],
               });
             }
           }
-          writeSSE(res, {
-            id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-          });
+          writeStreamingFinish(res, requestId, model, 'tool_calls');
         }
         break;
-      }
-
-      case 'image': {
-        // CogView 图片生成
-        writeSSE(res, {
-          id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-          choices: [{
-            index: 0, delta: { content: `![Generated Image](${event.imageUrl})` }, finish_reason: null,
-          }],
-        });
-        break;
-      }
-
-      case 'error': {
-        console.error('[GLM] Stream error:', event.message);
-        throw new Error(event.message);
-      }
 
       case 'done': {
-        // 工具调用模式：从 buffer 解析
         if (toolCallingEnabled && contentBuffer) {
-          const parsed = parseToolCallsFromText(contentBuffer);
-          if (parsed?.toolCalls?.length) {
-            if (parsed.content) {
-              writeSSE(res, {
-                id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-                choices: [{ index: 0, delta: { content: parsed.content }, finish_reason: null }],
-              });
-            }
-            // 增量式工具调用
-            const ARGS_CHUNK_SIZE = 24;
-            for (let i = 0; i < parsed.toolCalls.length; i++) {
-              const call = parsed.toolCalls[i];
-              writeSSE(res, {
-                id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-                choices: [{
-                  index: 0, delta: {
-                    tool_calls: [{
-                      index: i, id: call.id, type: 'function',
-                      function: { name: call.function.name, arguments: '' },
-                    }],
-                  }, finish_reason: null,
-                }],
-              });
-              const args = call.function.arguments || '';
-              for (let j = 0; j < args.length; j += ARGS_CHUNK_SIZE) {
-                writeSSE(res, {
-                  id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-                  choices: [{
-                    index: 0, delta: {
-                      tool_calls: [{ index: i, function: { arguments: args.slice(j, j + ARGS_CHUNK_SIZE) } }],
-                    }, finish_reason: null,
-                  }],
-                });
-              }
-            }
-            writeSSE(res, {
-              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-              choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-            });
-          } else {
-            writeSSE(res, {
-              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-              choices: [{ index: 0, delta: { content: contentBuffer }, finish_reason: null }],
-            });
-            writeSSE(res, {
-              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-            });
+          // 有工具调用 → 从缓冲中解析，剥离 JSON 后分别输出
+          const wroteToolCalls = writeStreamingToolCalls(res, requestId, model, contentBuffer, true);
+          if (!wroteToolCalls) {
+            // 无工具调用 → 输出缓冲的全部内容
+            writeStreamingContent(res, requestId, model, contentBuffer);
+            writeStreamingFinish(res, requestId, model, 'stop');
           }
-        } else {
-          writeSSE(res, {
-            id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-          });
+        } else if (!toolCallingEnabled) {
+          // 已实时输出，只需 finish
+          writeStreamingFinish(res, requestId, model, 'stop');
         }
-        res.write('data: [DONE]\n\n');
+        writeStreamingDone(res);
         flushSSE(res);
-        return; // 结束
+        res.end();
+        return;
       }
 
-      case 'usage': {
-        // usage 信息，在非流式响应中使用
+      case 'error':
+        throw new Error(event.message);
+
+      case 'image':
+        writeStreamingContent(res, requestId, model, `![Generated Image](${event.imageUrl})`);
         break;
-      }
     }
   }
 
-  // 流意外结束
   if (!res.writableEnded) {
-    res.write('data: [DONE]\n\n');
+    writeStreamingDone(res);
     flushSSE(res);
     res.end();
   }
 }
 
 /**
- * 非流式响应处理
+ * GLM 非流式 OpenAI 响应处理
  */
-async function handleNonStreamingResponse(req, res, streamBody, { requestId, model, toolCallingEnabled, requestStart }) {
+async function handleGLMNonStreamingOpenAI(res, streamBody, { requestId, model, toolCallingEnabled, requestStart, clientGone }) {
   let fullContent = '';
   let fullThinking = '';
   let usage = 0;
-  let inThinkingPhase = false;
 
   for await (const event of parseGLMStream(streamBody)) {
-    if (req.clientGone) break;
+    if (clientGone) break;
 
     switch (event.type) {
       case 'content':
         fullContent += event.content;
-        inThinkingPhase = false;
         break;
       case 'thinking':
-        if (!inThinkingPhase) break;
         fullThinking += event.content;
-        break;
-      case 'tool_calls':
-        fullContent += JSON.stringify(event.toolCalls);
         break;
       case 'usage':
         if (typeof event.usage === 'number') usage = event.usage;
         break;
+      case 'tool_calls':
+        fullContent += JSON.stringify(event.toolCalls);
+        break;
       case 'error':
         throw new Error(event.message);
-      case 'done':
-        break;
     }
   }
 
-  // 解析工具调用
   const mergeThinking = process.env.MERGE_THINKING === 'true';
-  const parsedToolCalls = toolCallingEnabled ? parseToolCallsFromText(fullContent) : null;
-  const message = parsedToolCalls?.toolCalls?.length
-    ? {
-        role: 'assistant',
-        content: parsedToolCalls.content || null,
-        tool_calls: parsedToolCalls.toolCalls,
-      }
-    : {
-        role: 'assistant',
-        content: mergeThinking && fullThinking
-          ? `<think>\n${fullThinking}\n</think>\n${fullContent}`
-          : fullContent,
-        ...(fullThinking ? { reasoning_content: fullThinking } : {}),
-      };
-
-  const response = {
+  const response = buildOpenAIResponseFromContent({
     id: requestId,
-    object: 'chat.completion',
-    created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{
-      index: 0,
-      message,
-      finish_reason: parsedToolCalls?.toolCalls?.length ? 'tool_calls' : 'stop',
-    }],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: usage || Math.round((fullContent.length + fullThinking.length) / 4),
-      total_tokens: usage || Math.round((fullContent.length + fullThinking.length) / 4),
-    },
-  };
+    fullContent,
+    fullThinking,
+    toolCallingEnabled,
+    usage: usage || Math.round((fullContent.length + fullThinking.length) / 4),
+    mergeThinking,
+  });
 
   res.json(response);
 }
+
+// ============================================================
+// Claude 格式处理器 (POST /v1/messages)
+// ============================================================
 
 /**
  * POST /v1/messages (Claude 格式)
@@ -373,112 +261,137 @@ async function handleNonStreamingResponse(req, res, streamBody, { requestId, mod
 export async function handleGLMClaude(req, res, tokenManager) {
   try {
     const claudeReq = req.body;
+    const model = claudeReq.model;
+    const stream = claudeReq.stream ?? true;
 
     // 1. 转换请求格式
     const openaiReq = convertClaudeRequest(claudeReq);
+    const tools = normalizeTools(openaiReq.tools);
+    const toolCallingEnabled = tools.length > 0;
 
     // 2. 构建 GLM 消息
-    const glmMessages = convertMessages(openaiReq.messages);
-    const modelConfig = resolveModel(claudeReq.model);
+    const glmMessages = convertMessages(openaiReq.messages, tools);
+    const modelConfig = resolveModel(model);
+    const requestId = generateMessageId();
 
     // 3. 调用 GLM API
     const streamBody = await glmChatCompletion(glmMessages, {
       assistantId: modelConfig.assistantId,
       plusModel: modelConfig.plusModel,
       searchEnabled: modelConfig.search,
+      chatMode: modelConfig.chatMode || '',
       conversationId: '',
       tokenManager,
     });
 
     // 4. 根据类型处理响应
-    if (claudeReq.stream) {
-      // 流式响应
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      });
-
-      // 转换 GLM 流为 Claude 格式
-      try {
-        let fullContent = '';
-        const requestId = `msg_${Date.now().toString(36)}`;
-
-        for await (const event of parseGLMStream(streamBody)) {
-          if (res.writableEnded) break;
-
-          switch (event.type) {
-            case 'content':
-              fullContent += event.content;
-              writeClaudeSSE(res, {
-                type: 'content_block_delta',
-                index: 0,
-                delta: { type: 'text_delta', text: event.content },
-              });
-              break;
-            case 'done':
-              writeClaudeSSE(res, {
-                type: 'message_delta',
-                delta: { stop_reason: 'end_turn' },
-                usage: { output_tokens: Math.round(fullContent.length / 4) },
-              });
-              writeClaudeSSE(res, { type: 'message_stop' });
-              break;
-            case 'error':
-              writeClaudeSSE(res, {
-                type: 'error',
-                error: { type: 'api_error', message: event.message },
-              });
-              break;
-          }
-        }
-        res.end();
-      } catch (streamErr) {
-        console.error('[GLM Claude] Stream error:', streamErr.message);
-        if (!res.writableEnded) {
-          writeClaudeSSE(res, {
-            type: 'error',
-            error: { type: 'api_error', message: streamErr.message },
-          });
-          res.end();
-        }
-      }
+    if (stream) {
+      await handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled });
     } else {
-      // 非流式响应
-      let fullContent = '';
-
-      for await (const event of parseGLMStream(streamBody)) {
-        if (event.type === 'content') {
-          fullContent += event.content;
-        } else if (event.type === 'error') {
-          throw new Error(event.message);
-        }
-      }
-
-      const claudeResp = {
-        id: `msg_${Date.now().toString(36)}`,
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'text', text: fullContent }],
-        model: claudeReq.model,
-        stop_reason: 'end_turn',
-        stop_sequence: null,
-        usage: {
-          input_tokens: 0,
-          output_tokens: Math.round(fullContent.length / 4),
-        },
-      };
-
-      res.json(claudeResp);
+      await handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled });
     }
 
   } catch (err) {
     console.error('[GLM Claude] Error:', err.message);
     if (!res.headersSent) {
-      res.status(500).json({
-        type: 'error',
-        error: { type: 'api_error', message: err.message },
-      });
+      sendClaudeError(res, 500, err.message, 'api_error');
     }
   }
+}
+
+/**
+ * GLM 流式 Claude 响应处理
+ * 统一使用缓冲 + 结束时解析模式（支持工具调用）
+ */
+async function handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled }) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  // message_start
+  writeClaudeMessageStart(res, requestId, model);
+
+  // content_block_start (text block)
+  writeClaudeTextBlockStart(res, 0);
+
+  let contentBuffer = '';
+
+  for await (const event of parseGLMStream(streamBody)) {
+    if (res.writableEnded) break;
+
+    switch (event.type) {
+      case 'content': {
+        contentBuffer += event.content;
+        if (event.content) {
+          writeClaudeTextDelta(res, 0, event.content);
+          flushSSE(res);
+        }
+        break;
+      }
+      case 'thinking':
+        // Claude 格式无独立 thinking 字段，静默合并
+        break;
+      case 'error':
+        writeClaudeContentBlockStop(res, 0);
+        writeClaudeMessageDelta(res, 'end_turn', 0);
+        writeClaudeMessageStop(res);
+        res.end();
+        return;
+    }
+  }
+
+  // content_block_stop (text)
+  writeClaudeContentBlockStop(res, 0);
+
+  // 从累积内容中解析工具调用（如果有）
+  const parsedToolCalls = toolCallingEnabled && contentBuffer
+    ? parseToolCallsFromText(contentBuffer)
+    : null;
+
+  if (parsedToolCalls?.toolCalls?.length) {
+    const toolUses = openAIToolCallsToClaude(parsedToolCalls.toolCalls);
+    let blockIndex = 1;
+    for (const toolUse of toolUses) {
+      writeClaudeToolUseBlockStart(res, blockIndex, toolUse.id, toolUse.name);
+      writeClaudeInputJsonDelta(res, blockIndex, JSON.stringify(toolUse.input));
+      writeClaudeContentBlockStop(res, blockIndex);
+      blockIndex++;
+    }
+    writeClaudeMessageDelta(res, 'tool_use', Math.round(contentBuffer.length / 4));
+  } else {
+    writeClaudeMessageDelta(res, 'end_turn', Math.round(contentBuffer.length / 4));
+  }
+
+  writeClaudeMessageStop(res);
+  flushSSE(res);
+
+  if (!res.writableEnded) res.end();
+}
+
+/**
+ * GLM 非流式 Claude 响应处理
+ */
+async function handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled }) {
+  let fullContent = '';
+
+  for await (const event of parseGLMStream(streamBody)) {
+    if (event.type === 'content') {
+      fullContent += event.content;
+    } else if (event.type === 'error') {
+      throw new Error(event.message);
+    }
+  }
+
+  const response = buildClaudeResponseFromContent({
+    id: requestId,
+    model,
+    fullContent,
+    toolCallingEnabled,
+    inputTokens: 0,
+    outputTokens: Math.round(fullContent.length / 4),
+  });
+
+  res.json(response);
 }
