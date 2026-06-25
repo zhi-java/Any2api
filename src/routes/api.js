@@ -15,6 +15,36 @@ import notion from '../channels/notion/index.js';
 
 const router = express.Router();
 
+/**
+ * 强制流式中间件
+ * 本项目所有模型只支持流式响应，拒绝非流式请求。
+ * 无路径匹配，对经过此路由器的所有请求生效，手动按 req.path 分流。
+ */
+router.use((req, res, next) => {
+  const isCompletion = req.originalUrl?.endsWith('/chat/completions');
+  const isMessages = req.originalUrl?.endsWith('/messages');
+  if ((isCompletion || isMessages) && req.body) {
+    if (req.body.stream === false) {
+      return res.status(400).json(isMessages ? {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Non-streaming responses are not supported. Set stream=true or omit stream (defaults to true).'
+        }
+      } : {
+        error: {
+          message: 'Non-streaming responses are not supported. Set stream=true or omit stream (defaults to true).',
+          type: 'invalid_request_error',
+          code: 'stream_required'
+        }
+      });
+    }
+    // 强制启用流式
+    req.body.stream = true;
+  }
+  next();
+});
+
 // ============= OpenAI 格式 - 统一端点（支持所有渠道） =============
 router.post('/chat/completions', async (req, res) => {
   try {
