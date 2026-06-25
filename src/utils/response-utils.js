@@ -641,6 +641,22 @@ export function parseVirtualToolJSON(text) {
       rawToolCalls = [parsed];
     }
 
+    // 兼容 {function:"func_name", args:{...}} 格式（Notion Claude 常用输出格式）
+    if (rawToolCalls === undefined && typeof parsed.function === 'string') {
+      rawToolCalls = [{
+        name: parsed.function,
+        arguments: parsed.args !== undefined ? parsed.args : parsed.arguments,
+      }];
+    }
+
+    // 兼容 {dialog:"text", actions:[{function:"x", args:{...}}]} 格式
+    if (rawToolCalls === undefined && Array.isArray(parsed.actions)) {
+      rawToolCalls = parsed.actions.map(a => ({
+        name: a.function || a.name || a.tool,
+        arguments: a.args || a.arguments || a.parameters || a.params,
+      }));
+    }
+
     const toolCalls = [];
     if (Array.isArray(rawToolCalls)) {
       for (const raw of rawToolCalls) {
@@ -663,7 +679,8 @@ export function parseVirtualToolJSON(text) {
     }
 
     const assistantResponse = parsed.assistant_response
-      ?? parsed.content ?? parsed.response ?? parsed.answer ?? null;
+      ?? parsed.content ?? parsed.response ?? parsed.answer
+      ?? parsed.dialog ?? parsed.text ?? null;
 
     if (toolCalls.length > 0 || typeof assistantResponse === 'string') {
       const mergedContent = [prefixText, assistantResponse]

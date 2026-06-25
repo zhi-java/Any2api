@@ -10,6 +10,14 @@ import deepseek from '../channels/deepseek/index.js';
 
 const router = express.Router();
 
+// ============= 强制流式（旧版 API） =============
+router.use((req, res, next) => {
+  if (req.originalUrl?.endsWith('/chat/completion') && req.body) {
+    req.body.stream = true;
+  }
+  next();
+});
+
 // ============= DeepSeek 原生格式（旧版 API） =============
 router.post('/chat/completion', deepseek.handleNative);
 
