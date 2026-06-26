@@ -10,7 +10,18 @@ import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
 import { recordTTFB, recordTokenSpeed } from '../../middleware/metrics.js';
 import { getConversationId, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
 import { convertClaudeRequest, convertOpenAIResponse, streamOpenAIToClaude, writeClaudeSSE } from '../../adapters/claude.js';
-import { parseToolCallsFromText } from '../../utils/response-utils.js';
+import {
+  buildToolInstructions as buildSharedToolInstructions,
+  buildToolRetryPrompt,
+  createJsonContentExtractor,
+  detectFailedToolParse,
+  extractAssistantResponse,
+  looksLikeMalformedToolOutput,
+  normalizeTools as normalizeSharedTools,
+  parseToolCallsFromText,
+  sanitizePathMentions,
+  validateToolCallsPipeline,
+} from '../../utils/response-utils.js';
 import { mapModel, DEEPSEEK_MODEL_MAP } from './models.js';
 
 // Flush SSE data immediately - prevents buffering in Node.js, nginx, and Cloudflare
@@ -42,47 +53,153 @@ async function extractImages(messages, token) {
 
 function textFromContent(content) {
   if (content == null) return '';
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return sanitizePathMentions(content);
   if (Array.isArray(content)) {
     return content.map(part => {
-      if (part.type === 'text') return part.text || '';
+      if (part.type === 'text') return sanitizePathMentions(part.text || '');
       if (part.type === 'image_url') return '[Image]';
-      return JSON.stringify(part);
+      return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
   }
-  return JSON.stringify(content);
+  return sanitizePathMentions(JSON.stringify(content));
+}
+
+const MAX_TOOL_RESULT_BYTES = parseInt(process.env.MAX_TOOL_RESULT_BYTES || String(200 * 1024), 10);
+const TOOL_RESULT_COMPACT_TARGET_BYTES = Math.max(4096, MAX_TOOL_RESULT_BYTES - 8192);
+
+function byteLength(value) {
+  return Buffer.byteLength(String(value || ''), 'utf8');
+}
+
+function truncateUtf8(value, maxBytes) {
+  const text = String(value || '');
+  if (byteLength(text) <= maxBytes) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (byteLength(text.slice(0, mid)) <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  return text.slice(0, low);
+}
+
+function tryParseToolJson(text) {
+  if (typeof text !== 'string') return text;
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+function tableNameOf(table) {
+  if (!table || typeof table !== 'object') return null;
+  return table.name || table.table_name || table.tableName || table.TABLE_NAME || table.table || table.id || null;
+}
+
+function tableColumnsOf(table) {
+  if (!table || typeof table !== 'object') return [];
+  const columns = table.columns || table.fields || table.cols || table.column_list || table.children || [];
+  if (!Array.isArray(columns)) return [];
+  return columns.map(col => {
+    if (!col || typeof col !== 'object') return { name: String(col) };
+    return {
+      name: col.name || col.column_name || col.columnName || col.FIELD || col.id || null,
+      type: col.type || col.data_type || col.dataType || col.COLUMN_TYPE || null,
+      nullable: col.nullable ?? col.is_nullable ?? undefined,
+      primary_key: col.primary_key ?? col.primaryKey ?? col.pk ?? undefined,
+    };
+  }).filter(col => col.name || col.type);
+}
+
+function collectTableArrays(value, out = [], seen = new Set(), depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return out;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const named = value.filter(item => tableNameOf(item));
+    if (named.length >= Math.max(1, Math.ceil(value.length * 0.5))) out.push(named);
+    for (const item of value) collectTableArrays(item, out, seen, depth + 1);
+    return out;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (Array.isArray(child) && /tables?|relations?|entities?/i.test(key)) {
+      const named = child.filter(item => tableNameOf(item));
+      if (named.length) out.push(named);
+    }
+    collectTableArrays(child, out, seen, depth + 1);
+  }
+  return out;
+}
+
+function compactSchemaToolResult(parsed, toolName, originalBytes) {
+  const tableArrays = collectTableArrays(parsed);
+  if (!tableArrays.length) return null;
+
+  const tables = tableArrays.sort((a, b) => b.length - a.length)[0];
+  const compact = {
+    _compressed_tool_result: true,
+    tool: toolName,
+    reason: `Tool result compressed because original size ${originalBytes} bytes exceeds ${MAX_TOOL_RESULT_BYTES} bytes.`,
+    table_count: tables.length,
+    table_names: tables.map(tableNameOf).filter(Boolean),
+    tables: tables.map(table => {
+      const columns = tableColumnsOf(table);
+      return {
+        name: tableNameOf(table),
+        column_count: columns.length,
+        columns: columns.slice(0, 30),
+      };
+    }),
+  };
+
+  let text = JSON.stringify(compact);
+  if (byteLength(text) <= TOOL_RESULT_COMPACT_TARGET_BYTES) return text;
+
+  // Very large schemas: preserve exact count and table names, drop column details first.
+  const noColumns = {
+    ...compact,
+    tables: tables.map(table => ({ name: tableNameOf(table), column_count: tableColumnsOf(table).length })),
+  };
+  text = JSON.stringify(noColumns);
+  if (byteLength(text) <= TOOL_RESULT_COMPACT_TARGET_BYTES) return text;
+
+  // Extremely many tables: preserve exact count and a bounded sample.
+  const sampled = {
+    _compressed_tool_result: true,
+    tool: toolName,
+    reason: `Tool result compressed because original size ${originalBytes} bytes exceeds ${MAX_TOOL_RESULT_BYTES} bytes.`,
+    table_count: tables.length,
+    table_names_sample: tables.map(tableNameOf).filter(Boolean).slice(0, 1000),
+    note: 'Table count is exact; table_names_sample is truncated to fit the DeepSeek Web input limit.',
+  };
+  return truncateUtf8(JSON.stringify(sampled), TOOL_RESULT_COMPACT_TARGET_BYTES);
+}
+
+function compressToolResultContent(content, toolName = 'tool') {
+  const text = textFromContent(content);
+  const originalBytes = byteLength(text);
+  if (originalBytes <= MAX_TOOL_RESULT_BYTES) return text;
+
+  const parsed = tryParseToolJson(text);
+  const compactSchema = compactSchemaToolResult(parsed, toolName, originalBytes);
+  if (compactSchema) return compactSchema;
+
+  const prefixBudget = Math.max(1024, TOOL_RESULT_COMPACT_TARGET_BYTES - 512);
+  return JSON.stringify({
+    _compressed_tool_result: true,
+    tool: toolName,
+    reason: `Tool result truncated because original size ${originalBytes} bytes exceeds ${MAX_TOOL_RESULT_BYTES} bytes.`,
+    original_bytes: originalBytes,
+    returned_prefix_bytes: prefixBudget,
+    content_prefix: truncateUtf8(text, prefixBudget),
+  });
 }
 
 function normalizeTools(tools) {
-  if (!Array.isArray(tools)) return [];
-  return tools
-    .filter(tool => tool?.type === 'function' && tool.function?.name)
-    .map(tool => ({
-      type: 'function',
-      function: {
-        name: tool.function.name,
-        description: tool.function.description || '',
-        parameters: tool.function.parameters || { type: 'object', properties: {} },
-      },
-    }));
-}
-
-function toolChoiceInstruction(toolChoice, tools) {
-  if (!toolChoice || toolChoice === 'auto') return 'Use a tool only when it is helpful or required to answer correctly.';
-  if (toolChoice === 'required') return 'You must call at least one tool.';
-  if (toolChoice === 'none') return 'Do not call tools.';
-  const forcedName = toolChoice?.function?.name;
-  if (forcedName && tools.some(t => t.function.name === forcedName)) {
-    return `You must call the function named ${forcedName}.`;
-  }
-  return 'Use a tool only when it is helpful or required to answer correctly.';
+  return normalizeSharedTools(tools);
 }
 
 function buildToolInstructions(tools, toolChoice) {
-  const normalized = normalizeTools(tools);
-  if (!normalized.length || toolChoice === 'none') return '';
-
-  return `\n\n[Tool calling instructions]\nYou have access to these tools:\n${JSON.stringify(normalized, null, 2)}\n\n${toolChoiceInstruction(toolChoice, normalized)}\n\nIf you decide to call tools, do not answer normally. Output exactly one XML block and nothing else:\n<tool_calls>[{"name":"tool_name","arguments":{"arg":"value"}}]</tool_calls>\n\nRules:\n- The content inside <tool_calls> must be valid JSON.\n- "arguments" must be a JSON object matching the tool schema.\n- For a single tool call, still use a JSON array with one item.\n- If no tool is needed, answer normally without the <tool_calls> block.`;
+  return buildSharedToolInstructions(tools, toolChoice);
 }
 
 function buildPrompt(messages, tools = [], toolChoice = 'auto') {
@@ -100,9 +217,10 @@ function buildPrompt(messages, tools = [], toolChoice = 'auto') {
       }
     } else if (msg.role === 'tool') {
       const name = msg.name || msg.tool_call_id || 'tool';
-      prompt += `[Tool result ${name}]: ${textFromContent(msg.content)}\n\n`;
+      prompt += `[Tool result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
     } else if (msg.role === 'function') {
-      prompt += `[Function result ${msg.name || 'function'}]: ${textFromContent(msg.content)}\n\n`;
+      const name = msg.name || 'function';
+      prompt += `[Function result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
     }
   }
   return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
@@ -135,9 +253,10 @@ function buildLatestPrompt(messages, tools = [], toolChoice = 'auto') {
       }
     } else if (msg.role === 'tool') {
       const name = msg.name || msg.tool_call_id || 'tool';
-      prompt += `[Tool result ${name}]: ${textFromContent(msg.content)}\n\n`;
+      prompt += `[Tool result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
     } else if (msg.role === 'function') {
-      prompt += `[Function result ${msg.name || 'function'}]: ${textFromContent(msg.content)}\n\n`;
+      const name = msg.name || 'function';
+      prompt += `[Function result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
     }
   }
 
@@ -206,7 +325,38 @@ function stripToolBlocks(text) {
   return text
     .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls>/gi, '')
     .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi, '')
+    .replace(/<_calls\b[^>]*>[\s\S]*?<\/_calls>/gi, '')
+    .replace(/<_calls\b[^>]*>\s*\[/gi, '')
     .trim();
+}
+
+function hasToolCallMarkup(text) {
+  return /<\/?(?:tool_calls|tool_call|_calls)\b/i.test(String(text || ''));
+}
+
+function parseValidatedToolCalls({ contentBuffer = '', toolParseBuffer = '', toolCallingEnabled = false, toolChoice = 'auto', tools = [], logPrefix = 'DeepSeek tools' }) {
+  if (!toolCallingEnabled) return { toolCalls: null, content: null, toolCallsFromThinking: false };
+
+  const parsedFromContent = parseToolCallsFromText(contentBuffer);
+  const shouldParseCombined = !parsedFromContent?.toolCalls?.length && toolParseBuffer && toolParseBuffer !== contentBuffer;
+  const parsedFromAny = shouldParseCombined ? parseToolCallsFromText(toolParseBuffer) : null;
+  const parsed = parsedFromContent?.toolCalls?.length
+    ? parsedFromContent
+    : (parsedFromAny?.toolCalls?.length ? parsedFromAny : (parsedFromContent || parsedFromAny));
+  const toolCallsFromThinking = parsed === parsedFromAny;
+  const rawToolCalls = parsed?.toolCalls?.length ? parsed.toolCalls : null;
+
+  const { toolCalls, warning } = validateToolCallsPipeline(rawToolCalls, toolChoice, tools);
+  if (warning) console.warn(`[${logPrefix}] ${warning}`);
+
+  const parseWarning = detectFailedToolParse(contentBuffer || toolParseBuffer, toolCallingEnabled);
+  if (parseWarning && !toolCalls?.length) console.warn(`[${logPrefix}] ${parseWarning}`);
+
+  return {
+    toolCalls,
+    content: parsed?.content || null,
+    toolCallsFromThinking,
+  };
 }
 
 // Stream parsed tool_calls incrementally per the OpenAI streaming protocol:
@@ -253,8 +403,8 @@ export async function handleOpenAICompletion(req, res) {
   // upstream gets just the new user message (DeepSeek keeps the rest server-side
   // via parent_message_id). Falls back to fullPrompt when affinity is off.
   const latestPrompt = buildLatestPrompt(messages, tools, toolChoice);
-  const thinkingEnabled = req.body.thinking_enabled ?? !toolCallingEnabled;
-  const searchEnabled = req.body.search_enabled ?? (modelType !== 'vision');
+  const thinkingEnabled = true;
+  const searchEnabled = req.body.search_enabled ?? true;
   // Default: send thinking as separate reasoning_content field (recognized by Claude Code, OpenAI clients)
   // Set merge_thinking=true or MERGE_THINKING=true to merge into content with <arg_key> tags instead
   const mergeThinking = req.body.merge_thinking ?? (process.env.MERGE_THINKING === 'true');
@@ -267,9 +417,9 @@ export async function handleOpenAICompletion(req, res) {
 
   try {
     let refFileIds = [];
-    let uploadSlot = null;
-    if (modelType === 'vision') {
-      uploadSlot = await enqueueRequest(true);
+    // v4-flash 支持上传图片/PDF；只在消息含图片时获取 upload slot
+    if (model === 'deepseek-v4-flash' && messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'))) {
+      const uploadSlot = await enqueueRequest(true);
       try {
         refFileIds = await extractImages(messages, uploadSlot.token);
       } finally {
@@ -290,7 +440,7 @@ export async function handleOpenAICompletion(req, res) {
       : null;
     const getPrompt = (affinity) => affinity ? latestPrompt : fullPrompt;
 
-    result = await completion({ modelType, prompt: fullPrompt, thinkingEnabled, searchEnabled, refFileIds, preferVision: modelType === 'vision', resolveSession, getPrompt });
+    result = await completion({ modelType, prompt: fullPrompt, thinkingEnabled, searchEnabled, refFileIds, preferVision: model === 'deepseek-v4-flash', resolveSession, getPrompt });
   } catch (err) {
     console.error('Completion error:', err.message);
     return res.status(500).json({ error: { message: err.message } });
@@ -331,10 +481,21 @@ export async function handleOpenAICompletion(req, res) {
       let thinkingTagOpened = false;
       let firstChunkTime = null;
       let streamUsage = 0;
-      // When tool-calling, content (model output) is buffered until the stream
-      // ends so we can parse <tool_calls> blocks. Thinking stays separate and is
-      // streamed live (see below) so reasoning never leaks into `content`.
-      let contentBuffer = '';
+      // 使用增量 JSON 提取器，实时提取 assistant_response 文本流式输出
+      const jsonExtractor = createJsonContentExtractor();
+      let rawContentBuffer = '';
+      // 缓冲增量提取的文本，累积到一定量再输出，避免逐字符 SSE 事件
+      let contentFlushBuffer = '';
+      const CONTENT_FLUSH_THRESHOLD = 20;
+      // 部分 DeepSeek 变体可能在 THINK 片段中输出工具标签
+      let toolParseBuffer = '';
+      let streamDoneReceived = false;
+      const writeOpts = {
+        id: requestId,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model,
+      };
 
       for await (const event of parseSSEStream(streamBody)) {
         if (clientGone) break;
@@ -348,39 +509,39 @@ export async function handleOpenAICompletion(req, res) {
           recordResponseMessageId(conversationId, event.messageIds.responseMessageId);
         }
         if (event.type === 'content') {
-          if (toolCallingEnabled) {
-            // Buffer model output; do NOT touch inThinkingPhase here so that
-            // any interleaved thinking events keep streaming as reasoning_content.
-            contentBuffer += event.content;
-            continue;
+          // 增量提取 assistant_response 文本，实时流式输出
+          // 模型输出格式：{"assistant_response": "...", "tool_calls": [...]}
+          const delta = jsonExtractor.process(event.content);
+          rawContentBuffer += event.content;
+          if (delta) {
+            contentFlushBuffer += delta;
+            // 累积到阈值或值结束时批量输出，避免逐字符 SSE 事件
+            if (contentFlushBuffer.length >= CONTENT_FLUSH_THRESHOLD || jsonExtractor.isDone()) {
+              if (mergeThinking && thinkingTagOpened) {
+                thinkingTagOpened = false;
+                writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: '\n response\n' }, finish_reason: null }] });
+              }
+              writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: contentFlushBuffer }, finish_reason: null }] });
+              contentFlushBuffer = '';
+            }
           }
-          if (mergeThinking && thinkingTagOpened) {
-            thinkingTagOpened = false;
-            writeSSE(res, {
-              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
-              choices: [{ index: 0, delta: { content: '\n</think>\n' }, finish_reason: null }],
-            });
-          }
-          inThinkingPhase = false;
-          writeSSE(res, {
-            id: requestId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model,
-            choices: [{ index: 0, delta: { content: event.content }, finish_reason: null }],
-          });
+          continue;
         } else if (event.type === 'thinking') {
           if (toolCallingEnabled) {
-            // Stream reasoning live as reasoning_content; never mix it into
-            // contentBuffer (which is the tool-call source) so thinking cannot
-            // leak into the returned `content` or corrupt tool-call parsing.
-            writeSSE(res, {
-              id: requestId,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model,
-              choices: [{ index: 0, delta: { reasoning_content: event.content }, finish_reason: null }],
-            });
+            // Keep a parse-only copy so tool tags emitted in THINK fragments can
+            // still become protocol-level tool_calls. Do not stream those tag
+            // fragments live: weak models can loop on bare <tool_calls> tokens and
+            // otherwise flood web clients before final parsing can clean them.
+            toolParseBuffer += event.content;
+            if (!hasToolCallMarkup(event.content)) {
+              writeSSE(res, {
+                id: requestId,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model,
+                choices: [{ index: 0, delta: { reasoning_content: event.content }, finish_reason: null }],
+              });
+            }
             continue;
           }
           if (!inThinkingPhase) continue;
@@ -419,53 +580,76 @@ export async function handleOpenAICompletion(req, res) {
             });
           }
 
-          const writeOpts = {
-            id: requestId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model,
-          };
+          streamDoneReceived = true;
 
-          const parsedToolCalls = toolCallingEnabled ? parseToolCallsFromText(contentBuffer) : null;
-          if (parsedToolCalls?.toolCalls?.length) {
-            // Send any text content appearing before <tool_calls> so the client
-            // sees the model's intermediate reasoning (e.g. "Let me check...").
-            if (parsedToolCalls.content) {
-              writeSSE(res, {
-                ...writeOpts,
-                choices: [{ index: 0, delta: { content: parsedToolCalls.content }, finish_reason: null }],
-              });
+          // 刷新剩余的内容缓冲
+          if (contentFlushBuffer) {
+            writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: contentFlushBuffer }, finish_reason: null }] });
+            contentFlushBuffer = '';
+          }
+
+          const extracted = extractAssistantResponse(rawContentBuffer);
+          let hasToolCalls = extracted.toolCalls?.length;
+
+          // 容错：extractAssistantResponse 未解析出工具但内容看起来像畸形工具输出时，
+          // 尝试使用 parseToolCallsFromText 兜底（处理 [Assistant tool calls]: 等复读格式）
+          if (!hasToolCalls && looksLikeMalformedToolOutput(rawContentBuffer) && toolCallingEnabled) {
+            console.warn(`[DeepSeek OpenAI stream] Malformed tool output detected, falling back to parseToolCallsFromText`);
+            const fallbackParsed = parseToolCallsFromText(rawContentBuffer);
+            if (fallbackParsed?.toolCalls?.length) {
+              const validated = validateToolCallsPipeline(fallbackParsed.toolCalls, toolChoice, tools);
+              if (validated.toolCalls?.length) {
+                hasToolCalls = true;
+                extracted.toolCalls = validated.toolCalls;
+              }
             }
-            // Emit tool_calls with incremental arguments chunks, then finish.
-            streamToolCallsIncremental(res, writeOpts, parsedToolCalls.toolCalls);
+          }
+
+          if (hasToolCalls) {
+            streamToolCallsIncremental(res, writeOpts, extracted.toolCalls);
             writeSSE(res, {
               ...writeOpts,
               choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
             });
           } else {
-            // No tool call: fall back to a normal response using buffered output.
-            if (toolCallingEnabled && contentBuffer) {
-              writeSSE(res, {
-                ...writeOpts,
-                choices: [{ index: 0, delta: { content: contentBuffer }, finish_reason: null }],
-              });
-            }
             writeSSE(res, {
               ...writeOpts,
               choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
             });
           }
-          res.write('data: [DONE]\n\n');
-          flushSSE(res);
-          // Record token speed at stream end
-          const streamDuration = Date.now() - requestStart;
-          if (streamUsage > 0 && streamDuration > 0) {
-            recordTokenSpeed(model, streamUsage, streamDuration);
-          }
           break; // Exit SSE loop — done event is the final signal
         }
       }
-      res.end();
+
+      // Drainage: when the upstream stream closes without a proper FINISHED/done
+      // event (e.g. DeepSeek v4-pro 'expert' model, connection timeout, or
+      // unexpected close), flush the contentBuffer so tool calls and partial
+      // responses are not silently lost.
+      if (!streamDoneReceived && rawContentBuffer) {
+        const extracted = extractAssistantResponse(rawContentBuffer);
+        const hasToolCalls = extracted.toolCalls?.length;
+
+        if (hasToolCalls) {
+          if (extracted.content) {
+            writeSSE(res, {
+              ...writeOpts,
+              choices: [{ index: 0, delta: { content: extracted.content }, finish_reason: null }],
+            });
+          }
+          streamToolCallsIncremental(res, writeOpts, extracted.toolCalls);
+          writeSSE(res, {
+            ...writeOpts,
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          });
+        } else {
+          writeSSE(res, {
+            ...writeOpts,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          });
+        }
+        res.write('data: [DONE]\n\n');
+        flushSSE(res);
+      }      res.end();
     } else {
       let fullContent = '';
       let fullThinking = '';
@@ -498,22 +682,37 @@ export async function handleOpenAICompletion(req, res) {
         recordTokenSpeed(model, usage, totalDuration);
       }
 
-      // Parse tool calls only from model output, never from thinking. Thinking
-      // leaking into the parse source caused tool-call misfires and exposed
-      // reasoning in `content`.
-      const parsedToolCalls = toolCallingEnabled ? parseToolCallsFromText(fullContent) : null;
-      const message = parsedToolCalls?.toolCalls?.length
+      // 使用 extractAssistantResponse 解析 JSON 格式输出
+      const extracted = extractAssistantResponse(fullContent);
+      let toolCalls = extracted.toolCalls;
+      let responseContent = extracted.content;
+
+      // 容错：extractAssistantResponse 未解析出工具但内容看起来像畸形工具输出时，
+      // 尝试使用 parseToolCallsFromText 兜底
+      if (!toolCalls?.length && looksLikeMalformedToolOutput(fullContent) && toolCallingEnabled) {
+        console.warn(`[DeepSeek OpenAI response] Malformed tool output detected, falling back to parseToolCallsFromText`);
+        const fallbackParsed = parseToolCallsFromText(fullContent);
+        if (fallbackParsed?.toolCalls?.length) {
+          const validated = validateToolCallsPipeline(fallbackParsed.toolCalls, toolChoice, tools);
+          if (validated.toolCalls?.length) {
+            toolCalls = validated.toolCalls;
+            responseContent = fallbackParsed.content || null;
+          }
+        }
+      }
+
+      const message = toolCalls?.length
         ? {
             role: 'assistant',
-            content: parsedToolCalls.content || null,
-            tool_calls: parsedToolCalls.toolCalls,
+            content: responseContent || null,
+            tool_calls: toolCalls,
             ...((!mergeThinking && fullThinking) ? { reasoning_content: fullThinking } : {}),
           }
         : {
             role: 'assistant',
             content: mergeThinking && fullThinking
-              ? `<think>\n${fullThinking}\n</think>\n${fullContent}`
-              : fullContent,
+              ? `<think>\n${fullThinking}\n</think>\n${responseContent ?? fullContent}`
+              : (responseContent ?? fullContent),
             ...((!mergeThinking && fullThinking) ? { reasoning_content: fullThinking } : {}),
           };
 
@@ -525,7 +724,7 @@ export async function handleOpenAICompletion(req, res) {
         choices: [{
           index: 0,
           message,
-          finish_reason: parsedToolCalls?.toolCalls?.length ? 'tool_calls' : 'stop',
+          finish_reason: toolCalls?.length ? 'tool_calls' : 'stop',
         }],
         usage: {
           prompt_tokens: 0,
@@ -590,9 +789,10 @@ export async function handleDeepSeekClaude(req, res) {
     // 3. 构建提示词（使用 OpenAI 处理器中的函数）
     const tools = normalizeTools(openaiReq.tools);
     const toolChoice = openaiReq.tool_choice ?? 'auto';
+    const toolCallingEnabled = tools.length > 0 && toolChoice !== 'none';
     const fullPrompt = buildPrompt(openaiReq.messages, tools, toolChoice);
     const thinkingEnabled = true;
-    const searchEnabled = modelType !== 'vision';
+    const searchEnabled = true;
 
     const requestId = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -603,7 +803,7 @@ export async function handleDeepSeekClaude(req, res) {
       thinkingEnabled,
       searchEnabled,
       refFileIds: [],
-      preferVision: modelType === 'vision',
+      preferVision: model === 'deepseek-v4-flash',
     });
 
     const { body: streamBody, slot } = result;
@@ -618,43 +818,13 @@ export async function handleDeepSeekClaude(req, res) {
 
     try {
       if (stream) {
-        // 流式响应：先缓冲所有内容，结束时解析工具调用再按序输出
-        // 注意：必须先消费完 streamBody 才能 writeHead，避免 headers 已发送却出错
-
-        let contentBuffer = '';
-        let thinkingBuffer = '';
-        let hasStreamError = null;
-
-        for await (const event of parseSSEStream(streamBody)) {
-          if (clientGone) break;
-
-          if (event.type === 'content' && event.content) {
-            contentBuffer += event.content;
-          } else if (event.type === 'thinking' && event.content) {
-            thinkingBuffer += event.content;
-          } else if (event.type === 'done') {
-            break;
-          } else if (event.type === 'error') {
-            hasStreamError = event.message || 'DeepSeek stream error';
-            break;
-          }
-        }
-
-        if (clientGone) return;
-        if (hasStreamError) throw new Error(hasStreamError);
-
-        // 现在才发送 response headers
+        // 立即发送 SSE headers + message_start，实现实时流式输出
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
         });
 
-        // 解析工具调用
-        const parsed = parseToolCallsFromText(contentBuffer);
-        const hasValidToolCalls = parsed?.toolCalls?.length;
-
-        // 发送 message_start
         writeClaudeSSE(res, {
           type: 'message_start',
           message: {
@@ -667,28 +837,102 @@ export async function handleDeepSeekClaude(req, res) {
           },
         });
 
-        if (hasValidToolCalls) {
-          // 有工具调用
+        // 使用增量 JSON 提取器实时流式输出 assistant_response 文本
+        const claudeExtractor = createJsonContentExtractor();
+        let rawContentBuffer = '';
+        let thinkingBlockOpened = false;
+        let textBlockOpened = false;
+        let blockIdx = 0;
+        let hasStreamError = null;
+        let streamFinished = false;
+        // 缓冲提取的文本，达到阈值再写入 text_delta，避免逐字符事件
+        let claudeFlushBuffer = '';
+        const CLAUDE_FLUSH_THRESHOLD = 20;
 
-          // 先输出文本 block（工具调用之前的 assistant 回复）
-          let blockIdx = 0;
-          if (parsed.content) {
-            writeClaudeSSE(res, {
-              type: 'content_block_start',
-              index: 0,
-              content_block: { type: 'text', text: '' },
-            });
-            writeClaudeSSE(res, {
-              type: 'content_block_delta',
-              index: 0,
-              delta: { type: 'text_delta', text: parsed.content },
-            });
-            writeClaudeSSE(res, { type: 'content_block_stop', index: 0 });
-            blockIdx = 1;
+        for await (const event of parseSSEStream(streamBody)) {
+          if (clientGone) return;
+
+          if (event.type === 'thinking' && event.content) {
+            // 关闭已打开的 text block
+            if (textBlockOpened && claudeFlushBuffer) {
+              writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: claudeFlushBuffer } });
+              writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+              textBlockOpened = false;
+              claudeFlushBuffer = '';
+              blockIdx++;
+            }
+            if (!thinkingBlockOpened) {
+              writeClaudeSSE(res, {
+                type: 'content_block_start',
+                index: blockIdx,
+                content_block: { type: 'thinking', thinking: event.content },
+              });
+              thinkingBlockOpened = true;
+            } else {
+              writeClaudeSSE(res, {
+                type: 'content_block_delta',
+                index: blockIdx,
+                delta: { type: 'thinking_delta', thinking: event.content },
+              });
+            }
+          } else if (event.type === 'content' && event.content) {
+            rawContentBuffer += event.content;
+            const delta = claudeExtractor.process(event.content);
+            if (delta) {
+              claudeFlushBuffer += delta;
+              // 关闭 thinking block
+              if (thinkingBlockOpened) {
+                writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+                blockIdx++;
+                thinkingBlockOpened = false;
+              }
+              // 累积到阈值或值结束时批量输出
+              if (claudeFlushBuffer.length >= CLAUDE_FLUSH_THRESHOLD || claudeExtractor.isDone()) {
+                if (!textBlockOpened) {
+                  writeClaudeSSE(res, { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
+                  textBlockOpened = true;
+                }
+                writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: claudeFlushBuffer } });
+                claudeFlushBuffer = '';
+              }
+            }
+          } else if (event.type === 'done') {
+            streamFinished = true;
+            break;
+          } else if (event.type === 'error') {
+            hasStreamError = event.message || 'DeepSeek stream error';
+            break;
           }
+        }
 
+        if (clientGone) return;
+        if (hasStreamError) throw new Error(hasStreamError);
+
+        // 关闭 thinking block（如果仍打开）
+        if (thinkingBlockOpened) {
+          writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+          blockIdx++;
+          thinkingBlockOpened = false;
+        }
+
+        // 刷新并关闭 text block
+        if (textBlockOpened) {
+          if (claudeFlushBuffer) {
+            writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: claudeFlushBuffer } });
+            claudeFlushBuffer = '';
+          }
+          writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+          blockIdx++;
+          textBlockOpened = false;
+        }
+
+        // 解析完整 JSON 获取 tool_calls
+        const extracted = extractAssistantResponse(rawContentBuffer);
+        const hasValidToolCalls = extracted.toolCalls?.length;
+
+        if (hasValidToolCalls) {
           // 输出 tool_use blocks
-          for (const tc of parsed.toolCalls) {
+          for (const tc of extracted.toolCalls) {
             let args = {};
             try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
 
@@ -699,6 +943,7 @@ export async function handleDeepSeekClaude(req, res) {
                 type: 'tool_use',
                 id: tc.id || `toolu_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
                 name: tc.function.name,
+                input: {},
               },
             });
 
@@ -721,36 +966,6 @@ export async function handleDeepSeekClaude(req, res) {
             usage: { output_tokens: 0 },
           });
         } else {
-          // 无工具调用：纯文本
-          let blockIdx = 0;
-
-          if (thinkingBuffer) {
-            writeClaudeSSE(res, {
-              type: 'content_block_start',
-              index: blockIdx,
-              content_block: { type: 'text', text: '' },
-            });
-            writeClaudeSSE(res, {
-              type: 'content_block_delta',
-              index: blockIdx,
-              delta: { type: 'text_delta', text: `[思考过程]\n${thinkingBuffer}\n\n` },
-            });
-            writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
-            blockIdx++;
-          }
-
-          writeClaudeSSE(res, {
-            type: 'content_block_start',
-            index: blockIdx,
-            content_block: { type: 'text', text: '' },
-          });
-          writeClaudeSSE(res, {
-            type: 'content_block_delta',
-            index: blockIdx,
-            delta: { type: 'text_delta', text: contentBuffer },
-          });
-          writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
-
           writeClaudeSSE(res, {
             type: 'message_delta',
             delta: { stop_reason: 'end_turn' },
@@ -774,25 +989,23 @@ export async function handleDeepSeekClaude(req, res) {
           }
         }
 
-        // 解析工具调用
-        const parsed = parseToolCallsFromText(fullText);
-        const hasValidToolCalls = parsed?.toolCalls?.length;
+        // 使用 extractAssistantResponse 解析 JSON 格式输出
+        const extracted = extractAssistantResponse(fullText);
+        const hasValidToolCalls = extracted.toolCalls?.length;
 
         let claudeResp;
         if (hasValidToolCalls) {
-          // 有工具调用 → 构建包含 tool_use 的响应
           const contentBlocks = [];
 
-          // 文本部分（工具调用之前的 assistant 回复）
-          if (parsed.content) {
-            contentBlocks.push({ type: 'text', text: parsed.content });
-          }
           if (fullThinking) {
-            contentBlocks.push({ type: 'text', text: `[思考过程]\n${fullThinking}` });
+            contentBlocks.push({ type: 'thinking', thinking: fullThinking });
           }
 
-          // 工具调用
-          for (const tc of parsed.toolCalls) {
+          if (extracted.content) {
+            contentBlocks.push({ type: 'text', text: extracted.content });
+          }
+
+          for (const tc of extracted.toolCalls) {
             let args = {};
             try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
             contentBlocks.push({
@@ -813,13 +1026,17 @@ export async function handleDeepSeekClaude(req, res) {
             usage: { input_tokens: 0, output_tokens: 0 },
           };
         } else {
-          // 无工具调用 → 纯文本响应
+          const contentBlocks = [];
+          if (fullThinking) {
+            contentBlocks.push({ type: 'thinking', thinking: fullThinking });
+          }
+          contentBlocks.push({ type: 'text', text: extracted.content ?? fullText });
           claudeResp = {
             id: requestId,
             type: 'message',
             role: 'assistant',
             model,
-            content: [{ type: 'text', text: fullText }],
+            content: contentBlocks,
             stop_reason: 'end_turn',
             usage: { input_tokens: 0, output_tokens: 0 },
           };

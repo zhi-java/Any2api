@@ -155,6 +155,18 @@ function convertClaudeTools(claudeTools) {
   }));
 }
 
+function convertClaudeToolChoice(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'required') return toolChoice;
+  if (toolChoice.type === 'auto') return 'auto';
+  if (toolChoice.type === 'any') return 'required';
+  if (toolChoice.type === 'none') return 'none';
+  if (toolChoice.type === 'tool' && toolChoice.name) {
+    return { type: 'function', function: { name: toolChoice.name } };
+  }
+  return undefined;
+}
+
 /**
  * 将完整的 Claude 请求转换为 OpenAI 格式
  */
@@ -167,7 +179,7 @@ export function convertClaudeRequest(claudeReq) {
   }
 
   const {
-    messages, system, max_tokens, temperature, top_p, tools, stream, model,
+    messages, system, max_tokens, temperature, top_p, tools, tool_choice, stream, model,
   } = claudeReq;
 
   const openaiMessages = convertClaudeMessages(messages, system);
@@ -180,6 +192,7 @@ export function convertClaudeRequest(claudeReq) {
     temperature,
     top_p,
     tools: openaiTools.length > 0 ? openaiTools : undefined,
+    tool_choice: convertClaudeToolChoice(tool_choice),
     stream: stream ?? false,
   };
 }
@@ -329,7 +342,7 @@ export async function* streamOpenAIToClaude(openaiStream, model) {
           yield {
             type: 'content_block_start',
             index: currentBlockIndex + tcIndex,
-            content_block: { type: 'tool_use', id: toolId, name: toolName },
+            content_block: { type: 'tool_use', id: toolId, name: toolName, input: {} },
           };
         }
 

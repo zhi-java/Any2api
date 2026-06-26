@@ -5,7 +5,7 @@ import { recordSessionHit } from '../middleware/metrics.js';
 const BASE_URL = 'https://chat.deepseek.com';
 
 // DeepSeek has tightened limits on edit/regenerate per session:
-//   expert (pro): 3 times, flash (default): 6 times, vision: 6 times
+//   expert (pro): 3 times, flash (default): 6 times
 // To avoid hitting these limits, we rotate sessions frequently.
 // SESSION_TTL controls how long a cached session is reused before creating a new one.
 const SESSION_TTL = parseInt(process.env.SESSION_TTL || '1800', 10); // 5 minutes default (was 3 days)
@@ -107,11 +107,10 @@ export function getSessionInfo() {
   return { count: sessionPool.size, ttl: SESSION_TTL, maxRequestsPerSession: parseInt(process.env.MAX_REQUESTS_PER_SESSION || '8', 10), sessions: entries };
 }
 
-export async function prewarmSessions(tokens, modelTypes = ['default', 'expert', 'vision']) {
+export async function prewarmSessions(tokens, modelTypes = ['default', 'expert']) {
   const { getPoolInfo } = await import('./auth.js');
   const poolInfo = getPoolInfo();
   const alivePrefixes = poolInfo.filter(t => !t.dead && t.token !== 'NONE').map(t => t.token.replace('...', ''));
-  const visionPrefixes = poolInfo.filter(t => !t.dead && t.visionCapable === true).map(t => t.token.replace('...', ''));
 
   console.log(`Pre-warming sessions for ${alivePrefixes.length} alive tokens × ${SESSIONS_PER_TOKEN_PER_MODEL} slots × ${modelTypes.length} model types...`);
   const promises = [];
@@ -119,8 +118,6 @@ export async function prewarmSessions(tokens, modelTypes = ['default', 'expert',
     const prefix = token.slice(0, 12);
     if (!alivePrefixes.includes(prefix)) continue;
     for (const modelType of modelTypes) {
-      // Vision model type only for vision-capable tokens
-      if (modelType === 'vision' && !visionPrefixes.includes(prefix)) continue;
       for (let slot = 0; slot < SESSIONS_PER_TOKEN_PER_MODEL; slot++) {
         const cacheKey = `${prefix}:${modelType}:${slot}`;
         if (!sessionPool.has(cacheKey)) {

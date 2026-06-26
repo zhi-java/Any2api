@@ -11,7 +11,6 @@ import express from 'express';
 import { routeModel } from '../utils/model-router.js';
 import deepseek from '../channels/deepseek/index.js';
 import { handleGLMCompletion, handleGLMClaudeMessages, GLM_MODEL_MAP } from '../channels/glm/index.js';
-import notion from '../channels/notion/index.js';
 
 const router = express.Router();
 
@@ -56,8 +55,6 @@ router.post('/chat/completions', async (req, res) => {
       return await deepseek.handleOpenAI(req, res);
     } else if (channel === 'glm') {
       return await handleGLMCompletion(req, res);
-    } else if (channel === 'notion') {
-      return await notion.handleOpenAI(req, res);
     }
 
   } catch (err) {
@@ -84,8 +81,6 @@ router.post('/messages', async (req, res) => {
       return await deepseek.handleClaude(req, res);
     } else if (channel === 'glm') {
       return await handleGLMClaudeMessages(req, res);
-    } else if (channel === 'notion') {
-      return await notion.handleClaude(req, res);
     }
 
   } catch (err) {
@@ -118,18 +113,10 @@ router.get('/models', (req, res) => {
     owned_by: 'zhipu',
   }));
 
-  // Notion 模型
-  const notionModels = notion.models.map(id => ({
-    id,
-    object: 'model',
-    created: 1718000000,
-    owned_by: 'notion',
-  }));
-
   // 合并
   res.json({
     object: 'list',
-    data: [...deepseekModels, ...glmModels, ...notionModels]
+    data: [...deepseekModels, ...glmModels]
   });
 });
 

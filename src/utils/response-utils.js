@@ -110,18 +110,29 @@ export function safeAppendToBuffer(buffer, content) {
 // 文本内容提取
 // ============================================================
 
+const AT_PATH_MENTION_RE = /(^|[\s([{"'“‘<，。：；、])@(?=(?:[A-Za-z]:[\\/]|\/(?:Users|home|Volumes|Applications|tmp|var|private|opt|etc|usr|bin|sbin|lib|System|Library)(?:[\\/]|$)))/g;
+
+/**
+ * 过滤 Claude Code 等客户端注入的 @路径 引用前缀。
+ * 仅移除绝对路径前的 @，避免误伤邮箱、社交账号或普通 @ 文本。
+ */
+export function sanitizePathMentions(text) {
+  if (typeof text !== 'string' || !text.includes('@')) return text || '';
+  return text.replace(AT_PATH_MENTION_RE, '$1');
+}
+
 export function textFromContent(content) {
   if (content == null) return '';
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return sanitizePathMentions(content);
   if (Array.isArray(content)) {
     return content.map(part => {
-      if (part.type === 'text') return part.text || '';
+      if (part.type === 'text') return sanitizePathMentions(part.text || '');
       if (part.type === 'image_url') return '[Image]';
       if (part.type === 'image_source') return '[Image]';
-      return JSON.stringify(part);
+      return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
   }
-  return JSON.stringify(content);
+  return sanitizePathMentions(JSON.stringify(content));
 }
 
 // ============================================================
@@ -163,113 +174,74 @@ export function normalizeTools(tools) {
     }));
 }
 
-/**
- * 从 tools 构建工具调用指令文本（用于后端 text-prompt 模式）
- *
- * ============== 防幻觉 & 防破碎设计 ==============
- * 1. 允许文本先于工具调用输出（thinking 不会丢失）
- * 2. 提供完整的正例（含文本前缀）
- * 3. 提供反面示例（模型常见错误）
- * 4. 明确要求 tool_calls 为数组（空数组 = 无需工具）
- * 5. 禁止空的 <tool_calls> 标签（直接输出文本）
- * =============================================
- */
-export function buildToolInstructions(tools, toolChoice = 'auto') {
+export function buildToolInstructions(tools, toolChoice = 'auto', customPrefix = null) {
   const normalized = normalizeTools(tools);
-  if (!normalized.length || toolChoice === 'none') return '';
 
-  let choiceInstruction = 'Use a tool only when it is helpful or required to answer correctly.';
-  if (toolChoice === 'required') choiceInstruction = 'You must call at least one tool.';
-  if (toolChoice?.function?.name) {
-    const forcedName = toolChoice.function.name;
-    if (normalized.some(t => t.function.name === forcedName)) {
-      choiceInstruction = `You must call the function named ${forcedName}.`;
+  // Build simplified tool list for display (name + description + parameters)
+  const toolList = normalized.map(t => ({
+    name: t.function.name,
+    description: t.function.description || '',
+    parameters: t.function.parameters || { type: 'object', properties: {} },
+  }));
+
+  // Build an example tool-call object using the first tool (if any)
+  let exampleToolCall = '';
+  if (toolList.length > 0) {
+    const firstTool = toolList[0];
+    const firstPropKeys = Object.keys(firstTool.parameters?.properties || {});
+    const exampleArgs = {};
+    for (const key of firstPropKeys) {
+      exampleArgs[key] = 'value';
     }
+    exampleToolCall = `{"assistant_response": null, "tool_calls": [{"name": "${firstTool.name}", "arguments": ${JSON.stringify(exampleArgs)}}]}`;
   }
 
-  const toolFormat = (process.env.TOOL_FORMAT || 'xml').toLowerCase();
+  // Build dynamic tool_choice instruction (appended to rules)
+  const choiceLines = [];
+  // if (toolChoice === 'required') {
+  //   choiceLines.push('你必须调用至少一个工具。');
+  // } else if (toolChoice?.function?.name) {
+  //   const forcedName = toolChoice.function.name;
+  //   if (normalized.some(t => t.function.name === forcedName)) {
+  //     choiceLines.push(`你必须调用工具 \`${forcedName}\`。`);
+  //   }
+  // }
+  const choiceSection = choiceLines.length > 0 ? `\n\n${choiceLines.join('\n')}` : '';
 
-  if (toolFormat === 'json') {
-    return `\n\n[Tool calling instructions]
-Available tools:
-${JSON.stringify(normalized, null, 2)}
+  // Default preamble
+  const preamble = customPrefix || '你是全栈开发与运维专家。编程时重视代码正确性和可读性；办公场景给出自动化方法；运维场景给出安全最佳实践；日常问题经过思考后认真回答（禁止输出知识截止信息）。必须严格遵循后续 JSON 输出规范。';
 
-${choiceInstruction}
+  return `\n\n${preamble}
+优先级链：
+专用工具 > Bash
+Glob/Grep/Read > bash find/grep/cat
+pipeline() > parallel()（默认选 pipeline）
 
-=== IMPORTANT ===
-- When you answer WITHOUT calling tools: output PLAIN TEXT as normal, NO JSON wrapper.
-- When you NEED to call tools: output raw JSON ONLY (no markdown fences).
+写文件规则：
+Read → Edit（部分修改）
+Read → Write（全量替换）
+新文件 → Write（无需 Read）
 
-=== When calling tools (JSON format) ===
-{"assistant_response": "your thinking for the user", "tool_calls": [{"name": "func_name", "arguments": {...}}]}
+路径规范：
+✅ C:\\Users\\Administrator\\IdeaProjects\\Any2api\\src\\file.js
+❌ ./src/file.js  ❌ /c/Users/.../file.js
 
-Example — single tool:
-{"assistant_response": "Let me look that up.", "tool_calls": [{"name": "get_weather", "arguments": {"city": "Beijing"}}]}
+可用工具列表（以 JSON 格式呈现）：
+${toolList.length > 0 ? JSON.stringify(toolList, null, 2) : '（无可用工具）'}
 
-Example — multiple tools:
-{"assistant_response": "Checking multiple sources.", "tool_calls": [{"name": "search", "arguments": {"q": "weather"}}, {"name": "get_time", "arguments": {"tz": "UTC"}}]}
+当可以直接回答用户时，输出以下格式的原始 JSON：
+{"assistant_response": "输出Markdown风格", "tool_calls": []}
 
-=== WRONG patterns (NEVER do these) ===
+当需要调用工具时（工具调用要慎重），必须输出以下格式的原始 JSON（不要包含任何 Markdown 代码块）：
+${exampleToolCall || '{"assistant_response": null, "tool_calls": []}'}
 
-❌ tool_calls as string:
-{"tool_calls": "[{\\"name\\": \\"x\\"}]"}  ← MUST BE JSON array, not string
-
-❌ Markdown fences around JSON:
-\`\`\`json
-{"tool_calls": [...]}
-\`\`\`  ← NO FENCES, output raw JSON directly
-
-❌ Empty/Wrapper JSON when no tool needed:
-{"assistant_response": "ok", "tool_calls": []}  ← WRONG, just answer as PLAIN TEXT
-
-❌ Calling non-existent tools:
-{"tool_calls": [{"name": "fake_func", ...}]}  ← Only use tools from the list above
-
-Rules:
-- Default to PLAIN TEXT. Only use JSON format when calling tools.
-- assistant_response must be a string with your thinking/response.
-- tool_calls must be a JSON array. Never invent tool names.`;
-  }
-
-  // 默认 XML 格式
-  return `\n\n[Tool calling instructions]
-Available tools:
-${JSON.stringify(normalized, null, 2)}
-
-${choiceInstruction}
-
-=== IMPORTANT ===
-- DEFAULT: answer as PLAIN TEXT (just talk to the user normally).
-- ONLY when calling tools: use <tool_calls> XML format at the end of your text.
-
-=== When calling tools (XML format) ===
-Your thinking here... <tool_calls>[{"name":"func_name","arguments":{...}}]</tool_calls>
-
-Examples:
-Let me check the project. <tool_calls>[{"name":"Glob","arguments":{"pattern":"*"}}]</tool_calls>
-First checking then reading. <tool_calls>[{"name":"Glob","arguments":{"pattern":"*.js"}},{"name":"Read","arguments":{"path":"index.js"}}]</tool_calls>
-
-=== WRONG patterns (NEVER do these) ===
-
-❌ Empty/Wrapper XML when no tool needed:
-<tool_calls></tool_calls>  ← If no tool needed, answer as PLAIN TEXT only
-
-❌ Nested or empty tags:
-<tool_calls>
-<tool_calls></tool_calls>  ← WRONG, use text only when no tools
-
-❌ Raw text inside tags:
-<tool_calls>use glob tool</tool_calls>  ← Must be valid JSON array
-
-❌ Calling non-existent tools:
-<tool_calls>[{"name": "fake_func", ...}]</tool_calls>  ← Only use tools from list above
-
-Rules:
-- DEFAULT: answer as plain text, NO XML tags.
-- Only add <tool_calls> when calling tools. Text before it is fine.
-- Content inside <tool_calls> must be valid JSON array.
-- Never invent tool names. Only use tools listed above.`;
+规则：
+- 只输出原始 JSON，不得包含 Markdown 围栏或额外文本。
+- tool_calls 必须是数组（即使为空）。
+- arguments 必须是 JSON 对象。
+- 禁止编造不存在的工具名称。${choiceSection}`;
 }
+
 
 /**
  * 【缺口8修复】构建持久化工具定义
@@ -287,7 +259,19 @@ export function buildPersistentToolDefs(messages, tools, knownToolDefs = []) {
   if (Array.isArray(tools) && tools.length > 0) return '';
   if (!hasToolHistory(messages)) return '';
   if (knownToolDefs.length > 0) {
-    return `\n\n[Persistent tool definitions — these tools are still available if needed]:\n${JSON.stringify(knownToolDefs, null, 2)}\n\nYou may still use these tools by outputting <tool_calls>...</tool_calls> as instructed earlier.`;
+    const toolList = knownToolDefs.map(t => ({
+      name: t.function?.name || t.name,
+      description: t.function?.description || t.description || '',
+      parameters: t.function?.parameters || t.parameters || { type: 'object', properties: {} },
+    }));
+    return `\n\n[持久化工具定义 — 以下工具仍然可用]：
+${JSON.stringify(toolList, null, 2)}
+
+如需调用工具（工具调用要慎重），使用以下 JSON 格式：
+{"assistant_response": null, "tool_calls": [{"name": "${toolList[0].name}", "arguments": {"key": "value"}}]}
+
+当不需要调用工具时：
+{"assistant_response": "输出Markdown风格", "tool_calls": []}`;
   }
   return '';
 }
@@ -344,6 +328,7 @@ export function detectFailedToolParse(content, toolCallingEnabled) {
   if (!content || !toolCallingEnabled) return null;
   const lower = content.toLowerCase();
   if (lower.includes('<tool_calls')) return 'Content has <tool_calls> markup but failed to parse';
+  if (lower.includes('<_calls')) return 'Content has <_calls> markup but failed to parse';
   if (/^\s*\{\s*"[^"]*"\s*:\s*/.test(lower) && /tool_calls/.test(lower)) return 'Content appears to have JSON tool calls but failed to parse';
   if (lower.includes('tool calling instructions') || lower.includes('available tools:')) return 'Content echoes tool-calling prompt instructions';
   return null;
@@ -456,10 +441,53 @@ function normalizeJsonQuotes(value) {
     .replace(/[‘’]/g, "'");
 }
 
+function escapeInvalidJsonBackslashes(value) {
+  if (typeof value !== 'string' || !value.includes('\\')) return value;
+  // DeepSeek sometimes emits Windows paths in JSON strings with single
+  // backslashes, e.g. "C:\Users\...". JSON only allows a small set of escape
+  // sequences, so double any backslash that is not starting a valid JSON escape.
+  return value.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+}
+
 function tryParseJson(value) {
   try { return JSON.parse(value); } catch {
-    try { return JSON.parse(normalizeJsonQuotes(value)); } catch { return null; }
+    const normalized = normalizeJsonQuotes(value);
+    try { return JSON.parse(normalized); } catch {
+      try { return JSON.parse(escapeInvalidJsonBackslashes(normalized)); } catch { return null; }
+    }
   }
+}
+
+function extractXmlAttribute(attrs, name) {
+  if (!attrs || !name) return null;
+  const rx = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]+)"|'([^']+)'|([^\\s>]+))`, 'i');
+  const match = attrs.match(rx);
+  return match ? (match[1] ?? match[2] ?? match[3] ?? null) : null;
+}
+
+function parseToolCallArgumentBody(body) {
+  const trimmed = String(body || '').trim();
+  if (!trimmed) return {};
+  const parsed = tryParseJson(trimmed);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  if (parsed.arguments !== undefined && Object.keys(parsed).length <= 2) return parsed.arguments;
+  return parsed;
+}
+
+function parseXmlAttributeToolCalls(text) {
+  if (!text) return null;
+  const calls = [];
+  const rx = /<tool_call\b([^>]*)>([\s\S]*?)<\/tool_call\s*>/gi;
+  let match;
+  while ((match = rx.exec(text)) !== null) {
+    const name = extractXmlAttribute(match[1], 'name');
+    if (!name) continue;
+    calls.push({ name, arguments: parseToolCallArgumentBody(match[2]) });
+  }
+  const toolCalls = toOpenAIToolCalls(calls);
+  if (!toolCalls.length) return null;
+  const content = stripToolBlocks(text);
+  return { toolCalls, content: content || null };
 }
 
 /**
@@ -540,6 +568,10 @@ export function extractJsonBlock(text, tag) {
  * 从文本中移除工具调用标签
  * 支持不闭合的标签（防模型死循环）
  */
+function stripTrailingCodeLanguageMarker(text) {
+  return (text || '').replace(/(?:^|\n)\s*(?:json|xml)\s*$/i, '').trim();
+}
+
 export function stripToolBlocks(text) {
   let result = text
     .replace(/```(?:json|xml|)\s*[\s\S]*?```/gi, '')
@@ -547,14 +579,22 @@ export function stripToolBlocks(text) {
     .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls\s*>/gi, '')
     .replace(/<tool_call_calls[^>]*>[\s\S]*?<\/tool_call_calls\s*>/gi, '')
     .replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call\s*>/gi, '')
-    // 孤立的 <tool_calls> / <tool_call_calls> / <tool_call> 开头标签
+    // DeepSeek 原生 <_calls> 标签（v4-pro 在续轮中使用）
+    .replace(/<_calls\b[^>]*>[\s\S]*?<\/_calls\s*>/gi, '')
+    // <_calls> 包裹 JSON 数组（无关闭标签时匹配到 ] 数组结束）
+    .replace(/<_calls\b[^>]*>\s*\[[\s\S]*?\]/gi, '')
+    // <_calls> 立即后跟 [（属于标签+数组语法的一部分，但 ] 已被解析消耗）
+    .replace(/<_calls\b[^>]*>\s*\[/gi, '')
+    // 孤立的 <tool_calls> / <tool_call_calls> / <tool_call> / <_calls> 开头标签
     .replace(/<tool_calls\b[^>]*>/gi, '')
     .replace(/<tool_call_calls[^>]*>/gi, '')
     .replace(/<tool_call\b[^>]*>/gi, '')
-    // 孤立的 </tool_calls> / </tool_call_calls> / </tool_call> 结尾标签
+    .replace(/<_calls\b[^>]*>/gi, '')
+    // 孤立的 </tool_calls> / </tool_call_calls> / </tool_call> / </_calls> 结尾标签
     .replace(/<\/tool_calls\s*>/gi, '')
     .replace(/<\/tool_call_calls\s*>/gi, '')
     .replace(/<\/tool_call\s*>/gi, '')
+    .replace(/<\/_calls\s*>/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
@@ -617,7 +657,9 @@ export function parseVirtualToolJSON(text) {
   // 先找出第一个 JSON 对象的位置，提取前缀
   const firstJson = extractFirstJsonObject(stripped);
   const firstJsonIndex = firstJson ? stripped.indexOf(firstJson) : -1;
-  const prefixText = firstJsonIndex > 0 ? stripped.slice(0, firstJsonIndex).trim() : '';
+  const prefixText = firstJsonIndex > 0
+    ? stripTrailingCodeLanguageMarker(stripped.slice(0, firstJsonIndex))
+    : '';
 
   const candidates = [];
 
@@ -638,6 +680,11 @@ export function parseVirtualToolJSON(text) {
     let rawToolCalls = parsed.tool_calls;
     // 兼容 {name, arguments} 直接在外层的情况
     if (rawToolCalls === undefined && parsed.name) {
+      // 如果前缀文本包含 XML 工具调用标签，说明这是旧 XML 格式，
+      // 不应由 JSON 解析器处理，跳过此候选。
+      if (prefixText && /<tool_calls|<tool_call|<_calls/i.test(prefixText)) {
+        continue;
+      }
       rawToolCalls = [parsed];
     }
 
@@ -647,6 +694,12 @@ export function parseVirtualToolJSON(text) {
         name: parsed.function,
         arguments: parsed.args !== undefined ? parsed.args : parsed.arguments,
       }];
+    }
+
+    // 兼容 {function:{name,arguments}} 格式（OpenAI tool_call 格式）
+    // 例如: {"id":"call_xxx","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/tmp\"}"}}
+    if (rawToolCalls === undefined && parsed.function && typeof parsed.function === 'object' && parsed.function.name) {
+      rawToolCalls = [parsed];
     }
 
     // 兼容 {dialog:"text", actions:[{function:"x", args:{...}}]} 格式
@@ -705,21 +758,42 @@ export function parseVirtualToolJSON(text) {
 /**
  * 从模型输出文本中解析工具调用 — 核心鲁棒解析器
  *
- * 解析优先级（按 prompt 格式选择）：
- *   1. <tool_calls> / <tool_call> XML 块（默认 XML prompt 格式）
- *   2. JSON 格式虚拟工具调用（JSON prompt 格式，TOOL_FORMAT=json）
+ * 解析优先级：
+ *   1. JSON 虚拟工具调用格式（默认 JSON prompt 格式）：
+ *      {"assistant_response": "...", "tool_calls": [...]}
+ *   2. <tool_calls> / <tool_call> XML 块（向后兼容）
  *   3. 裸 JSON 兜底
- *
- * 规则：XML 优先于 JSON——因为我们精确控制 prompt 内容，
- * 大多数情况下模型按我们的指令输出 XML。
  */
 export function parseToolCallsFromText(text) {
   if (!text) return null;
 
-  // 策略1: XML 标签格式（默认 prompt 格式，最高优先级）
+  // 策略0: XML 属性格式（向后兼容 DeepSeek 旧输出）。
+  // <tool_call name="Read">{"file_path":"..."}</tool_call>
+  const xmlAttributeResult = parseXmlAttributeToolCalls(text);
+  if (xmlAttributeResult?.toolCalls?.length) return xmlAttributeResult;
+
+  // 策略1: JSON 虚拟工具调用格式（新模板格式，最高优先级）
+  // 格式: {"assistant_response": "...", "tool_calls": [{"name":"...","arguments":{}}]}
+  const jsonResult = parseVirtualToolJSON(text);
+  if (jsonResult) {
+    // 有工具调用 → 返回带工具调用的结果
+    if (jsonResult.toolCalls?.length) {
+      if (jsonResult.content) {
+        jsonResult.content = stripToolBlocks(jsonResult.content);
+      }
+      return jsonResult;
+    }
+    // 无工具调用但含有 assistant_response → 返回纯文本
+    if (jsonResult.content) {
+      return { toolCalls: null, content: jsonResult.content };
+    }
+  }
+
+  // 策略2: XML 标签格式（向后兼容旧 prompt 格式）
   const blocks = [
     extractJsonBlock(text, 'tool_calls'),
     extractJsonBlock(text, 'tool_call'),
+    extractJsonBlock(text, '_calls'),         // DeepSeek v4-pro 原生格式
   ].filter(Boolean);
 
   for (const block of blocks) {
@@ -728,14 +802,9 @@ export function parseToolCallsFromText(text) {
     const calls = Array.isArray(parsed) ? parsed : [parsed];
     const toolCalls = toOpenAIToolCalls(calls);
     if (toolCalls.length) {
-      return { toolCalls, content: stripToolBlocks(text) };
+      const content = stripToolBlocks(text);
+      return { toolCalls, content: content || null };
     }
-  }
-
-  // 策略2: JSON 虚拟工具调用格式（TOOL_FORMAT=json 时使用）
-  const jsonResult = parseVirtualToolJSON(text);
-  if (jsonResult?.toolCalls?.length) {
-    return jsonResult;
   }
 
   // 策略3: 裸 JSON 兜底
@@ -759,7 +828,7 @@ export function parseToolCallsFromText(text) {
 
   // 策略5: 【防死循环】检测到工具调用标签但解析全部失败
   // 不返回 null，而是返回剥离后的纯内容（避免原始标签泄漏到客户端）
-  if (/<tool_calls\b/i.test(text) || /<tool_call_calls/i.test(text)) {
+  if (/<tool_calls\b/i.test(text) || /<tool_call\b/i.test(text) || /<tool_call_calls/i.test(text) || /<_calls\b/i.test(text)) {
     const cleaned = stripToolBlocks(text);
     const sanitized = sanitizeModelOutput(cleaned);
     console.warn(`[Tool abort] Stripped malformed <tool_calls> from output (${text.length - cleaned.length} chars removed). Returning as text.`);
@@ -858,6 +927,13 @@ export function recoverToolCallsFromText(text) {
     // 3. 顶层 name + arguments 作为单工具调用
     if (results.length === 0 && parsed.name && typeof parsed.name === 'string') {
       const call = { name: parsed.name, arguments: parsed.arguments ?? parsed.args ?? {} };
+      const calls = toOpenAIToolCalls([call]);
+      if (calls.length) results.push(...calls);
+    }
+    // 4. OpenAI 格式：{function:{name,arguments}}（无顶层 name）
+    // 例如: {"id":"call_xxx","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/tmp\"}"}}
+    if (results.length === 0 && parsed.function && typeof parsed.function === 'object' && parsed.function.name) {
+      const call = { name: parsed.function.name, arguments: parsed.function.arguments ?? {} };
       const calls = toOpenAIToolCalls([call]);
       if (calls.length) results.push(...calls);
     }
@@ -986,6 +1062,214 @@ export function buildLatestPrompt(messages) {
   }
   if (lastUserIdx === -1) return buildPromptFromMessages(messages);
   return buildPromptInner(messages, lastUserIdx, messages.length);
+}
+
+/**
+ * 从模型输出的 JSON 格式文本中提取 assistant_response 内容
+ *
+ * 模型按照新模板输出格式：
+ *   {"assistant_response": "文本内容", "tool_calls": [...]}
+ *
+ * 此函数解析 JSON，提取 assistant_response 作为对外输出的文本内容，
+ * 同时返回 tool_calls 供工具调用处理。
+ *
+ * 使用 tryParseJson 处理模型常见的 JSON 格式错误（如 Windows 路径单反斜杠）。
+ *
+ * @param {string} text - 模型原始输出文本
+ * @returns {{ content: string|null, toolCalls: Array|null }} 提取结果
+ */
+export function extractAssistantResponse(text) {
+  if (!text) return { content: null, toolCalls: null };
+
+  const trimmed = text.trim();
+  // 使用 tryParseJson 替代 JSON.parse，容错处理 Windows 路径等非法转义
+  const parsed = tryParseJson(trimmed);
+  if (!parsed || typeof parsed !== 'object') {
+    return { content: text, toolCalls: null };
+  }
+
+  const assistantResponse = parsed.assistant_response;
+  const content = (assistantResponse !== null && assistantResponse !== undefined)
+    ? String(assistantResponse)
+    : null;
+
+  let toolCalls = null;
+  if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+    toolCalls = parsed.tool_calls.map((tc, i) => {
+      const name = tc.name;
+      if (!name || typeof name !== 'string') return null;
+      return {
+        id: tc.id || `call_${Date.now().toString(36)}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+        type: 'function',
+        function: {
+          name,
+          arguments: normalizeToolArguments(tc.arguments ?? {}),
+        },
+      };
+    }).filter(Boolean);
+  }
+
+  return { content, toolCalls };
+}
+
+/**
+ * 检测模型输出是否包含「复读 prompt」等畸形工具调用内容
+ *
+ * 当模型输出类似以下格式时表示输出畸形：
+ *   [Assistant tool calls]: [{...}]
+ *   [Tool result ...]: ...
+ *
+ * @param {string} text - 模型原始输出
+ * @returns {boolean} 是否为畸形工具输出
+ */
+export function looksLikeMalformedToolOutput(text) {
+  if (!text) return false;
+  // 模型复读 prompt 格式
+  if (/\[(Assistant tool calls|Tool result|Function result)/i.test(text)) return true;
+  // 有工具调用关键词但非标准 JSON 格式
+  if (/tool_calls|"name"\s*:\s*"/i.test(text)) {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{')) return true;
+    try {
+      JSON.parse(trimmed);
+      return false; // 合法 JSON，非畸形
+    } catch {
+      return true; // JSON 解析失败，视为畸形
+    }
+  }
+  return false;
+}
+
+/**
+ * 构建重试提示词，追加在对话末尾纠正模型输出格式
+ *
+ * @param {string} previousResponse - 模型上一次不合规的输出
+ * @returns {string} 重试指令
+ */
+export function buildToolRetryPrompt(previousResponse) {
+  return `\n\n你上一个输出格式不正确。请重新回答，必须严格按照以下格式输出原始 JSON（不要包含任何 Markdown 围栏）：
+
+当需要调用工具时：
+{"assistant_response": null, "tool_calls": [{"name": "工具名", "arguments": {参数对象}}]}
+
+当可以直接回答时：
+{"assistant_response": "你的回答内容", "tool_calls": []}
+
+规则：
+- 只输出原始 JSON，不得包含额外文本或注释。
+- tool_calls 必须是数组（即使为空）。
+- arguments 必须是 JSON 对象。
+
+你上一个不合规的输出开头是：${String(previousResponse).slice(0, 150)}`;
+}
+
+/**
+ * 创建增量 JSON 内容提取器
+ *
+ * 用于流式场景：逐 chunk 处理模型输出的 JSON 格式文本
+ *   {"assistant_response": "文本内容", "tool_calls": [...]}
+ *
+ * 一旦检测到 assistant_response 值开始，立即提取并返回内容增量，
+ * 实现接近实时的流式输出，无需等待完整 JSON 到达。
+ *
+ * 用法：
+ *   const extractor = createJsonContentExtractor();
+ *   for (const chunk of chunks) {
+ *     const delta = extractor.process(chunk);
+ *     if (delta) stream(delta);
+ *   }
+ */
+export function createJsonContentExtractor() {
+  let phase = 'waiting'; // 'waiting' | 'in_value' | 'value_done'
+  let searchPos = 0;
+  let pendingEscape = false;
+  const MARKER = '"assistant_response": "';
+
+  function decodeEscape(esc, source, index) {
+    switch (esc) {
+      case '"': return { text: '"', index };
+      case '\\': return { text: '\\', index };
+      case '/': return { text: '/', index };
+      case 'b': return { text: '\b', index };
+      case 'f': return { text: '\f', index };
+      case 'n': return { text: '\n', index };
+      case 'r': return { text: '\r', index };
+      case 't': return { text: '\t', index };
+      case 'u': {
+        // \uXXXX — consume up to 4 hex digits
+        const hex = source.slice(index + 1, index + 5);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          return { text: String.fromCharCode(parseInt(hex, 16)), index: index + 4 };
+        }
+        return { text: 'u', index }; // not a valid unicode escape, output literal
+      }
+      default: return { text: esc, index }; // unknown escape, output literal
+    }
+  }
+
+  return {
+    /**
+     * 处理一个内容 chunk，返回应流式输出的内容增量
+     * @param {string} chunk - 模型输出的内容片段
+     * @returns {string} 应流式输出的文本增量
+     */
+    process(chunk) {
+      if (phase === 'value_done' || !chunk) return '';
+
+      let delta = '';
+
+      for (let i = 0; i < chunk.length; i++) {
+        const char = chunk[i];
+
+        if (phase === 'waiting') {
+          if (char === MARKER[searchPos]) {
+            searchPos++;
+            if (searchPos === MARKER.length) {
+              phase = 'in_value';
+            }
+          } else {
+            searchPos = 0;
+          }
+          continue;
+        }
+
+        if (phase === 'in_value') {
+          if (pendingEscape) {
+            pendingEscape = false;
+            const decoded = decodeEscape(char, chunk, i);
+            delta += decoded.text;
+            i = decoded.index;
+            continue;
+          }
+
+          if (char === '\\') {
+            if (i + 1 >= chunk.length) {
+              pendingEscape = true;
+              continue;
+            }
+
+            i++;
+            const decoded = decodeEscape(chunk[i], chunk, i);
+            delta += decoded.text;
+            i = decoded.index;
+          } else if (char === '"') {
+            phase = 'value_done';
+            break;
+          } else {
+            delta += char;
+          }
+        }
+      }
+
+      return delta;
+    },
+
+    /** 是否已检测到 assistant_response 标记 */
+    isFound() { return phase !== 'waiting'; },
+
+    /** assistant_response 值是否已完整提取 */
+    isDone() { return phase === 'value_done'; },
+  };
 }
 
 // ============================================================

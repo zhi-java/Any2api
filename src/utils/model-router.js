@@ -12,7 +12,6 @@
  */
 
 import { normalizeRequestedModelName } from './response-utils.js';
-import { isNotionModel } from '../channels/notion/models.js';
 
 /**
  * 路由模型到正确的渠道
@@ -33,17 +32,12 @@ export function routeModel(modelName) {
   }
 
   // GLM 模型（前缀匹配）
-  if (normalized.startsWith('glm-') || normalized.startsWith('cogview-')) {
+  if (normalized.startsWith('glm-')) {
     return { channel: 'glm', model: normalized };
-  }
-
-  // Notion 模型（精确匹配）
-  if (isNotionModel(normalized)) {
-    return { channel: 'notion', model: normalized };
   }
 
   // 未知模型
   throw new Error(
-    `未知模型: ${normalized}。支持的模型: deepseek-*, glm-*, cogview-*, notion-*`
+    `未知模型: ${normalized}。可用模型: deepseek-v4-flash, deepseek-v4-pro, glm-5.2-flash, glm-5.2-pro`
   );
 }

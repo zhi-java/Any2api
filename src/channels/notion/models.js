@@ -25,29 +25,20 @@
  */
 export const MODEL_MAP = {
   // Anthropic 系列
-  'claude-sonnet-4-6': 'almond-croissant-low',
-  'claude-opus-4-6': 'avocado-froyo-medium',
-  'claude-opus-4-7': 'apricot-sorbet-medium',
-  'claude-opus-4-8': 'apricot-sorbet-medium',
-  'claude-haiku-4-5': 'anthropic-haiku-4-5',
+  'nt/claude-sonnet-4-6': 'almond-croissant-low',
+  'nt/claude-opus-4-6': 'avocado-froyo-medium',
+  'nt/claude-opus-4-7': 'apricot-sorbet-medium',
+  'nt/claude-opus-4-8': 'apricot-sorbet-medium',
+  'nt/claude-haiku-4-5': 'anthropic-haiku-4-5',
 
-  // OpenAI 系列
-  'gpt-5.2': 'oatmeal-cookie',
-  'gpt-5.4': 'oval-kumquat-medium',
-  'gpt-5.5': 'oval-kumquat-medium',
+  'nt/gpt-5.5': 'oval-kumquat-medium',
 
-  // Gemini 系列
-  'gemini-2.5-flash': 'vertex-gemini-2.5-flash',
-  'gemini-3.1-pro': 'galette-medium-thinking',
-  'gemini-3-flash': 'gingerbread',
+  'nt/gemini-3.1-pro': 'galette-medium-thinking',
+  'nt/gemini-3-flash': 'gingerbread',
 
-  // 其他
-  'minimax-m2.5': 'fireworks-minimax-m2.5',
-  'grok-4.3': 'grok-4.3',
-  'grok-build-0.1': 'grok-build-0.1',
-  'kimi-k2.6': 'kimi-k2.6',
-  'deepseek-v4-pro': 'deepseek-v4-pro',
-  'glm-5.2': 'glm-5.2',
+  'nt/kimi-k2.6': 'kimi-k2.6',
+  'nt/deepseek-v4-pro': 'deepseek-v4-pro',
+  'nt/glm-5.2': 'glm-5.2',
 };
 
 /** 客户端可用的模型名列表 */
