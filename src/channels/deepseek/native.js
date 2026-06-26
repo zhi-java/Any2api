@@ -8,6 +8,7 @@ import { completion, parseSSEStream } from '../../utils/sse.js';
 import { pickToken } from '../../services/auth.js';
 import { dispatchQueued } from '../../services/queue.js';
 import { DEEPSEEK_MODEL_MAP } from './models.js';
+import { sanitizePathMentions } from '../../utils/response-utils.js';
 
 // Flush SSE data immediately
 function flushSSE(res) {
@@ -20,7 +21,7 @@ function flushSSE(res) {
 export async function handleDeepSeekCompletion(req, res) {
   const body = req.body;
   const modelType = body.model_type || DEEPSEEK_MODEL_MAP[body.model] || 'default';
-  const prompt = body.prompt || '';
+  const prompt = sanitizePathMentions(body.prompt || '');
   const thinkingEnabled = body.thinking_enabled ?? false;
   const searchEnabled = body.search_enabled ?? false;
   const parentMessageId = body.parent_message_id ?? null;

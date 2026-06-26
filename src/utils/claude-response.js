@@ -262,7 +262,7 @@ export function writeClaudeToolUseBlockStart(res, index, id, name) {
   writeClaudeSSE(res, {
     type: 'content_block_start',
     index,
-    content_block: { type: 'tool_use', id, name },
+    content_block: { type: 'tool_use', id, name, input: {} },
   });
 }
 

@@ -330,6 +330,8 @@ validateToolCallsPipeline() 校验流水线：
 <tool_calls>[{"name":"get_weather","arguments":{"city":"Beijing"}}]</tool_calls>
 ```
 
+DeepSeek 渠道会统一使用共享工具提示词模板，强调：无工具时只输出纯文本；有工具时输出合法 JSON 数组；禁止 Markdown 代码块、空标签、伪造工具名。服务端还会对解析出的工具调用执行 `tool_choice` 约束、工具名白名单过滤和参数 JSON 消毒，降低弱模型或内置提示词漂移导致的不稳定工具调用。
+
 **备选 JSON 格式**（设置 `TOOL_FORMAT=json`）：
 
 ```json
@@ -611,6 +613,10 @@ setupUnhandledRejectionHandler();
 ### 工具调用校验流水线
 
 见 [工具调用](#工具调用tool-calling) 章节，3 层校验确保 API 契约合规。
+
+### 会话失效自愈
+
+DeepSeek Web 端可能返回 `DeepSeek error 0: invalid chat session id`，通常表示缓存的 `chat_session_id` 已被上游判定失效。服务会自动清理对应 Token 的会话缓存与会话亲和绑定，并在同一次请求内重新创建会话重试一次，避免连续复用失效会话导致 `/v1/messages` 或 `/v1/chat/completions` 持续 500。
 
 ---
 

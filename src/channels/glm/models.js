@@ -20,35 +20,29 @@
 const DEFAULT_ASSISTANT_ID = '65940acff94777010aa6b796';
 
 export const GLM_MODEL_MAP = {
-  /** GLM-5 深度研究（默认） */
-  'glm-5': {
-    assistantId: DEFAULT_ASSISTANT_ID,
-    plusModel: true,
-    search: false,
-    chatMode: 'deep_research',
-    type: 'chat',
-    description: 'GLM-5 深度研究模式（默认）',
-  },
-
-  /** GLM-5 普通对话（无深度研究） */
-  'glm-5-chat': {
-    assistantId: DEFAULT_ASSISTANT_ID,
-    plusModel: true,
-    search: false,
-    chatMode: '',
-    type: 'chat',
-    description: 'GLM-5 普通对话模式',
-  },
-
-  /** GLM-5 联网搜索 */
-  'glm-5-search': {
+  /**
+   * GLM-5.2 Flash：标准深度思考 + 联网搜索，支持上传
+   */
+  'glm-5.2-flash': {
     assistantId: DEFAULT_ASSISTANT_ID,
     plusModel: true,
     search: true,
     chatMode: '',
     type: 'chat',
-    description: 'GLM-5 联网搜索',
-  }
+    description: 'GLM-5.2 Flash — 标准深度思考 + 联网搜索',
+  },
+
+  /**
+   * GLM-5.2 Pro：深度思考模式 + 联网搜索，支持上传
+   */
+  'glm-5.2-pro': {
+    assistantId: DEFAULT_ASSISTANT_ID,
+    plusModel: true,
+    search: true,
+    chatMode: 'deep_research',
+    type: 'chat',
+    description: 'GLM-5.2 Pro — 深度思考 + 联网搜索',
+  },
 };
 
 /**
@@ -58,7 +52,7 @@ export const GLM_MODEL_MAP = {
  */
 export function resolveModel(model) {
   if (GLM_MODEL_MAP[model]) return GLM_MODEL_MAP[model];
-  // 回退到 glm-5（深度研究模式）
-  console.warn(`[GLM] Unknown model "${model}", falling back to glm-5 (deep research)`);
-  return GLM_MODEL_MAP['glm-5'];
+  throw new Error(
+    `Unknown model: ${model}. Available: ${Object.keys(GLM_MODEL_MAP).join(', ')}`
+  );
 }
