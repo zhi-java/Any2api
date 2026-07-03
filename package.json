@@ -1,7 +1,7 @@
 {
-  "name": "deepseek-2api",
+  "name": "zhi2api",
   "version": "1.0.0",
-  "description": "DeepSeek Web Chat to API proxy (OpenAI + DeepSeek native format)",
+  "description": "zhi2Api multi-channel web-to-API proxy",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
@@ -13,7 +13,12 @@
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "ssh2": "^1.17.0",
-    "tls-client-node": "^0.2.0",
     "undici": "^6.21.2"
-  }
+  },
+  "displayName": "zhi2Api",
+  "files": [
+    "src",
+    "README.md",
+    ".env.example"
+  ]
 }

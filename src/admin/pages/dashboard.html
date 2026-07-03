@@ -279,7 +279,7 @@
         updateChannelTable(stats);
 
         // 更新系统信息
-        document.getElementById('system-version').textContent = stats.version || '2.0.0';
+        document.getElementById('system-version').textContent = stats.version || '1.0.0';
         document.getElementById('system-uptime').textContent = formatUptime(stats.uptimeSeconds || 0);
         document.getElementById('system-capacity').textContent = stats.totalCapacity || '-';
 

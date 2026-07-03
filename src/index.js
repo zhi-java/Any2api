@@ -19,15 +19,15 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Request logging (writes to /srv/threadripper-backups/newapi/logs/deepseek-2api/)
-app.use(requestLogger('deepseek-2api'));
+// Request logging.
+app.use(requestLogger('zhi2api'));
 
 // ============= 健康检查端点（认证前） =============
 
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    version: '2.0.0',
+    version: '1.0.0',
     pool: getPoolInfo(),
     totalCapacity: getTotalCapacity(),
     queue: getQueueInfo(),
@@ -68,7 +68,7 @@ app.use(routes);
 // ============= 启动服务器 =============
 
 app.listen(PORT, async () => {
-  console.log(`DeepSeek 2API running on http://localhost:${PORT}`);
+  console.log(`zhi2Api running on http://localhost:${PORT}`);
   console.log(`\nAPI Endpoints:`);
   console.log(`  Health:       GET  /`);
   console.log(`  OpenAI:       POST /v1/chat/completions`);
@@ -90,19 +90,4 @@ app.listen(PORT, async () => {
   await prewarmSessions(aliveTokens);
 
   startHealthCheck();
-
-  // ============= Notion 渠道初始化 =============
-
-  const notionProbePath = process.env.NOTION_PROBE_PATH;
-  if (notionProbePath) {
-    try {
-      const { loadSession } = await import('./channels/notion/session.js');
-      const session = loadSession(notionProbePath);
-      console.log(`Notion channel ready: ${session.email} (${session.userName})`);
-    } catch (err) {
-      console.warn(`\n⚠️  Notion channel UNAVAILABLE: ${err.message}\n`);
-    }
-  } else {
-    console.log('Notion channel: disabled (set NOTION_PROBE_PATH to enable)');
-  }
 });

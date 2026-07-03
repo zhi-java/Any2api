@@ -1,5 +1,5 @@
 /**
- * API Client - DeepSeek 2API Admin
+ * API Client - zhi2Api Admin
  *
  * 封装所有 API 调用
  */

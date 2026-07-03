@@ -1,5 +1,5 @@
 /**
- * Chart Configuration - DeepSeek 2API Admin
+ * Chart Configuration - zhi2Api Admin
  *
  * Chart.js 主题配置和工具函数
  */
