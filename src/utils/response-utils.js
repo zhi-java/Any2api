@@ -121,16 +121,46 @@ export function sanitizePathMentions(text) {
   return text.replace(AT_PATH_MENTION_RE, '$1');
 }
 
+export function normalizeJsonEscapedText(value) {
+  if (typeof value !== 'string') return value == null ? '' : String(value);
+
+  let text = value;
+  for (let i = 0; i < 3; i++) {
+    const trimmed = text.trim();
+    let decoded = null;
+
+    if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'string') decoded = parsed;
+      } catch { /* keep original */ }
+    } else if (/\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/.test(text)) {
+      try {
+        const parsed = JSON.parse(`"${text}"`);
+        if (typeof parsed === 'string') decoded = parsed;
+      } catch { /* keep original */ }
+    }
+
+    if (decoded == null || decoded === text) break;
+    text = decoded;
+  }
+
+  return text;
+}
+
 export function textFromContent(content) {
   if (content == null) return '';
-  if (typeof content === 'string') return sanitizePathMentions(content);
+  if (typeof content === 'string') return sanitizePathMentions(normalizeJsonEscapedText(content));
   if (Array.isArray(content)) {
     return content.map(part => {
-      if (part.type === 'text') return sanitizePathMentions(part.text || '');
+      if (part.type === 'text') return sanitizePathMentions(normalizeJsonEscapedText(part.text || ''));
       if (part.type === 'image_url') return '[Image]';
       if (part.type === 'image_source') return '[Image]';
       return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
+  }
+  if (content.type === 'text' && typeof content.text === 'string') {
+    return sanitizePathMentions(normalizeJsonEscapedText(content.text));
   }
   return sanitizePathMentions(JSON.stringify(content));
 }
@@ -174,14 +204,70 @@ export function normalizeTools(tools) {
     }));
 }
 
+const CODING_TOOL_NAMES = new Set([
+  'read', 'edit', 'write', 'multiedit', 'notebookedit',
+  'bash', 'glob', 'grep', 'ls', 'webfetch', 'websearch',
+  'apply_patch', 'applypatch', 'todowrite', 'task',
+]);
+
+function isCodingToolName(name) {
+  return CODING_TOOL_NAMES.has(String(name || '').toLowerCase().replace(/[\s-]/g, ''));
+}
+
+function isCodingToolset(tools) {
+  return tools.some(tool => {
+    const fn = tool.function || {};
+    const props = Object.keys(fn.parameters?.properties || {}).map(k => k.toLowerCase());
+    return isCodingToolName(fn.name)
+      || props.includes('file_path')
+      || props.includes('command')
+      || props.includes('old_string')
+      || props.includes('new_string')
+      || props.includes('pattern');
+  });
+}
+
+function summarizeDescription(description) {
+  const text = String(description || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= 180) return text;
+  return `${text.slice(0, 177)}...`;
+}
+
+function simplifyParameters(parameters, compact = false) {
+  if (!compact || !parameters?.properties) return parameters || { type: 'object', properties: {} };
+  const simplified = {
+    type: parameters.type || 'object',
+    properties: {},
+  };
+  if (Array.isArray(parameters.required) && parameters.required.length) {
+    simplified.required = parameters.required;
+  }
+  for (const [key, value] of Object.entries(parameters.properties || {})) {
+    simplified.properties[key] = {
+      type: value?.type || (value?.enum ? 'string' : 'object'),
+    };
+    if (value?.description) simplified.properties[key].description = summarizeDescription(value.description);
+    if (value?.enum) simplified.properties[key].enum = value.enum;
+    if (value?.items?.type) simplified.properties[key].items = { type: value.items.type };
+  }
+  return simplified;
+}
+
+function forcedToolName(toolChoice) {
+  return toolChoice?.function?.name || toolChoice?.name || undefined;
+}
+
 export function buildToolInstructions(tools, toolChoice = 'auto', customPrefix = null) {
   const normalized = normalizeTools(tools);
+  if (!normalized.length || toolChoice === 'none') return '';
+
+  const codingProfile = isCodingToolset(normalized);
 
   // Build simplified tool list for display (name + description + parameters)
   const toolList = normalized.map(t => ({
     name: t.function.name,
-    description: t.function.description || '',
-    parameters: t.function.parameters || { type: 'object', properties: {} },
+    description: summarizeDescription(t.function.description || ''),
+    parameters: simplifyParameters(t.function.parameters, codingProfile),
   }));
 
   // Build an example tool-call object using the first tool (if any)
@@ -198,39 +284,49 @@ export function buildToolInstructions(tools, toolChoice = 'auto', customPrefix =
 
   // Build dynamic tool_choice instruction (appended to rules)
   const choiceLines = [];
-  // if (toolChoice === 'required') {
-  //   choiceLines.push('你必须调用至少一个工具。');
-  // } else if (toolChoice?.function?.name) {
-  //   const forcedName = toolChoice.function.name;
-  //   if (normalized.some(t => t.function.name === forcedName)) {
-  //     choiceLines.push(`你必须调用工具 \`${forcedName}\`。`);
-  //   }
-  // }
-  const choiceSection = choiceLines.length > 0 ? `\n\n${choiceLines.join('\n')}` : '';
+  const forcedName = forcedToolName(toolChoice);
+  if (toolChoice === 'required') {
+    choiceLines.push('你必须调用至少一个工具。');
+  } else if (forcedName && normalized.some(t => t.function.name === forcedName)) {
+    choiceLines.push(`你必须调用工具 \`${forcedName}\`，不要调用其他工具。`);
+  }
+  const choiceSection = choiceLines.length > 0 ? `\n\n工具选择约束：\n${choiceLines.join('\n')}` : '';
 
   // Default preamble
   const preamble = customPrefix || '你是全栈开发与运维专家。编程时重视代码正确性和可读性；办公场景给出自动化方法；运维场景给出安全最佳实践；日常问题经过思考后认真回答（禁止输出知识截止信息）。必须严格遵循后续 JSON 输出规范。';
 
-  return `\n\n${preamble}
-优先级链：
-专用工具 > Bash
-Glob/Grep/Read > bash find/grep/cat
-pipeline() > parallel()（默认选 pipeline）
+  const codingGuide = codingProfile ? `
 
-写文件规则：
-Read → Edit（部分修改）
-Read → Write（全量替换）
-新文件 → Write（无需 Read）
+Vibe coding 工具使用规则：
+- 你正在为 Claude Code / Codex 这类编程客户端选择内置工具，目标是推进真实软件开发任务。
+- 查看文件优先使用 Read；搜索文件名优先 Glob；搜索内容优先 Grep；不要用 Bash 执行 cat/grep/find 来替代这些专用工具。
+- Read 大文件必须分段读取：优先使用 limit 控制单次读取量，继续阅读时使用 offset 接续；不要一次性读取明显很大的日志、构建产物、锁文件或压缩后的长文件。
+- 只需要定位符号/文本时先用 Grep/Glob 缩小范围，再 Read 相关片段；不要为了找一处代码读取整仓或整份大文件。
+- 修改已有文件前必须先 Read 目标文件；只要目标文件已存在且含有内容，必须使用 Edit/MultiEdit 做精确修改，禁止直接用 Write 覆盖已有内容；只有创建新文件或目标文件确认为空时才使用 Write；Notebook 文件使用 NotebookEdit。
+- Edit/MultiEdit 必须使用从 Read 结果确认过的精确 old_string；不确定上下文时先再次分段 Read，而不是猜测替换内容。
+- Bash 只用于测试、构建、git、包管理、运行脚本或没有专用工具覆盖的命令；长输出命令应优先加过滤、分页或定向检查，避免把大量日志塞回上下文。
+- Windows 路径必须使用完整绝对路径和反斜杠，例如 C:\\Users\\Administrator\\IdeaProjects\\Any2api\\src\\file.js。
+- 工具返回后基于真实返回继续下一步，不要假设尚未读取的文件内容，不要虚构测试结果。
+- 工具调用完成后必须反馈：如果无需继续调用工具，assistant_response 必须说明已完成的操作、关键结果、修改/验证情况或下一步建议，禁止以空内容结束多轮任务。` : '';
 
-路径规范：
-✅ C:\\Users\\Administrator\\IdeaProjects\\Any2api\\src\\file.js
-❌ ./src/file.js  ❌ /c/Users/.../file.js
+  const largeResultGuide = `
+
+大结果工具调用规则：
+- 调用工具前先对比可用工具及其参数，优先选择支持分页、过滤、字段选择、范围限制或按名称/ID 查询的工具；不要优先选择会返回全量数据的工具。
+- 如果参数中存在 limit、offset、page、pageSize、cursor、nextCursor、take、skip、top、count、fields、columns、table、tableName、include、exclude 等字段，必须优先使用它们缩小单次返回范围。
+- 不要一次性请求全量数据库 schema、全量日志、全量文件列表、全量搜索结果或全量业务记录；先获取数量、概要、表名、文件名或第一批结果，再按用户目标继续下一批。
+- 对数据库/schema 类任务，优先先获取表名、数量或概要；只有用户需要具体结构时，再按表名分批查询字段和索引。
+- 对列表/搜索类任务，先请求较小批次，例如 20、50 或 100 条；如果工具结果包含 nextCursor、hasMore、total、page、offset 等分页信息，后续调用必须基于这些信息继续。
+- 每次工具返回后先判断信息是否已经足够回答用户；足够时必须输出 assistant_response 总结结果，禁止为了追求完整性继续拉取无关批次。
+- 如果工具没有分页/过滤参数且预期返回很大，应先选择更窄范围的工具；没有更窄工具时，应请求用户限定范围，而不是盲目拉取全量。`;
+
+  return `\n\n${preamble}${codingGuide}${largeResultGuide}
 
 可用工具列表（以 JSON 格式呈现）：
 ${toolList.length > 0 ? JSON.stringify(toolList, null, 2) : '（无可用工具）'}
 
 当可以直接回答用户时，输出以下格式的原始 JSON：
-{"assistant_response": "输出Markdown风格", "tool_calls": []}
+{"assistant_response": "输出Markdown风格（详细版）", "tool_calls": []}
 
 当需要调用工具时（工具调用要慎重），必须输出以下格式的原始 JSON（不要包含任何 Markdown 代码块）：
 ${exampleToolCall || '{"assistant_response": null, "tool_calls": []}'}
@@ -239,7 +335,9 @@ ${exampleToolCall || '{"assistant_response": null, "tool_calls": []}'}
 - 只输出原始 JSON，不得包含 Markdown 围栏或额外文本。
 - tool_calls 必须是数组（即使为空）。
 - arguments 必须是 JSON 对象。
-- 禁止编造不存在的工具名称。${choiceSection}`;
+- 禁止编造不存在的工具名称。
+- 工具名称必须完全等于可用工具列表中的 name。
+- 当上文已有工具执行结果且不需要继续调用工具时，assistant_response 必须给出面向用户的完成说明/结果总结，tool_calls 必须为空数组；禁止返回空回复或只结束任务。${choiceSection}`;
 }
 
 
@@ -394,12 +492,13 @@ export function sanitizeToolArguments(toolCalls) {
   return toolCalls.map(tc => {
     const fn = tc.function;
     if (!fn) return tc;
-    if (typeof fn.arguments === 'string') {
+    const fnArgs = getObjectField(fn, 'arguments');
+    if (typeof fnArgs === 'string') {
       try {
-        const parsed = JSON.parse(fn.arguments);
+        const parsed = JSON.parse(fnArgs);
         if (parsed !== null && typeof parsed === 'object') return { ...tc, function: { ...fn, arguments: JSON.stringify(parsed) } };
       } catch {
-        console.warn(`[Tool args] Invalid JSON in "${fn.name}": ${fn.arguments.slice(0, 80)}`);
+        console.warn(`[Tool args] Invalid JSON in "${fn.name}": ${fnArgs.slice(0, 80)}`);
         return { ...tc, function: { ...fn, arguments: '{}' } };
       }
     }
@@ -456,6 +555,79 @@ function tryParseJson(value) {
       try { return JSON.parse(escapeInvalidJsonBackslashes(normalized)); } catch { return null; }
     }
   }
+}
+
+function decodeJsonStringEscape(esc, source, index) {
+  switch (esc) {
+    case '"': return { text: '"', index };
+    case '\\': return { text: '\\', index };
+    case '/': return { text: '/', index };
+    case 'b': return { text: '\b', index };
+    case 'f': return { text: '\f', index };
+    case 'n': return { text: '\n', index };
+    case 'r': return { text: '\r', index };
+    case 't': return { text: '\t', index };
+    case 'u': {
+      const hex = source.slice(index + 1, index + 5);
+      if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+        return { text: String.fromCharCode(parseInt(hex, 16)), index: index + 4 };
+      }
+      return { text: 'u', index };
+    }
+    default: return { text: esc, index };
+  }
+}
+
+function extractRelaxedJsonStringField(text, field) {
+  const key = new RegExp(`["“”]${field}["“”]\\s*:\\s*`, 'i');
+  const match = key.exec(text);
+  if (!match) return { found: false, value: null };
+
+  let i = match.index + match[0].length;
+  while (i < text.length && /\s/.test(text[i])) i++;
+
+  if (/^null\b/i.test(text.slice(i))) return { found: true, value: null };
+  if (text[i] !== '"') return { found: false, value: null };
+  i++;
+
+  let value = '';
+  let escape = false;
+  for (; i < text.length; i++) {
+    const char = text[i];
+    if (escape) {
+      escape = false;
+      const decoded = decodeJsonStringEscape(char, text, i);
+      value += decoded.text;
+      i = decoded.index;
+      continue;
+    }
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      const rest = text.slice(i + 1);
+      if (/^\s*(?:,|})/.test(rest)) {
+        return { found: true, value };
+      }
+    }
+    value += char;
+  }
+
+  return { found: false, value: null };
+}
+
+function parseRelaxedEmptyToolWrapper(text) {
+  if (!/["“”]assistant_response["“”]\s*:/i.test(text)) return null;
+  if (!/["“”]tool_calls["“”]\s*:\s*\[\s*\]/i.test(text)) return null;
+
+  const assistantResponse = extractRelaxedJsonStringField(text, 'assistant_response');
+  if (!assistantResponse.found) return null;
+
+  return {
+    toolCalls: null,
+    content: typeof assistantResponse.value === 'string' ? assistantResponse.value.trim() : null,
+  };
 }
 
 function extractXmlAttribute(attrs, name) {
@@ -615,21 +787,27 @@ export function normalizeToolArguments(args) {
   try { return JSON.stringify(args); } catch { return '{}'; }
 }
 
+function getObjectField(value, key) {
+  if (!value || typeof value !== 'object') return undefined;
+  return value[key];
+}
+
 /**
  * 转换为 OpenAI 格式的 tool_calls
  */
 export function toOpenAIToolCalls(calls) {
   return calls
     .map((call, index) => {
-      const fn = call.function || call;
+      const fn = call.function && typeof call.function === 'object' ? call.function : call;
       const name = fn.name;
       if (!name || typeof name !== 'string') return null;
+      const args = getObjectField(fn, 'arguments') ?? getObjectField(call, 'arguments') ?? {};
       return {
         id: call.id || `call_${Date.now().toString(36)}_${index}_${Math.random().toString(36).slice(2, 8)}`,
         type: 'function',
         function: {
           name,
-          arguments: normalizeToolArguments(fn.arguments ?? call.arguments ?? {}),
+          arguments: normalizeToolArguments(args),
         },
       };
     })
@@ -719,9 +897,9 @@ export function parseVirtualToolJSON(text) {
         if (!name && raw.function) name = raw.function.name;
         if (!name || typeof name !== 'string' || !name.trim()) continue;
 
+        const functionArgs = getObjectField(raw.function, 'arguments');
         const args = raw.arguments !== undefined ? raw.arguments
-          : (raw.function?.arguments !== undefined ? raw.function.arguments
-          : raw.args);
+          : (functionArgs !== undefined ? functionArgs : raw.args);
 
         toolCalls.push({
           name: name.trim(),
@@ -751,6 +929,9 @@ export function parseVirtualToolJSON(text) {
       };
     }
   }
+
+  const relaxed = parseRelaxedEmptyToolWrapper(stripped);
+  if (relaxed) return relaxed;
 
   return null;
 }
@@ -933,7 +1114,7 @@ export function recoverToolCallsFromText(text) {
     // 4. OpenAI 格式：{function:{name,arguments}}（无顶层 name）
     // 例如: {"id":"call_xxx","type":"function","function":{"name":"Read","arguments":"{\"path\":\"/tmp\"}"}}
     if (results.length === 0 && parsed.function && typeof parsed.function === 'object' && parsed.function.name) {
-      const call = { name: parsed.function.name, arguments: parsed.function.arguments ?? {} };
+      const call = { name: parsed.function.name, arguments: getObjectField(parsed.function, 'arguments') ?? {} };
       const calls = toOpenAIToolCalls([call]);
       if (calls.length) results.push(...calls);
     }
@@ -942,7 +1123,7 @@ export function recoverToolCallsFromText(text) {
   // 去重（同名 + 同参数视为重复）
   const seen = new Set();
   const unique = results.filter(tc => {
-    const key = `${tc.function.name}:${tc.function.arguments}`;
+    const key = `${tc.function.name}:${getObjectField(tc.function, 'arguments')}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -982,7 +1163,7 @@ export function streamToolCallsIncremental(res, writeOpts, toolCalls) {
       }],
     })) return;
 
-    const args = tc.function.arguments || '';
+    const args = getObjectField(tc.function, 'arguments') || '';
     for (let j = 0; j < args.length; j += ARGS_CHUNK_SIZE) {
       if (!writeSSE(res, {
         ...writeOpts,
@@ -1153,7 +1334,7 @@ export function buildToolRetryPrompt(previousResponse) {
 {"assistant_response": null, "tool_calls": [{"name": "工具名", "arguments": {参数对象}}]}
 
 当可以直接回答时：
-{"assistant_response": "你的回答内容", "tool_calls": []}
+{"assistant_response": "你的回答内容（输出Markdown风格（详细版））", "tool_calls": []}
 
 规则：
 - 只输出原始 JSON，不得包含额外文本或注释。

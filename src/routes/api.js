@@ -11,6 +11,8 @@ import express from 'express';
 import { routeModel } from '../utils/model-router.js';
 import deepseek from '../channels/deepseek/index.js';
 import { handleGLMCompletion, handleGLMClaudeMessages, GLM_MODEL_MAP } from '../channels/glm/index.js';
+import { handleQwenCompletion, handleQwenClaudeMessages, listQwenModels } from '../channels/qwen/index.js';
+import { handleKimiCompletion, handleKimiClaudeMessages, listKimiModels } from '../channels/kimi/index.js';
 
 const router = express.Router();
 
@@ -48,13 +50,18 @@ router.use((req, res, next) => {
 router.post('/chat/completions', async (req, res) => {
   try {
     // 1. 路由模型到正确的渠道
-    const { channel } = routeModel(req.body.model);
+    const { channel, model } = routeModel(req.body.model);
+    req.body.model = model;
 
     // 2. 分发到对应处理器
     if (channel === 'deepseek') {
       return await deepseek.handleOpenAI(req, res);
     } else if (channel === 'glm') {
       return await handleGLMCompletion(req, res);
+    } else if (channel === 'qwen') {
+      return await handleQwenCompletion(req, res);
+    } else if (channel === 'kimi') {
+      return await handleKimiCompletion(req, res);
     }
 
   } catch (err) {
@@ -74,13 +81,18 @@ router.post('/chat/completions', async (req, res) => {
 router.post('/messages', async (req, res) => {
   try {
     // 1. 路由模型到正确的渠道
-    const { channel } = routeModel(req.body.model);
+    const { channel, model } = routeModel(req.body.model);
+    req.body.model = model;
 
     // 2. 分发到对应处理器
     if (channel === 'deepseek') {
       return await deepseek.handleClaude(req, res);
     } else if (channel === 'glm') {
       return await handleGLMClaudeMessages(req, res);
+    } else if (channel === 'qwen') {
+      return await handleQwenClaudeMessages(req, res);
+    } else if (channel === 'kimi') {
+      return await handleKimiClaudeMessages(req, res);
     }
 
   } catch (err) {
@@ -113,10 +125,16 @@ router.get('/models', (req, res) => {
     owned_by: 'zhipu',
   }));
 
+  // Qwen 模型（本地页面模型快照，不实时请求上游）
+  const qwenModels = listQwenModels();
+
+  // Kimi 模型（本地页面模型快照，不实时请求上游）
+  const kimiModels = listKimiModels();
+
   // 合并
   res.json({
     object: 'list',
-    data: [...deepseekModels, ...glmModels]
+    data: [...deepseekModels, ...glmModels, ...qwenModels, ...kimiModels]
   });
 });
 

@@ -21,27 +21,15 @@ const DEFAULT_ASSISTANT_ID = '65940acff94777010aa6b796';
 
 export const GLM_MODEL_MAP = {
   /**
-   * GLM-5.2 Flash：标准深度思考 + 联网搜索，支持上传
+   * GLM-5.2：深度思考模式 + 联网搜索，支持上传
    */
-  'glm-5.2-flash': {
-    assistantId: DEFAULT_ASSISTANT_ID,
-    plusModel: true,
-    search: true,
-    chatMode: '',
-    type: 'chat',
-    description: 'GLM-5.2 Flash — 标准深度思考 + 联网搜索',
-  },
-
-  /**
-   * GLM-5.2 Pro：深度思考模式 + 联网搜索，支持上传
-   */
-  'glm-5.2-pro': {
+  'glm-5.2': {
     assistantId: DEFAULT_ASSISTANT_ID,
     plusModel: true,
     search: true,
     chatMode: 'deep_research',
     type: 'chat',
-    description: 'GLM-5.2 Pro — 深度思考 + 联网搜索',
+    description: 'GLM-5.2 — 深度思考 + 联网搜索',
   },
 };
 

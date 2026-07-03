@@ -61,7 +61,7 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
           openaiMessages.push({
             role: 'tool',
             tool_call_id: result.tool_use_id,
-            content: typeof result.content === 'string' ? result.content : JSON.stringify(result.content),
+            content: textFromContent(result.content),
           });
         }
       } else {
@@ -170,6 +170,13 @@ function convertClaudeToolChoice(toolChoice) {
 /**
  * 将完整的 Claude 请求转换为 OpenAI 格式
  */
+function convertClaudeThinking(thinking) {
+  if (!thinking) return undefined;
+  if (thinking.type === 'disabled') return false;
+  if (thinking.type === 'enabled' || thinking.type === 'adaptive') return true;
+  return undefined;
+}
+
 export function convertClaudeRequest(claudeReq) {
   if (!claudeReq) {
     throw new Error('Invalid Claude request: request body is required');
@@ -179,11 +186,12 @@ export function convertClaudeRequest(claudeReq) {
   }
 
   const {
-    messages, system, max_tokens, temperature, top_p, tools, tool_choice, stream, model,
+    messages, system, max_tokens, temperature, top_p, tools, tool_choice, stream, model, thinking,
   } = claudeReq;
 
   const openaiMessages = convertClaudeMessages(messages, system);
   const openaiTools = convertClaudeTools(tools);
+  const thinkingEnabled = convertClaudeThinking(thinking);
 
   return {
     model: model || 'gpt-3.5-turbo',
@@ -194,6 +202,7 @@ export function convertClaudeRequest(claudeReq) {
     tools: openaiTools.length > 0 ? openaiTools : undefined,
     tool_choice: convertClaudeToolChoice(tool_choice),
     stream: stream ?? false,
+    thinking_enabled: thinkingEnabled,
   };
 }
 
@@ -220,12 +229,14 @@ export function convertOpenAIResponse(openaiResp, model) {
 
   const message = choice.message;
   const text = message.content || '';
+  const thinking = message.reasoning_content || '';
   const toolUses = openAIToolCallsToClaude(message.tool_calls);
 
   return buildClaudeResponse({
     id: generateMessageId(),
     model: model || openaiResp.model,
     text,
+    thinking,
     toolUses,
     stopReason: mapFinishReason(choice.finish_reason),
     inputTokens: openaiResp.usage?.prompt_tokens || 0,

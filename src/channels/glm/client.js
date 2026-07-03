@@ -30,7 +30,7 @@ function convertToolMessages(messages) {
       const name = msg.name || msg.tool_call_id || 'tool';
       result.push({
         role: 'user',
-        content: [{ type: 'text', text: `[Tool result from ${name}]: ${textFromContent(msg.content)}` }],
+        content: [{ type: 'text', text: `[Tool result from ${name}]: ${textFromContent(msg.content)}\n\n[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。` }],
       });
     } else if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
       const text = textFromContent(msg.content);
@@ -76,12 +76,13 @@ function messagesPrepare(converted) {
  * 将 OpenAI 格式消息转换为 GLM 格式
  * @param {Array} messages - OpenAI 格式消息
  * @param {Array} [tools=[]] - 工具定义，非空时附加工具调用指令
+ * @param {string|object} [toolChoice='auto'] - 工具选择约束
  */
-export function convertMessages(messages, tools = []) {
+export function convertMessages(messages, tools = [], toolChoice = 'auto') {
   const result = messagesPrepare(convertToolMessages(messages));
   // 将工具定义指令注入到最后一条 user 消息末尾
   if (tools.length) {
-    const instructions = buildToolInstructions(tools);
+    const instructions = buildToolInstructions(tools, toolChoice);
     if (instructions) {
       const lastMsg = result[result.length - 1];
       if (lastMsg?.content?.[0]?.text) {
@@ -100,8 +101,9 @@ export function convertMessages(messages, tools = []) {
  * 构建最终发送给 GLM 的 prompt
  * 将系统消息、对话历史和工具定义合并
  */
-export function buildPrompt(messages, tools = []) {
+export function buildPrompt(messages, tools = [], toolChoice = 'auto') {
   let prompt = '';
+  let hasToolResult = false;
   for (const msg of messages) {
     const content = textFromContent(msg.content);
     if (msg.role === 'system') {
@@ -116,9 +118,17 @@ export function buildPrompt(messages, tools = []) {
     } else if (msg.role === 'tool') {
       const name = msg.name || msg.tool_call_id || 'tool';
       prompt += `[Tool result ${name}]: ${textFromContent(msg.content)}\n\n`;
+      hasToolResult = true;
+    } else if (msg.role === 'function') {
+      const name = msg.name || 'function';
+      prompt += `[Function result ${name}]: ${textFromContent(msg.content)}\n\n`;
+      hasToolResult = true;
     }
   }
-  return (prompt.trim() + buildToolInstructions(tools)).trim();
+  if (hasToolResult) {
+    prompt += `[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。\n\n`;
+  }
+  return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
 }
 
 // ============================================================
