@@ -215,4 +215,21 @@ export class GlmTokenManager {
     this.tokenCache.clear();
     this._pending = null;
   }
+
+  getPoolInfo() {
+    const configuredRefreshTokens = this.tokens.length;
+    const cached = Array.from(this.tokenCache.entries()).map(([key, value]) => ({
+      mode: key === 'guest' ? 'guest' : 'refresh',
+      hasAccessToken: Boolean(value.accessToken),
+      expiresAt: value.expiresAt ? new Date(value.expiresAt).toISOString() : null,
+      userId: value.userId || null,
+    }));
+
+    return {
+      mode: configuredRefreshTokens > 0 ? 'refresh-token' : 'guest',
+      configuredRefreshTokens,
+      cached,
+      pendingRefresh: Boolean(this._pending),
+    };
+  }
 }

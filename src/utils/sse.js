@@ -1,6 +1,7 @@
-import { setRequestToken, reportTokenError, reportTokenSuccess, markTokenDead } from '../services/auth.js';
+import { setRequestToken, reportTokenError, reportTokenSuccess, markTokenDead, getPoolInfo } from '../services/auth.js';
 import { solvePowChallengeWithToken } from './pow.js';
-import { getSession } from '../services/session.js';
+import { getSession, invalidateTokenSessions } from '../services/session.js';
+import { invalidateByTokenPrefix } from '../services/conversation.js';
 import { streamHeaders, proxiedFetch } from './headers.js';
 import { enqueueRequest, dispatchQueued } from '../services/queue.js';
 
@@ -19,10 +20,6 @@ export function isInvalidChatSessionError(code, message) {
 
 async function invalidateTokenRuntimeState(token) {
   const tokenPrefix = token.slice(0, 12);
-  const [{ invalidateTokenSessions }, { invalidateByTokenPrefix }] = await Promise.all([
-    import('../services/session.js'),
-    import('../services/conversation.js'),
-  ]);
   invalidateTokenSessions(tokenPrefix);
   invalidateByTokenPrefix(tokenPrefix);
 }
@@ -48,7 +45,7 @@ async function throwDeepSeekErrorFromJson(json, slot) {
   }
   if (code === 40004) {
     reportTokenError(slot.token);
-    const entry = (await import('./auth.js')).getPoolInfo().find(t => slot.token.startsWith(t.token.replace('...', '')));
+    const entry = getPoolInfo().find(t => slot.token.startsWith(t.token.replace('...', '')));
     console.error(`Account BANNED during completion: ${entry?.email || slot.token.slice(0, 12)}...`);
     throw new Error('Account banned (40004)');
   }

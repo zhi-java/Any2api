@@ -1,8 +1,7 @@
 import { pickToken } from '../services/auth.js';
 import { apiHeaders, proxiedFetch } from './headers.js';
 import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { srcPath } from './runtime-paths.js';
 
 const BASE_URL = 'https://chat.deepseek.com';
 
@@ -11,7 +10,7 @@ let wasmInstance = null;
 
 async function getWasm() {
   if (wasmInstance) return wasmInstance;
-  const wasmPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'sha3_wasm_bg.wasm');
+  const wasmPath = srcPath('sha3_wasm_bg.wasm');
   const wasmBuf = readFileSync(wasmPath);
   const { instance } = await WebAssembly.instantiate(wasmBuf, { wbg: {} });
   wasmInstance = instance;

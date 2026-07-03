@@ -8,6 +8,27 @@
   <link rel="stylesheet" href="/admin/styles/layout.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
   <style>
+    .mobile-bar {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 56px;
+      z-index: 120;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      padding: 0 var(--space-4);
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    .mobile-title {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
     /* 登录遮罩层 */
     .auth-overlay {
       display: none;
@@ -63,9 +84,188 @@
     .auth-error.active {
       display: block;
     }
+
+    .test-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 3000;
+      background: rgba(30, 34, 39, 0.55);
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-6);
+    }
+
+    .test-modal.active {
+      display: flex;
+    }
+
+    .test-dialog {
+      width: min(960px, 100%);
+      max-height: min(820px, 92vh);
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .test-config,
+    .test-output {
+      padding: var(--space-6);
+      min-width: 0;
+    }
+
+    .test-config {
+      border-right: 1px solid var(--border-subtle);
+      background: var(--bg-sidebar);
+    }
+
+    .test-output {
+      display: flex;
+      flex-direction: column;
+      min-height: 560px;
+    }
+
+    .test-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+
+    .test-head h2 {
+      margin-bottom: 0;
+      font-size: var(--text-xl);
+    }
+
+    .field {
+      margin-bottom: var(--space-4);
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: var(--space-2);
+      color: var(--text-secondary);
+      font-size: var(--text-sm);
+      font-weight: 600;
+    }
+
+    #testPrompt {
+      min-height: 160px;
+      resize: vertical;
+      line-height: var(--leading-normal);
+    }
+
+    .test-stream {
+      flex: 1;
+      overflow-y: auto;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      background: var(--bg-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: var(--leading-relaxed);
+      font-size: var(--text-sm);
+    }
+
+    .test-reasoning {
+      display: none;
+      margin-top: var(--space-4);
+      border-left: 3px solid var(--info);
+      padding: var(--space-3);
+      background: var(--info-light);
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: var(--text-sm);
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .test-status {
+      min-height: 22px;
+      margin-top: var(--space-3);
+      color: var(--text-secondary);
+      font-size: var(--text-sm);
+    }
+
+    @media (max-width: 768px) {
+      .mobile-bar {
+        display: flex;
+      }
+
+      .app-container {
+        padding-top: 56px;
+      }
+
+      .sidebar {
+        width: min(280px, 86vw);
+        transform: translateX(-100%);
+        transition: transform var(--transition-base);
+        top: 56px;
+        height: calc(100dvh - 56px);
+        box-shadow: var(--shadow-lg);
+      }
+
+      body.sidebar-open .sidebar {
+        transform: translateX(0);
+      }
+
+      .nav-label {
+        display: block;
+      }
+
+      .sidebar-header .logo {
+        font-size: var(--text-xl);
+      }
+
+      .sidebar-header .version {
+        display: inline;
+      }
+
+      .content {
+        margin-left: 0;
+        width: 100%;
+      }
+
+      .content iframe {
+        height: calc(100dvh - 56px);
+      }
+
+      .test-modal {
+        align-items: stretch;
+        padding: var(--space-3);
+      }
+
+      .test-dialog {
+        grid-template-columns: 1fr;
+        max-height: calc(100dvh - var(--space-6));
+        overflow-y: auto;
+      }
+
+      .test-config {
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .test-output {
+        min-height: 420px;
+      }
+    }
   </style>
 </head>
 <body>
+  <div class="mobile-bar">
+    <button class="btn btn-secondary btn-sm" id="menuToggle" aria-label="打开菜单">菜单</button>
+    <span class="mobile-title">zhi2Api</span>
+    <button class="btn btn-secondary btn-sm" id="mobileTestBtn">渠道测试</button>
+  </div>
+
   <div class="app-container">
     <!-- 侧边栏 -->
     <aside class="sidebar">
@@ -78,31 +278,42 @@
       <!-- 导航 -->
       <nav class="sidebar-nav">
         <a href="#" class="nav-item active" data-page="dashboard">
-          <span class="nav-icon">📊</span>
+          <span class="nav-icon">DB</span>
           <span class="nav-label">Dashboard</span>
         </a>
         <a href="#" class="nav-item" data-page="deepseek">
-          <span class="nav-icon">🤖</span>
+          <span class="nav-icon">DS</span>
           <span class="nav-label">DeepSeek</span>
         </a>
         <a href="#" class="nav-item" data-page="glm">
-          <span class="nav-icon">🌐</span>
+          <span class="nav-icon">GL</span>
           <span class="nav-label">GLM</span>
         </a>
+        <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=qwen">
+          <span class="nav-icon">QW</span>
+          <span class="nav-label">Qwen</span>
+        </a>
+        <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=kimi">
+          <span class="nav-icon">KM</span>
+          <span class="nav-label">Kimi</span>
+        </a>
+        <a href="#" class="nav-item" data-page="channels">
+          <span class="nav-icon">CH</span>
+          <span class="nav-label">渠道</span>
+        </a>
         <a href="#" class="nav-item" data-page="logs">
-          <span class="nav-icon">📝</span>
+          <span class="nav-icon">LG</span>
           <span class="nav-label">日志</span>
         </a>
         <a href="#" class="nav-item" data-page="performance">
-          <span class="nav-icon">⚡</span>
+          <span class="nav-icon">PF</span>
           <span class="nav-label">性能</span>
         </a>
       </nav>
 
       <!-- 底部 -->
       <div class="sidebar-footer">
-        <a href="chat-legacy.html" class="btn btn-secondary" target="_blank">聊天测试</a>
-        <a href="legacy.html" class="link-secondary" target="_blank">旧版管理</a>
+        <button class="btn btn-secondary" id="channelTestBtn">渠道测试</button>
       </div>
     </aside>
 
@@ -136,8 +347,65 @@
     </div>
   </div>
 
+  <div class="test-modal" id="channelTestModal" role="dialog" aria-modal="true" aria-labelledby="channelTestTitle">
+    <div class="test-dialog">
+      <div class="test-config">
+        <div class="test-head">
+          <h2 id="channelTestTitle">渠道测试</h2>
+          <button class="btn btn-ghost btn-sm" id="closeChannelTestBtn">关闭</button>
+        </div>
+
+        <div class="field">
+          <label for="testChannel">渠道</label>
+          <select class="select" id="testChannel">
+            <option value="all">全部渠道</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="glm">GLM</option>
+            <option value="qwen">Qwen</option>
+            <option value="kimi">Kimi</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="testProtocol">协议</label>
+          <select class="select" id="testProtocol">
+            <option value="openai">OpenAI /v1/chat/completions</option>
+            <option value="claude">Claude /v1/messages</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="testModel">模型</label>
+          <select class="select" id="testModel">
+            <option value="">加载中...</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="testPrompt">输入</label>
+          <textarea class="input" id="testPrompt">你好，请用一句话说明当前模型。</textarea>
+        </div>
+
+        <div class="flex gap-2">
+          <button class="btn btn-primary" id="sendChannelTestBtn">发送</button>
+          <button class="btn btn-secondary" id="clearChannelTestBtn">清空</button>
+        </div>
+        <div class="test-status" id="channelTestStatus"></div>
+      </div>
+
+      <div class="test-output">
+        <div class="card-header">
+          <h3 class="card-title">输出</h3>
+        </div>
+        <div class="test-stream" id="channelTestOutput">等待发送测试请求</div>
+        <div class="test-reasoning" id="channelTestReasoning"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     let apiKey = localStorage.getItem('admin_api_key');
+    let testModels = [];
 
     // 检查 API Key
     async function checkAuth() {
@@ -219,6 +487,7 @@
 
       // 检查认证状态
       checkAuth();
+      bindChannelTest();
     });
 
     // 导航切换
@@ -233,8 +502,17 @@
         // 加载页面
         const page = item.dataset.page;
         const iframe = document.getElementById('content-frame');
-        iframe.src = `/admin/pages/${page}.html`;
+        iframe.src = item.dataset.src || `/admin/pages/${page}.html`;
+        document.body.classList.remove('sidebar-open');
       });
+    });
+
+    document.getElementById('menuToggle').addEventListener('click', () => {
+      document.body.classList.toggle('sidebar-open');
+    });
+
+    document.getElementById('mobileTestBtn').addEventListener('click', () => {
+      openChannelTest();
     });
 
     // 监听 iframe 加载完成
@@ -251,6 +529,162 @@
         }, event.origin);
       }
     });
+
+    function requestHeaders() {
+      const headers = { 'Content-Type': 'application/json' };
+      const key = localStorage.getItem('admin_api_key') || apiKey;
+      if (key) headers.Authorization = `Bearer ${key}`;
+      return headers;
+    }
+
+    function escapeHtml(value) {
+      const div = document.createElement('div');
+      div.textContent = value == null ? '' : String(value);
+      return div.innerHTML;
+    }
+
+    async function loadTestModels() {
+      const res = await fetch('/admin/api/models', { headers: requestHeaders() });
+      if (!res.ok) throw new Error(`模型加载失败: HTTP ${res.status}`);
+      const data = await res.json();
+      testModels = data.models || [];
+      renderTestModels();
+    }
+
+    function renderTestModels() {
+      const channel = document.getElementById('testChannel').value;
+      const modelSelect = document.getElementById('testModel');
+      const models = channel === 'all'
+        ? testModels
+        : testModels.filter(model => model.channel === channel);
+      modelSelect.innerHTML = models.map(model =>
+        `<option value="${escapeHtml(model.id)}">${escapeHtml(model.id)} (${escapeHtml(model.channel)})</option>`
+      ).join('');
+      if (!models.length) modelSelect.innerHTML = '<option value="">无可用模型</option>';
+    }
+
+    function openChannelTest() {
+      document.getElementById('channelTestModal').classList.add('active');
+      document.body.classList.remove('sidebar-open');
+      if (testModels.length === 0) {
+        loadTestModels().catch(err => {
+          document.getElementById('channelTestStatus').textContent = err.message;
+        });
+      }
+    }
+
+    function closeChannelTest() {
+      document.getElementById('channelTestModal').classList.remove('active');
+    }
+
+    async function readStream(res, onBlock) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) onBlock(block);
+      }
+      if (buffer.trim()) onBlock(buffer);
+    }
+
+    function parseSseBlock(block, protocol, state) {
+      for (const rawLine of block.split('\n')) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let data;
+        try {
+          data = JSON.parse(payload);
+        } catch {
+          state.content += payload + '\n';
+          continue;
+        }
+
+        if (protocol === 'openai') {
+          const delta = data.choices?.[0]?.delta || {};
+          if (delta.content) state.content += delta.content;
+          if (delta.reasoning_content) state.reasoning += delta.reasoning_content;
+        } else if (data.type === 'content_block_delta') {
+          if (data.delta?.text) state.content += data.delta.text;
+          if (data.delta?.thinking) state.reasoning += data.delta.thinking;
+        } else if (data.type === 'error') {
+          state.content += data.error?.message || JSON.stringify(data.error || data);
+        }
+      }
+    }
+
+    async function sendChannelTest() {
+      const model = document.getElementById('testModel').value;
+      const protocol = document.getElementById('testProtocol').value;
+      const prompt = document.getElementById('testPrompt').value.trim();
+      const output = document.getElementById('channelTestOutput');
+      const reasoning = document.getElementById('channelTestReasoning');
+      const status = document.getElementById('channelTestStatus');
+      const button = document.getElementById('sendChannelTestBtn');
+      if (!model || !prompt) {
+        status.textContent = '请选择模型并输入内容';
+        return;
+      }
+
+      const state = { content: '', reasoning: '' };
+      const start = Date.now();
+      output.textContent = '';
+      reasoning.textContent = '';
+      reasoning.style.display = 'none';
+      status.textContent = '请求中...';
+      button.disabled = true;
+
+      try {
+        const url = protocol === 'openai' ? '/v1/chat/completions' : '/v1/messages';
+        const body = protocol === 'openai'
+          ? { model, stream: true, messages: [{ role: 'user', content: prompt }] }
+          : { model, stream: true, max_tokens: 2048, messages: [{ role: 'user', content: prompt }] };
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: requestHeaders(),
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
+
+        await readStream(res, block => {
+          parseSseBlock(block, protocol, state);
+          output.textContent = state.content || ' ';
+          reasoning.textContent = state.reasoning;
+          reasoning.style.display = state.reasoning ? 'block' : 'none';
+          output.scrollTop = output.scrollHeight;
+        });
+        status.textContent = `完成，耗时 ${Date.now() - start}ms`;
+      } catch (err) {
+        output.textContent = `请求失败: ${err.message}`;
+        status.textContent = '请求失败';
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function bindChannelTest() {
+      document.getElementById('channelTestBtn').addEventListener('click', openChannelTest);
+      document.getElementById('closeChannelTestBtn').addEventListener('click', closeChannelTest);
+      document.getElementById('channelTestModal').addEventListener('click', event => {
+        if (event.target.id === 'channelTestModal') closeChannelTest();
+      });
+      document.getElementById('testChannel').addEventListener('change', renderTestModels);
+      document.getElementById('sendChannelTestBtn').addEventListener('click', sendChannelTest);
+      document.getElementById('clearChannelTestBtn').addEventListener('click', () => {
+        document.getElementById('channelTestOutput').textContent = '等待发送测试请求';
+        document.getElementById('channelTestReasoning').style.display = 'none';
+        document.getElementById('channelTestStatus').textContent = '';
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeChannelTest();
+      });
+    }
   </script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-import { reportTokenError, reportTokenSuccess, setRequestToken, getRequestToken } from './auth.js';
+import { getPoolInfo, reportTokenError, reportTokenSuccess } from './auth.js';
 import { apiHeaders, proxiedFetch } from '../utils/headers.js';
 import { recordSessionHit } from '../middleware/metrics.js';
 
@@ -108,7 +108,6 @@ export function getSessionInfo() {
 }
 
 export async function prewarmSessions(tokens, modelTypes = ['default', 'expert']) {
-  const { getPoolInfo } = await import('./auth.js');
   const poolInfo = getPoolInfo();
   const alivePrefixes = poolInfo.filter(t => !t.dead && t.token !== 'NONE').map(t => t.token.replace('...', ''));
 

@@ -1,3 +1,5 @@
+import { ProxyAgent } from 'undici';
+
 // Mimic real Chrome 120 browser session
 const UA_VERSION = '120.0.0.0';
 const UA_MAJOR = '120';
@@ -143,7 +145,6 @@ export async function getDispatcher() {
     return false;
   }
   try {
-    const { ProxyAgent } = await import('undici');
     proxyDispatcher = new ProxyAgent(proxyUrl);
     console.log(`Proxy enabled: ${proxyUrl}`);
     return proxyDispatcher;

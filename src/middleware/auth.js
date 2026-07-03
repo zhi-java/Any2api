@@ -7,7 +7,7 @@ export function authMiddleware(req, res, next) {
   if (!apiKey) return next();
 
   // Admin 页面不需要认证
-  if (req.method === 'GET' && (req.path === '/admin' || req.path === '/admin/chat')) {
+  if (req.method === 'GET' && req.path === '/admin') {
     return next();
   }
 

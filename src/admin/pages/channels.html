@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>渠道管理</title>
+  <link rel="stylesheet" href="/admin/styles/design-system.css">
+  <link rel="stylesheet" href="/admin/styles/components.css">
+  <style>
+    body {
+      background: var(--bg-primary);
+    }
+
+    .page-container {
+      padding: var(--space-8);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-4);
+      margin-bottom: var(--space-8);
+    }
+
+    .section {
+      margin-bottom: var(--space-8);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .model-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    .muted {
+      color: var(--text-tertiary);
+      font-size: var(--text-xs);
+    }
+
+    .capability-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      min-width: 360px;
+    }
+
+    .last-error {
+      max-width: 360px;
+      color: var(--text-secondary);
+      word-break: break-word;
+    }
+
+    @media (max-width: 1024px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 640px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .capability-list {
+        min-width: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-container">
+    <div class="page-header">
+      <h1>渠道管理</h1>
+      <p class="text-secondary">统一查看上游渠道、凭据池、容量、队列和模型能力</p>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">健康渠道</div>
+        <div class="stat-value text-success" id="stat-healthy">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">降级渠道</div>
+        <div class="stat-value text-warning" id="stat-degraded">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">未配置渠道</div>
+        <div class="stat-value" id="stat-unconfigured">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">模型数量</div>
+        <div class="stat-value" id="stat-models">-</div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="card-header">
+        <h3 class="card-title">渠道状态</h3>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>渠道</th>
+              <th>状态</th>
+              <th>模式</th>
+              <th>凭据</th>
+              <th>可用</th>
+              <th>并发</th>
+              <th>队列</th>
+              <th>5分钟请求</th>
+              <th>错误</th>
+              <th>最近错误</th>
+            </tr>
+          </thead>
+          <tbody id="channels-body">
+            <tr>
+              <td colspan="10" class="empty-state">
+                <div class="loading"></div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="card-header">
+        <h3 class="card-title">模型能力</h3>
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <select class="select" id="channelFilter">
+            <option value="all">全部渠道</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="glm">GLM</option>
+            <option value="qwen">Qwen</option>
+            <option value="kimi">Kimi</option>
+          </select>
+          <input class="input" id="modelSearch" type="text" placeholder="搜索模型..." style="max-width: 320px;">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th>渠道</th>
+              <th>能力</th>
+            </tr>
+          </thead>
+          <tbody id="models-body">
+            <tr>
+              <td colspan="3" class="empty-state">
+                <div class="loading"></div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import API from '/admin/scripts/api.js';
+    import PollingManager from '/admin/scripts/polling.js';
+
+    let models = [];
+
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return String(num || 0);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text == null ? '' : String(text);
+      return div.innerHTML;
+    }
+
+    function statusBadge(status) {
+      if (status === 'healthy') return { label: '健康', className: 'badge-success' };
+      if (status === 'degraded') return { label: '降级', className: 'badge-warning' };
+      return { label: '未配置', className: 'badge-default' };
+    }
+
+    function capabilityBadge(label, enabled) {
+      return `<span class="badge ${enabled ? 'badge-success' : 'badge-default'}">${label}</span>`;
+    }
+
+    let channelsSnapshot = [];
+
+    function selectedChannel() {
+      return document.getElementById('channelFilter').value;
+    }
+
+    function renderChannels(channels) {
+      const body = document.getElementById('channels-body');
+      const channel = selectedChannel();
+      const visibleChannels = channel === 'all'
+        ? channels
+        : channels.filter(item => item.id === channel);
+
+      if (!visibleChannels.length) {
+        body.innerHTML = '<tr><td colspan="10" class="empty-state">暂无渠道数据</td></tr>';
+        return;
+      }
+
+      body.innerHTML = visibleChannels.map(item => {
+        const status = statusBadge(item.status);
+        const usage = item.usage || {};
+        const queue = item.queue ? `${item.queue.queued || 0} / ${item.queue.maxSize || '-'}` : '-';
+        const lastError = item.lastError
+          ? `${item.lastError.status || '-'} ${item.lastError.model || '-'} ${item.lastError.duration || 0}ms`
+          : '-';
+
+        return `
+          <tr>
+            <td><strong>${escapeHtml(item.name || item.id)}</strong><div class="muted">${escapeHtml(item.id)}</div></td>
+            <td><span class="badge ${status.className}">${status.label}</span></td>
+            <td>${escapeHtml(item.mode || '-')}</td>
+            <td>${item.credentialCount || 0}</td>
+            <td>${item.availableCount || 0}</td>
+            <td>${item.activeRequests || 0} / ${item.capacity || 0}</td>
+            <td>${queue}</td>
+            <td>${formatNumber(usage.requests || 0)}</td>
+            <td><span class="${(item.recentErrors || 0) > 0 ? 'text-error' : 'text-success'}">${item.recentErrors || usage.errors || 0}</span></td>
+            <td class="last-error">${escapeHtml(lastError)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderModels() {
+      const body = document.getElementById('models-body');
+      const channel = selectedChannel();
+      const search = document.getElementById('modelSearch').value.trim().toLowerCase();
+      const filtered = models.filter(model => {
+        if (channel !== 'all' && model.channel !== channel) return false;
+        if (search && !String(model.id).toLowerCase().includes(search)) return false;
+        return true;
+      });
+
+      if (!filtered.length) {
+        body.innerHTML = '<tr><td colspan="3" class="empty-state">无匹配模型</td></tr>';
+        return;
+      }
+
+      body.innerHTML = filtered.map(model => {
+        const capabilities = model.capabilities || {};
+        const capHtml = [
+          capabilityBadge('文本', capabilities.text !== false),
+          capabilityBadge('思考', Boolean(capabilities.thinking)),
+          capabilityBadge('搜索', Boolean(capabilities.search)),
+          capabilityBadge('文件', Boolean(capabilities.document)),
+          capabilityBadge('图像', Boolean(capabilities.vision || capabilities.image_gen || capabilities.image_edit)),
+          capabilityBadge('音频', Boolean(capabilities.audio)),
+          capabilityBadge('视频', Boolean(capabilities.video || capabilities.video_gen)),
+        ].join('');
+
+        return `
+          <tr>
+            <td><div class="model-name">${escapeHtml(model.id)}</div><div class="muted">${escapeHtml(model.name || model.owned_by || '')}</div></td>
+            <td>${escapeHtml(model.channel || '-')}</td>
+            <td><div class="capability-list">${capHtml}</div></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function updateChannels() {
+      try {
+        const [channelsResult, modelsResult] = await Promise.all([
+          API.getChannels(),
+          API.getModels(),
+        ]);
+        const channels = channelsResult.channels || [];
+        channelsSnapshot = channels;
+        models = modelsResult.models || [];
+
+        document.getElementById('stat-healthy').textContent = channels.filter(item => item.status === 'healthy').length;
+        document.getElementById('stat-degraded').textContent = channels.filter(item => item.status === 'degraded').length;
+        document.getElementById('stat-unconfigured').textContent = channels.filter(item => item.status === 'unconfigured').length;
+        document.getElementById('stat-models').textContent = models.length;
+
+        renderChannels(channels);
+        renderModels();
+      } catch (err) {
+        console.error('[Channels] Failed to update:', err);
+        document.getElementById('channels-body').innerHTML = '<tr><td colspan="10" class="empty-state">渠道状态加载失败</td></tr>';
+      }
+    }
+
+    document.getElementById('channelFilter').addEventListener('change', () => {
+      renderChannels(channelsSnapshot);
+      renderModels();
+    });
+    document.getElementById('modelSearch').addEventListener('input', renderModels);
+
+    const initialChannel = new URLSearchParams(window.location.search).get('channel');
+    if (initialChannel) {
+      const channelFilter = document.getElementById('channelFilter');
+      if ([...channelFilter.options].some(option => option.value === initialChannel)) {
+        channelFilter.value = initialChannel;
+      }
+    }
+
+    const poller = new PollingManager(5000);
+    poller.start(updateChannels);
+
+    window.addEventListener('beforeunload', () => {
+      poller.stop();
+    });
+  </script>
+</body>
+</html>
