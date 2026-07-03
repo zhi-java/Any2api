@@ -56,7 +56,7 @@ router.get('/api/stats', (req, res) => {
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
   res.json({
     status: 'ok',
-    version: '2.0.0',
+    version: '1.0.0',
     uptimeSeconds,
     pool: getPoolInfo(),
     totalCapacity: getTotalCapacity(),

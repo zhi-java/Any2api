@@ -308,7 +308,7 @@ Vibe coding 工具使用规则：
 - 修改已有文件前必须先 Read 目标文件；只要目标文件已存在且含有内容，必须使用 Edit/MultiEdit 做精确修改，禁止直接用 Write 覆盖已有内容；只有创建新文件或目标文件确认为空时才使用 Write；Notebook 文件使用 NotebookEdit。
 - Edit/MultiEdit 必须使用从 Read 结果确认过的精确 old_string；不确定上下文时先再次分段 Read，而不是猜测替换内容。
 - Bash 只用于测试、构建、git、包管理、运行脚本或没有专用工具覆盖的命令；长输出命令应优先加过滤、分页或定向检查，避免把大量日志塞回上下文。
-- Windows 路径必须使用完整绝对路径和反斜杠，例如 C:\\Users\\Administrator\\IdeaProjects\\Any2api\\src\\file.js。
+- Windows 路径必须使用完整绝对路径和反斜杠，例如 C:\\path\\to\\project\\src\\file.js。
 - 工具返回后基于真实返回继续下一步，不要假设尚未读取的文件内容，不要虚构测试结果。
 - 工具调用完成后必须反馈：如果无需继续调用工具，assistant_response 必须说明已完成的操作、关键结果、修改/验证情况或下一步建议，禁止以空内容结束多轮任务。` : '';
 
@@ -869,7 +869,7 @@ export function parseVirtualToolJSON(text) {
       rawToolCalls = [parsed];
     }
 
-    // 兼容 {function:"func_name", args:{...}} 格式（Notion Claude 常用输出格式）
+    // 兼容 {function:"func_name", args:{...}} 格式
     if (rawToolCalls === undefined && typeof parsed.function === 'string') {
       rawToolCalls = [{
         name: parsed.function,

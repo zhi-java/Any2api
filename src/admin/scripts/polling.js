@@ -1,5 +1,5 @@
 /**
- * Polling Manager - DeepSeek 2API Admin
+ * Polling Manager - zhi2Api Admin
  *
  * 管理数据轮询，支持页面可见性检测
  */

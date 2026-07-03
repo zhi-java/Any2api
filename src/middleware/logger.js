@@ -1,6 +1,6 @@
 // Request logger — writes all requests + full conversations to disk
 // Usage: import { requestLogger, getRecentLogs, getLogStats, readHistoricalLogs, listLogDates } from './logger.js';
-//        app.use(requestLogger('deepseek-2api'));
+//        app.use(requestLogger('zhi2api'));
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
