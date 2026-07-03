@@ -9,6 +9,7 @@
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
+    "ali-oss": "^6.23.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "ssh2": "^1.17.0",

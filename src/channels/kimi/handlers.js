@@ -35,6 +35,7 @@ import {
   setTCPNoDelay,
   validateToolCallsPipeline,
 } from '../../utils/response-utils.js';
+import { collectUploadableParts } from '../../utils/message-files.js';
 import { buildKimiMessages, kimiChatCompletion } from './client.js';
 import { resolveModel } from './models.js';
 import { parseKimiStream } from './stream-parser.js';
@@ -72,6 +73,7 @@ async function startKimiStream(req, {
 }) {
   const modelConfig = resolveModel(model);
   const prompt = buildKimiMessages(messages, tools, toolChoice);
+  const attachments = collectUploadableParts(messages);
   const slot = tokenManager.acquireToken();
   if (!slot) throw new Error(tokenManager.getUnavailableReason());
 
@@ -91,6 +93,7 @@ async function startKimiStream(req, {
     const streamBody = await kimiChatCompletion({
       token: slot.token,
       prompt,
+      attachments,
       scenario: modelConfig.scenario,
       thinkingEnabled: isThinkingEnabled(modelConfig, req.body),
       signal: abortController.signal,

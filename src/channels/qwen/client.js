@@ -1,5 +1,8 @@
+import OSS from 'ali-oss';
+
 import { chatHeaders, requestHeaders } from './headers.js';
 import { buildToolInstructions, normalizeTools, textFromContent } from '../../utils/response-utils.js';
+import { resolveUploadableBytes } from '../../utils/message-files.js';
 
 const BASE_URL = 'https://chat.qwen.ai';
 
@@ -23,6 +26,119 @@ async function readJsonResponse(res, context) {
       : `received non-JSON response: ${compactSnippet(text, 120)}`;
     throw new Error(`${context} failed: HTTP ${res.status} ${contentType}; ${detail}`);
   }
+}
+
+function qwenFileTypeFor(file) {
+  if (file.kind === 'image') return 'image';
+  if (file.kind === 'video') return 'video';
+  if (file.kind === 'audio') return 'audio';
+  return 'file';
+}
+
+function qwenFileClassFor(file) {
+  if (file.kind === 'image') return 'image';
+  if (file.kind === 'video') return 'video';
+  if (file.kind === 'audio') return 'audio';
+  return 'doc';
+}
+
+async function getQwenStsToken({ token, filename, size, fileType, signal, tokenManager }) {
+  const res = await fetch(`${BASE_URL}/api/v2/files/getstsToken`, {
+    method: 'POST',
+    headers: requestHeaders({
+      Authorization: `Bearer ${token}`,
+      Referer: 'https://chat.qwen.ai/c/new-chat',
+    }),
+    body: JSON.stringify({
+      filename,
+      filesize: String(size),
+      filetype: fileType,
+    }),
+    signal,
+  });
+
+  const json = await readJsonResponse(res, 'Qwen get STS token');
+  if (!res.ok || !json?.success || !json?.data) {
+    const message = json?.detail || json?.message || json?.data?.message || res.statusText || JSON.stringify(json);
+    tokenManager?.reportTokenFailure(token, { statusCode: res.status, message });
+    throw new Error(`Qwen file upload failed: STS HTTP ${res.status}: ${message}`);
+  }
+  return json.data;
+}
+
+export async function uploadQwenFile({ token, file, signal, tokenManager, ossClientClass = OSS }) {
+  const { buffer, mimeType } = await resolveUploadableBytes(file);
+  const filename = file.filename || 'uploaded-file';
+  const fileType = qwenFileTypeFor(file);
+  const sts = await getQwenStsToken({
+    token,
+    filename,
+    size: buffer.length,
+    fileType,
+    signal,
+    tokenManager,
+  });
+
+  const client = new ossClientClass({
+    authorizationV4: true,
+    region: sts.region,
+    endpoint: sts.endpoint,
+    accessKeyId: sts.access_key_id,
+    accessKeySecret: sts.access_key_secret,
+    stsToken: sts.security_token,
+    bucket: sts.bucketname,
+  });
+
+  await client.put(sts.file_path, buffer, {
+    headers: { 'Content-Type': mimeType || file.mimeType || 'application/octet-stream' },
+  });
+
+  const now = Date.now();
+  const itemId = crypto.randomUUID();
+  const type = qwenFileTypeFor(file);
+  return {
+    type,
+    file: {
+      created_at: now,
+      data: {},
+      filename,
+      hash: null,
+      id: sts.file_id,
+      user_id: '',
+      meta: {
+        name: filename,
+        size: buffer.length,
+        content_type: mimeType || file.mimeType || 'application/octet-stream',
+      },
+      update_at: now,
+      lastModified: now,
+      name: filename,
+      webkitRelativePath: '',
+      size: buffer.length,
+      type: mimeType || file.mimeType || 'application/octet-stream',
+    },
+    id: sts.file_id,
+    url: sts.file_url,
+    name: filename,
+    collection_name: '',
+    progress: 100,
+    status: 'uploaded',
+    greenNet: 'success',
+    size: buffer.length,
+    error: '',
+    itemId,
+    file_type: mimeType || file.mimeType || 'application/octet-stream',
+    showType: type,
+    file_class: qwenFileClassFor(file),
+  };
+}
+
+async function uploadQwenFiles({ token, attachments = [], signal, tokenManager }) {
+  const files = [];
+  for (const file of attachments || []) {
+    files.push(await uploadQwenFile({ token, file, signal, tokenManager }));
+  }
+  return files;
 }
 
 export function buildQwenMessages(messages, tools = [], toolChoice = 'auto') {
@@ -111,11 +227,14 @@ export async function qwenChatCompletion({
   chatMode = 't2t',
   thinkingEnabled = false,
   searchEnabled = false,
+  attachments = [],
+  uploadFiles = uploadQwenFiles,
   signal,
   tokenManager,
 }) {
   const chatId = await createChat({ token, model, chatMode, signal, tokenManager });
   const timestamp = Math.floor(Date.now() / 1000);
+  const uploadedFiles = await uploadFiles({ token, attachments, signal, tokenManager });
 
   const isImageMode = chatMode === 't2i';
   const isVideoMode = chatMode === 't2v';
@@ -145,7 +264,7 @@ export async function qwenChatCompletion({
       role: msg.role,
       content: msg.content,
       user_action: 'chat',
-      files: [],
+      files: msg.role === 'user' ? uploadedFiles : [],
       timestamp,
       models: [model],
       chat_type: chatMode,

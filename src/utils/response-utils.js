@@ -17,6 +17,8 @@
  * 5. 分层异常 + 状态码传播
  */
 
+import { fileLabelForContentPart } from './message-files.js';
+
 // ============================================================
 // 安全 SSE 写入
 // ============================================================
@@ -156,6 +158,7 @@ export function textFromContent(content) {
       if (part.type === 'text') return sanitizePathMentions(normalizeJsonEscapedText(part.text || ''));
       if (part.type === 'image_url') return '[Image]';
       if (part.type === 'image_source') return '[Image]';
+      if (part.type === 'file' || part.type === 'input_file') return fileLabelForContentPart(part);
       return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
   }

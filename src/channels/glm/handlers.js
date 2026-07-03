@@ -26,6 +26,7 @@ import {
   validateToolCallsPipeline,
   createJsonContentExtractor,
 } from '../../utils/response-utils.js';
+import { collectUploadableParts } from '../../utils/message-files.js';
 
 import {
   generateChatCompletionId,
@@ -88,6 +89,7 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
   const requestStart = Date.now();
 
   const glmMessages = convertMessages(messages, tools, effectiveToolChoice);
+  const attachments = collectUploadableParts(messages);
 
   try {
     const streamBody = await glmChatCompletion(glmMessages, {
@@ -96,6 +98,7 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
       searchEnabled: modelConfig.search,
       chatMode: modelConfig.chatMode || '',
       conversationId,
+      attachments,
       tokenManager,
     });
 
@@ -306,6 +309,7 @@ export async function handleGLMClaude(req, res, tokenManager) {
 
     // 2. 构建 GLM 消息
     const glmMessages = convertMessages(openaiReq.messages, tools, effectiveToolChoice);
+    const attachments = collectUploadableParts(openaiReq.messages);
     const modelConfig = resolveModel(model);
     const requestId = generateMessageId();
 
@@ -316,6 +320,7 @@ export async function handleGLMClaude(req, res, tokenManager) {
       searchEnabled: modelConfig.search,
       chatMode: modelConfig.chatMode || '',
       conversationId: '',
+      attachments,
       tokenManager,
     });
 
