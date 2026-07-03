@@ -1,6 +1,7 @@
 import { pickToken, setRequestToken } from './auth.js';
 import { solvePowChallengeForUpload } from '../utils/pow.js';
 import { apiHeaders, getHeaders, proxiedFetch } from '../utils/headers.js';
+import { resolveUploadableBytes } from '../utils/message-files.js';
 
 const BASE_URL = 'https://chat.deepseek.com';
 
@@ -71,6 +72,12 @@ export async function uploadImageFromFile(fileBuffer, filename, mimeType, token)
   return fileId;
 }
 
+export async function uploadRefFile(fileBuffer, filename, mimeType, token) {
+  const fileId = await uploadFile(fileBuffer, filename, mimeType, token);
+  await waitForFileReady(fileId, token);
+  return fileId;
+}
+
 const MIME_MAP = {
   'jpg': 'image/jpeg',
   'jpeg': 'image/jpeg',
@@ -112,4 +119,14 @@ export async function resolveImageToRefId(imageUrl, token) {
   }
 
   return uploadImageFromFile(buffer, filename, mimeType, token);
+}
+
+export async function resolveUploadableToRefId(file, token) {
+  const { buffer, mimeType } = await resolveUploadableBytes(file, proxiedFetch);
+  return uploadRefFile(
+    buffer,
+    file.filename || 'uploaded-file',
+    mimeType || file.mimeType || 'application/octet-stream',
+    token,
+  );
 }

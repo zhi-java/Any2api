@@ -374,6 +374,56 @@ test('convertClaudeRequest converts Claude tool_result arrays to text tool messa
   assert.equal(converted.messages[2].content, 'README 内容片段');
 });
 
+test('convertClaudeRequest preserves Claude file-like content blocks for upload channels', () => {
+  const converted = convertClaudeRequest({
+    model: 'kimi-k2.6-thinking',
+    max_tokens: 100,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '请读取这些附件' },
+        {
+          type: 'document',
+          title: 'report.pdf',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: 'JVBERi0=',
+          },
+        },
+        {
+          type: 'audio',
+          name: 'voice.mp3',
+          source: {
+            type: 'url',
+            url: 'https://example.com/voice.mp3',
+          },
+        },
+      ],
+    }],
+  });
+
+  assert.equal(converted.messages[0].role, 'user');
+  assert.deepEqual(converted.messages[0].content, [
+    { type: 'text', text: '请读取这些附件' },
+    {
+      type: 'file',
+      file: {
+        filename: 'report.pdf',
+        mime_type: 'application/pdf',
+        file_data: 'JVBERi0=',
+      },
+    },
+    {
+      type: 'file',
+      file: {
+        filename: 'voice.mp3',
+        url: 'https://example.com/voice.mp3',
+      },
+    },
+  ]);
+});
+
 test('convertClaudeRequest maps Anthropic adaptive thinking to upstream thinking flag', () => {
   const converted = convertClaudeRequest({
     model: 'deepseek-v4-pro',

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createChat } from '../src/channels/qwen/client.js';
+import { createChat, qwenChatCompletion } from '../src/channels/qwen/client.js';
 
 test('createChat matches current Qwen web request shape for text chat', async () => {
   const originalFetch = globalThis.fetch;
@@ -66,6 +66,57 @@ test('createChat reports HTML upstream responses clearly', async () => {
     assert.equal(failures[0].token, 'qwen-token');
     assert.equal(failures[0].info.statusCode, 200);
     assert.match(failures[0].info.message, /Qwen\/WAF challenge/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('qwenChatCompletion attaches uploaded files to user message payload', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const responseStream = new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  });
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (String(url).endsWith('/api/v2/chats/new')) {
+      return new Response(JSON.stringify({ success: true, data: { id: 'chat-id' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(responseStream, { status: 200 });
+  };
+
+  try {
+    const body = await qwenChatCompletion({
+      token: 'qwen-token',
+      model: 'qwen3.7-plus',
+      messages: [{ role: 'user', content: 'read uploaded file' }],
+      attachments: [{ filename: 'probe.txt', data: 'cHJvYmU=', mimeType: 'text/plain', kind: 'file' }],
+      uploadFiles: async ({ attachments }) => [{
+        id: 'qwen-file-id',
+        type: 'file',
+        url: 'https://example.com/probe.txt',
+        name: attachments[0].filename,
+        status: 'uploaded',
+      }],
+    });
+
+    assert.equal(body, responseStream);
+    const completionCall = calls.find(call => String(call.url).includes('/api/v2/chat/completions'));
+    assert.ok(completionCall);
+    const payload = JSON.parse(completionCall.options.body);
+    assert.deepEqual(payload.messages[0].files, [{
+      id: 'qwen-file-id',
+      type: 'file',
+      url: 'https://example.com/probe.txt',
+      name: 'probe.txt',
+      status: 'uploaded',
+    }]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -10,8 +10,10 @@
 
 import { makeTimestamp, makeNonce, makeSign, makeAuthHeaders } from './utils.js';
 import { textFromContent, buildToolInstructions, normalizeTools } from '../../utils/response-utils.js';
+import { resolveUploadableBytes } from '../../utils/message-files.js';
 
 const ASSISTANT_STREAM_URL = 'https://chatglm.cn/chatglm/backend-api/assistant/stream';
+const FILE_UPLOAD_URL = 'https://chatglm.cn/chatglm/productivity-api/file/chat_upload';
 const DEFAULT_ASSISTANT_ID = '65940acff94777010aa6b796';
 
 // ============================================================
@@ -131,6 +133,91 @@ export function buildPrompt(messages, tools = [], toolChoice = 'auto') {
   return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
 }
 
+function glmFileContentTypeFor(file, result) {
+  const mime = String(file.mimeType || result.file_type || '').toLowerCase();
+  if (file.kind === 'image' || mime.startsWith('image/')) return 'image';
+  if (file.kind === 'video' || mime.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+async function uploadGlmFile({ accessToken, file, assistantId, signal }) {
+  const { buffer, mimeType } = await resolveUploadableBytes(file);
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mimeType || file.mimeType || 'application/octet-stream' }), file.filename || 'uploaded-file');
+  form.append('from', 'chat');
+  if (assistantId) form.append('assistant_id', assistantId);
+
+  const ts = makeTimestamp();
+  const nonce = makeNonce();
+  const sign = makeSign(ts, nonce);
+  const headers = {
+    ...makeAuthHeaders(ts, nonce, sign),
+    Authorization: `Bearer ${accessToken}`,
+    Origin: 'https://chatglm.cn',
+    Referer: 'https://chatglm.cn/',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+  delete headers['Content-Type'];
+
+  const res = await fetch(FILE_UPLOAD_URL, {
+    method: 'POST',
+    headers,
+    body: form,
+    signal,
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch {
+    throw new Error(`GLM file upload failed: invalid JSON response: ${text.slice(0, 200)}`);
+  }
+  if (!res.ok || json?.status !== 0 || !json?.result) {
+    throw new Error(`GLM file upload failed: HTTP ${res.status}: ${json?.message || text.slice(0, 200)}`);
+  }
+
+  const result = json.result;
+  const type = glmFileContentTypeFor(file, result);
+  const item = {
+    file_id: result.file_id,
+    file_url: result.file_url,
+    file_name: result.file_name || file.filename || 'uploaded-file',
+    file_size: result.file_size ?? buffer.length,
+    order: 0,
+    cover_images: result.cover_images || [],
+    url: result.file_url,
+    maxReadPercent: result.maxReadPercent || 0,
+  };
+
+  if (type === 'image') {
+    return {
+      type: 'image',
+      image: [{
+        file_name: item.file_name,
+        file_id: item.file_id,
+        image_url: result.file_url,
+        file_size: item.file_size,
+        order: 0,
+      }],
+    };
+  }
+  if (type === 'video') {
+    return { type: 'video', video: [item] };
+  }
+  return { type: 'file', file: [item] };
+}
+
+async function uploadGlmFiles({ accessToken, attachments = [], assistantId, signal }) {
+  const blocks = [];
+  for (const [index, file] of (attachments || []).entries()) {
+    const block = await uploadGlmFile({ accessToken, file, assistantId, signal });
+    const list = block.image || block.video || block.file;
+    if (Array.isArray(list)) {
+      for (const item of list) item.order = index;
+    }
+    blocks.push(block);
+  }
+  return blocks;
+}
+
 // ============================================================
 // GLM API 调用
 // ============================================================
@@ -156,6 +243,24 @@ export async function glmChatCompletion(glmMessages, options = {}) {
   }
 
   const accessToken = await tokenManager.getAccessToken();
+  const uploadBlocks = options.uploadFiles
+    ? await options.uploadFiles({
+        accessToken,
+        attachments: options.attachments || [],
+        assistantId: options.assistantId || DEFAULT_ASSISTANT_ID,
+        signal: options.signal,
+      })
+    : await uploadGlmFiles({
+        accessToken,
+        attachments: options.attachments || [],
+        assistantId: options.assistantId || DEFAULT_ASSISTANT_ID,
+        signal: options.signal,
+      });
+
+  if (uploadBlocks.length) {
+    const target = [...glmMessages].reverse().find(msg => msg.role === 'user') || glmMessages[0];
+    if (target) target.content = [...(target.content || []), ...uploadBlocks];
+  }
 
   const body = {
     assistant_id: options.assistantId || DEFAULT_ASSISTANT_ID,

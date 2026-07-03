@@ -35,6 +35,7 @@ import {
   setTCPNoDelay,
   validateToolCallsPipeline,
 } from '../../utils/response-utils.js';
+import { collectUploadableParts } from '../../utils/message-files.js';
 import { buildQwenMessages, qwenChatCompletion } from './client.js';
 import { resolveModel } from './models.js';
 import { parseQwenStream } from './stream-parser.js';
@@ -59,6 +60,7 @@ async function startQwenStream(req, {
 }) {
   const modelConfig = resolveModel(model);
   const qwenMessages = buildQwenMessages(messages, tools, toolChoice);
+  const attachments = collectUploadableParts(messages);
   const slot = await queue.enqueueRequest();
   const abortController = new AbortController();
   let completed = false;
@@ -77,6 +79,7 @@ async function startQwenStream(req, {
       token: slot.token,
       model: modelConfig.baseModel,
       messages: qwenMessages,
+      attachments,
       chatMode: modelConfig.chatMode,
       thinkingEnabled: isThinkingEnabled(modelConfig, req.body),
       searchEnabled: isSearchEnabled(modelConfig, req.body),

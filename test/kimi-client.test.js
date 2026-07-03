@@ -239,3 +239,49 @@ test('kimiChatCompletion keeps prompts below default text attachment threshold i
     }
   }
 });
+
+test('kimiChatCompletion uploads explicit file attachments as Kimi file blocks', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const responseStream = new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  });
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (String(url).endsWith('/apiv2-files/file/upload')) {
+      return new Response(JSON.stringify({ file: { id: `file-${calls.length}` } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(responseStream, { status: 200 });
+  };
+
+  try {
+    await kimiChatCompletion({
+      token: 'kimi-token',
+      prompt: 'read attachment',
+      scenario: 'SCENARIO_K2D5',
+      attachments: [{
+        kind: 'file',
+        filename: 'probe.txt',
+        mimeType: 'text/plain',
+        data: Buffer.from('probe').toString('base64'),
+      }],
+    });
+
+    assert.equal(calls.length, 2);
+    const uploaded = calls[0].options.body.get('file');
+    assert.equal(uploaded.name, 'probe.txt');
+    assert.equal(await uploaded.text(), 'probe');
+
+    const decoded = decodeConnectJsonFrame(calls[1].options.body);
+    assert.equal(decoded.payload.message.blocks.length, 2);
+    assert.equal(decoded.payload.message.blocks[1].file.id, 'file-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

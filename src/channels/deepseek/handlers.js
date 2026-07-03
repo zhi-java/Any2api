@@ -5,7 +5,7 @@
  */
 
 import { completion, parseSSEStream } from '../../utils/sse.js';
-import { resolveImageToRefId } from '../../services/upload.js';
+import { resolveUploadableToRefId } from '../../services/upload.js';
 import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
 import { recordTTFB, recordTokenSpeed } from '../../middleware/metrics.js';
 import { getConversationId, resolveConversation, recordResponseMessageId } from '../../services/conversation.js';
@@ -23,6 +23,7 @@ import {
   sanitizePathMentions,
   validateToolCallsPipeline,
 } from '../../utils/response-utils.js';
+import { collectUploadableParts, fileLabelForContentPart, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel, DEEPSEEK_MODEL_MAP } from './models.js';
 import {
   createRuntimeContextFallbackPlan,
@@ -41,20 +42,14 @@ function flushSSE(res) {
   if (socket && typeof socket.setNoDelay === "function") socket.setNoDelay(true);
 }
 
-async function extractImages(messages, token) {
+async function extractUploads(messages, token) {
   const refFileIds = [];
-  for (const msg of messages) {
-    if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.type === 'image_url' && part.image_url?.url) {
-          try {
-            const fileId = await resolveImageToRefId(part.image_url.url, token);
-            refFileIds.push(fileId);
-          } catch (err) {
-            console.error('Image upload failed:', err.message);
-          }
-        }
-      }
+  for (const file of collectUploadableParts(messages)) {
+    try {
+      const fileId = await resolveUploadableToRefId(file, token);
+      refFileIds.push(fileId);
+    } catch (err) {
+      console.error('File upload failed:', err.message);
     }
   }
   return refFileIds;
@@ -67,6 +62,7 @@ function textFromContent(content) {
     return content.map(part => {
       if (part.type === 'text') return sanitizePathMentions(normalizeJsonEscapedText(part.text || ''));
       if (part.type === 'image_url') return '[Image]';
+      if (part.type === 'file' || part.type === 'input_file') return fileLabelForContentPart(part);
       return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
   }
@@ -488,11 +484,11 @@ export async function handleOpenAICompletion(req, res) {
 
   try {
     let refFileIds = [];
-    // v4-flash 支持上传图片/PDF；只在消息含图片时获取 upload slot
-    if (contextPlan.effectiveModel === DEEPSEEK_FLASH_MODEL && messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'))) {
+    // v4-flash 支持上传图片/PDF/文档；只在消息含可上传块时获取 upload slot。
+    if (contextPlan.effectiveModel === DEEPSEEK_FLASH_MODEL && hasUploadableParts(messages)) {
       const uploadSlot = await enqueueRequest(true);
       try {
-        refFileIds = await extractImages(messages, uploadSlot.token);
+        refFileIds = await extractUploads(messages, uploadSlot.token);
       } finally {
         uploadSlot.release();
         dispatchQueued();
@@ -907,13 +903,24 @@ export async function handleDeepSeekClaude(req, res) {
       promptForBudget: fullPrompt,
     });
 
+    let refFileIds = [];
+    if (contextPlan.effectiveModel === DEEPSEEK_FLASH_MODEL && hasUploadableParts(openaiReq.messages)) {
+      const uploadSlot = await enqueueRequest(true);
+      try {
+        refFileIds = await extractUploads(openaiReq.messages, uploadSlot.token);
+      } finally {
+        uploadSlot.release();
+        dispatchQueued();
+      }
+    }
+
     // 4. 调用自建系统（使用 Token 池 + chat.deepseek.com）
     const completionResult = await completionWithContextFallback(contextPlan, (activePlan) => ({
       modelType: activePlan.modelType,
       prompt: fullPrompt,
       thinkingEnabled,
       searchEnabled,
-      refFileIds: [],
+      refFileIds,
       preferVision: activePlan.effectiveModel === DEEPSEEK_FLASH_MODEL,
     }));
     const result = completionResult.result;

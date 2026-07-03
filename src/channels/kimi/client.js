@@ -1,4 +1,5 @@
 import { buildToolInstructions, normalizeTools, textFromContent } from '../../utils/response-utils.js';
+import { resolveUploadableBytes } from '../../utils/message-files.js';
 
 const BASE_URL = 'https://www.kimi.com';
 const CHAT_URL = `${BASE_URL}/apiv2/kimi.gateway.chat.v1.ChatService/Chat`;
@@ -51,10 +52,10 @@ function shouldUploadPromptAsTextFile(prompt) {
   return Buffer.byteLength(String(prompt || ''), 'utf8') > getTextAttachmentThresholdBytes();
 }
 
-async function uploadKimiTextFile({ token, prompt, signal, tokenManager }) {
+async function uploadKimiFile({ token, bytes, filename, mimeType, signal, tokenManager }) {
   const form = new FormData();
-  const blob = new Blob([String(prompt || '')], { type: 'text/plain;charset=utf-8' });
-  form.append('file', blob, 'any2api-long-input.txt');
+  const blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+  form.append('file', blob, filename || 'uploaded-file');
 
   const res = await fetch(FILE_UPLOAD_URL, {
     method: 'POST',
@@ -86,28 +87,67 @@ async function uploadKimiTextFile({ token, prompt, signal, tokenManager }) {
   return fileId;
 }
 
-async function buildKimiMessageBlocks({ token, prompt, signal, tokenManager }) {
+async function uploadKimiTextFile({ token, prompt, signal, tokenManager }) {
+  return uploadKimiFile({
+    token,
+    bytes: Buffer.from(String(prompt || ''), 'utf8'),
+    filename: 'any2api-long-input.txt',
+    mimeType: 'text/plain;charset=utf-8',
+    signal,
+    tokenManager,
+  });
+}
+
+async function uploadKimiAttachment({ token, file, signal, tokenManager }) {
+  const { buffer, mimeType } = await resolveUploadableBytes(file);
+  return uploadKimiFile({
+    token,
+    bytes: buffer,
+    filename: file.filename,
+    mimeType: mimeType || file.mimeType,
+    signal,
+    tokenManager,
+  });
+}
+
+async function buildKimiMessageBlocks({ token, prompt, attachments = [], signal, tokenManager }) {
+  const blocks = [];
+
   if (!shouldUploadPromptAsTextFile(prompt)) {
-    return [{ message_id: '', text: { content: prompt } }];
+    blocks.push({ message_id: '', text: { content: prompt } });
+  } else {
+    const fileId = await uploadKimiTextFile({ token, prompt, signal, tokenManager });
+    blocks.push(
+      {
+        message_id: '',
+        text: {
+          content: '用户的完整输入内容已作为 txt 附件上传。请读取附件中的完整内容，并按附件内容直接回答用户请求。',
+        },
+      },
+      {
+        message_id: '',
+        file: {
+          id: fileId,
+          status: 3,
+          fail_reason: '',
+        },
+      },
+    );
   }
 
-  const fileId = await uploadKimiTextFile({ token, prompt, signal, tokenManager });
-  return [
-    {
-      message_id: '',
-      text: {
-        content: '用户的完整输入内容已作为 txt 附件上传。请读取附件中的完整内容，并按附件内容直接回答用户请求。',
-      },
-    },
-    {
+  for (const file of attachments || []) {
+    const fileId = await uploadKimiAttachment({ token, file, signal, tokenManager });
+    blocks.push({
       message_id: '',
       file: {
         id: fileId,
         status: 3,
         fail_reason: '',
       },
-    },
-  ];
+    });
+  }
+
+  return blocks;
 }
 
 export function buildKimiMessages(messages, tools = [], toolChoice = 'auto') {
@@ -150,12 +190,13 @@ export function buildKimiMessages(messages, tools = [], toolChoice = 'auto') {
 export async function kimiChatCompletion({
   token,
   prompt,
+  attachments = [],
   scenario = SCENARIO_K2_6,
   thinkingEnabled = false,
   signal,
   tokenManager,
 }) {
-  const blocks = await buildKimiMessageBlocks({ token, prompt, signal, tokenManager });
+  const blocks = await buildKimiMessageBlocks({ token, prompt, attachments, signal, tokenManager });
   const body = {
     scenario,
     tools: [
@@ -190,4 +231,4 @@ export async function kimiChatCompletion({
   return res.body;
 }
 
-export { SCENARIO_K2_6 };
+export { SCENARIO_K2_6, uploadKimiFile };

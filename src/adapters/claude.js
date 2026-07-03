@@ -46,14 +46,14 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
 
   for (const msg of claudeMessages) {
     if (msg.role === 'user') {
-      const { textParts, contentArray, toolResults, hasImages } = parseClaudeUserContent(msg.content);
+      const { textParts, contentArray, toolResults, hasUploadableContent } = parseClaudeUserContent(msg.content);
 
       if (toolResults.length > 0) {
-        // 文本和图片作为 user 消息
-        if (textParts.length || hasImages) {
+        // 文本和可上传内容作为 user 消息
+        if (textParts.length || hasUploadableContent) {
           openaiMessages.push({
             role: 'user',
-            content: hasImages ? contentArray : (textParts.join('\n') || ''),
+            content: hasUploadableContent ? contentArray : (textParts.join('\n') || ''),
           });
         }
         // 工具结果作为单独 tool 消息
@@ -67,7 +67,7 @@ function convertClaudeMessages(claudeMessages, systemPrompt) {
       } else {
         openaiMessages.push({
           role: 'user',
-          content: hasImages ? contentArray : (textParts.join('\n') || ''),
+          content: hasUploadableContent ? contentArray : (textParts.join('\n') || ''),
         });
       }
     } else if (msg.role === 'assistant') {
@@ -108,12 +108,12 @@ function parseClaudeUserContent(content) {
   const textParts = [];
   const contentArray = [];
   const toolResults = [];
-  let hasImages = false;
+  let hasUploadableContent = false;
 
   if (typeof content === 'string') {
     textParts.push(content);
     contentArray.push({ type: 'text', text: content });
-    return { textParts, contentArray, toolResults, hasImages };
+    return { textParts, contentArray, toolResults, hasUploadableContent };
   }
 
   if (Array.isArray(content)) {
@@ -122,7 +122,7 @@ function parseClaudeUserContent(content) {
         textParts.push(part.text);
         contentArray.push({ type: 'text', text: part.text });
       } else if (part.type === 'image') {
-        hasImages = true;
+        hasUploadableContent = true;
         contentArray.push({
           type: 'image_url',
           image_url: {
@@ -131,13 +131,52 @@ function parseClaudeUserContent(content) {
               : part.source?.url || '',
           },
         });
+      } else if (['document', 'file', 'input_file', 'video', 'audio'].includes(part.type)) {
+        const filePart = convertClaudeFilePart(part);
+        if (filePart) {
+          hasUploadableContent = true;
+          contentArray.push(filePart);
+        }
       } else if (part.type === 'tool_result') {
         toolResults.push(part);
       }
     }
   }
 
-  return { textParts, contentArray, toolResults, hasImages };
+  return { textParts, contentArray, toolResults, hasUploadableContent };
+}
+
+function convertClaudeFilePart(part) {
+  const source = part.source || part.file || part.input_file || {};
+  const filename = part.filename || part.name || part.title || source.filename || source.name || `${part.type || 'file'}-attachment`;
+  const sourceType = source.type;
+  const sourceMime = sourceType && !['base64', 'url', 'text'].includes(sourceType) ? sourceType : undefined;
+  const mimeType = source.media_type || source.mime_type || part.media_type || part.mime_type || sourceMime;
+  const file = {
+    filename,
+  };
+  if (mimeType) file.mime_type = mimeType;
+
+  if (source.type === 'base64' && source.data) {
+    file.file_data = source.data;
+  } else if (source.type === 'url' && source.url) {
+    file.url = source.url;
+  } else if (source.url) {
+    file.url = source.url;
+  } else if (source.file_data || source.data) {
+    const rawData = source.file_data || source.data;
+    file.file_data = source.type === 'text'
+      ? Buffer.from(String(rawData), 'utf8').toString('base64')
+      : rawData;
+  } else if (part.file_data || part.data) {
+    file.file_data = part.file_data || part.data;
+  } else if (part.url) {
+    file.url = part.url;
+  } else {
+    return null;
+  }
+
+  return { type: 'file', file };
 }
 
 /**
