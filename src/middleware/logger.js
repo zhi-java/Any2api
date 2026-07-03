@@ -5,10 +5,16 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { recordRequest } from './metrics.js';
+import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
+import { GLM_MODEL_MAP } from '../channels/glm/models.js';
+import { QWEN_MODEL_MAP } from '../channels/qwen/models.js';
+import { KIMI_MODEL_MAP } from '../channels/kimi/models.js';
 
 const MEMORY_LIMIT = 1000;
 const recentLogs = [];
 let totalLogged = 0;
+let successLogged = 0;
+let errorLogged = 0;
 let logDir = process.env.LOG_DIR || 'logs';
 let serviceName = 'default';
 
@@ -27,6 +33,29 @@ function assertWithinLogDir(targetPath) {
   if (rel.startsWith('..') || resolve(targetPath) === root) {
     throw new Error('path escapes log directory');
   }
+}
+
+function channelForModel(model) {
+  if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_MAP, model)) return 'deepseek';
+  if (Object.prototype.hasOwnProperty.call(GLM_MODEL_MAP, model)) return 'glm';
+  if (Object.prototype.hasOwnProperty.call(QWEN_MODEL_MAP, model)) return 'qwen';
+  if (Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, model)) return 'kimi';
+  return 'unknown';
+}
+
+function isExternalApiPath(path) {
+  return path === '/v1/chat/completions'
+    || path === '/v1/messages'
+    || path === '/v1/models'
+    || path === '/chat/completions'
+    || path === '/messages'
+    || path === '/models';
+}
+
+function channelForEntry(entry) {
+  const fromModel = channelForModel(entry.model);
+  if (fromModel !== 'unknown') return fromModel;
+  return isExternalApiPath(entry.path) ? 'api' : 'unknown';
 }
 
 function getLogPath(date) {
@@ -69,7 +98,8 @@ export function requestLogger(name) {
 
   return (req, res, next) => {
     const start = Date.now();
-    const isChat = req.path === '/v1/chat/completions' || req.path === '/api/v0/chat/completion';
+    const requestPath = (req.originalUrl || req.path || '').split('?')[0];
+    const isChat = requestPath === '/v1/chat/completions' || requestPath === '/v1/messages' || requestPath === '/api/v0/chat/completion';
     const messages = req.body?.messages || null;
     const model = req.body?.model || '-';
     const stream = req.body?.stream || false;
@@ -94,8 +124,9 @@ export function requestLogger(name) {
       const entry = {
         time: new Date().toISOString(),
         method: req.method,
-        path: req.path,
+        path: requestPath,
         model,
+        channel: channelForModel(model),
         status: res.statusCode,
         duration,
       };
@@ -108,6 +139,8 @@ export function requestLogger(name) {
       // Write request log (metadata only)
       writeLog(entry);
       totalLogged++;
+      if (res.statusCode >= 400) errorLogged++;
+      else successLogged++;
 
       // Keep recent in memory
       if (recentLogs.length >= MEMORY_LIMIT) recentLogs.shift();
@@ -170,12 +203,45 @@ export function getLogStats() {
     ? Math.round(last5min.reduce((s, e) => s + e.duration, 0) / last5min.length)
     : 0;
   return {
+    totalRequests: totalLogged,
+    successCount: successLogged,
+    errorCount: errorLogged,
     totalLogged,
     memoryBuffer: recentLogs.length,
     last5min: last5min.length,
     errors5min: errors.length,
     avgDuration5min: avgDuration,
   };
+}
+
+export function readRecentLogs(count = 50, filters = {}) {
+  return filterLogs(recentLogs, filters).slice(-count).reverse();
+}
+
+export function filterLogs(logs, filters = {}) {
+  const channel = String(filters.channel || 'all').toLowerCase();
+  const model = String(filters.model || 'all').toLowerCase();
+  const status = String(filters.status || 'all').toLowerCase();
+  const search = String(filters.search || '').trim().toLowerCase();
+  const apiOnly = filters.apiOnly === true || filters.apiOnly === 'true';
+  const excludeUnknown = filters.excludeUnknown === true || filters.excludeUnknown === 'true';
+
+  return logs.filter(entry => {
+    const entryChannel = String(entry.channel && entry.channel !== 'unknown' ? entry.channel : channelForEntry(entry)).toLowerCase();
+    const entryModel = String(entry.model || '').toLowerCase();
+    if (apiOnly && !isExternalApiPath(entry.path)) return false;
+    if (excludeUnknown && entryChannel === 'unknown') return false;
+    if (channel !== 'all' && entryChannel !== channel) return false;
+    if (model !== 'all' && entryModel !== model) return false;
+    if (status === 'error' && entry.status < 400) return false;
+    if (status === 'success' && entry.status >= 400) return false;
+    if (/^\d+$/.test(status) && String(entry.status) !== status) return false;
+    if (search) {
+      const haystack = `${entry.time} ${entry.method} ${entry.path} ${entry.model} ${entryChannel} ${entry.status} ${entry.duration}`.toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
 }
 
 export function readHistoricalLogs(date, count = 100) {

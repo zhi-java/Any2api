@@ -84,7 +84,7 @@
         <div class="stat-change positive" id="stat-success-change"></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">活跃 Token</div>
+        <div class="stat-label">可用凭据</div>
         <div class="stat-value" id="stat-tokens">-</div>
         <div class="stat-change" id="stat-tokens-change"></div>
       </div>
@@ -108,10 +108,10 @@
         <div class="last-updated" id="chart-updated">-</div>
       </div>
 
-      <!-- Token 分布 -->
+      <!-- 渠道分布 -->
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">Token 分布</h3>
+          <h3 class="card-title">渠道健康分布</h3>
         </div>
         <div class="chart-container">
           <canvas id="tokenChart"></canvas>
@@ -130,15 +130,16 @@
           <tr>
             <th>渠道</th>
             <th>状态</th>
-            <th>Token 数</th>
-            <th>活跃会话</th>
-            <th>请求数</th>
-            <th>成功率</th>
+            <th>模式</th>
+            <th>可用/凭据</th>
+            <th>并发/容量</th>
+            <th>5分钟请求</th>
+            <th>错误</th>
           </tr>
         </thead>
         <tbody id="channel-table-body">
           <tr>
-            <td colspan="6" class="empty-state">
+            <td colspan="7" class="empty-state">
               <div class="loading"></div>
             </td>
           </tr>
@@ -201,9 +202,9 @@
     const tokenChart = new Chart(
       document.getElementById('tokenChart'),
       createDoughnutChartConfig(
-        ['活跃', '空闲', '死亡'],
+        ['健康', '降级', '未配置'],
         [0, 0, 0],
-        [CHART_THEME.colors.success, CHART_THEME.colors.primary, CHART_THEME.colors.error]
+        [CHART_THEME.colors.success, CHART_THEME.colors.warning, CHART_THEME.colors.error]
       )
     );
 
@@ -235,13 +236,20 @@
         const totalRequests = stats.logStats?.totalRequests || 0;
         const successCount = stats.logStats?.successCount || 0;
         const successRate = totalRequests > 0 ? (successCount / totalRequests * 100) : 0;
-        const aliveTokens = stats.pool?.filter(t => !t.dead).length || 0;
-        const queuedCount = stats.queue?.queued || 0;
+        const channels = stats.channels || [];
+        const aliveTokens = channels.reduce((sum, channel) => sum + (channel.availableCount || 0), 0);
+        const queuedCount = channels.reduce((sum, channel) => sum + (channel.queue?.queued || 0), 0);
+        const healthyChannels = channels.filter(channel => channel.status === 'healthy').length;
+        const degradedChannels = channels.filter(channel => channel.status === 'degraded').length;
+        const unconfiguredChannels = channels.filter(channel => channel.status === 'unconfigured').length;
 
         document.getElementById('stat-requests').textContent = formatNumber(totalRequests);
         document.getElementById('stat-success-rate').textContent = successRate.toFixed(1) + '%';
         document.getElementById('stat-tokens').textContent = aliveTokens;
         document.getElementById('stat-queue').textContent = queuedCount;
+        document.getElementById('stat-requests-change').textContent = `${stats.logStats?.last5min || 0} / 5分钟`;
+        document.getElementById('stat-success-change').textContent = `${successCount} 成功 / ${stats.logStats?.errorCount || 0} 错误`;
+        document.getElementById('stat-tokens-change').textContent = `${healthyChannels} 健康 · ${degradedChannels} 降级`;
 
         // 队列状态提示
         const queueStatus = document.getElementById('stat-queue-status');
@@ -267,12 +275,8 @@
         requestChart.data.datasets[0].data = requestHistory.data;
         requestChart.update('none'); // 无动画更新，性能更好
 
-        // 更新 Token 分布图
-        const alive = stats.pool?.filter(t => !t.dead && t.activeRequests > 0).length || 0;
-        const idle = stats.pool?.filter(t => !t.dead && t.activeRequests === 0).length || 0;
-        const dead = stats.pool?.filter(t => t.dead).length || 0;
-
-        tokenChart.data.datasets[0].data = [alive, idle, dead];
+        // 更新渠道健康分布图
+        tokenChart.data.datasets[0].data = [healthyChannels, degradedChannels, unconfiguredChannels];
         tokenChart.update('none');
 
         // 更新渠道状态表格
@@ -281,7 +285,8 @@
         // 更新系统信息
         document.getElementById('system-version').textContent = stats.version || '1.0.0';
         document.getElementById('system-uptime').textContent = formatUptime(stats.uptimeSeconds || 0);
-        document.getElementById('system-capacity').textContent = stats.totalCapacity || '-';
+        const totalCapacity = channels.reduce((sum, channel) => sum + (channel.capacity || 0), 0) || stats.totalCapacity || 0;
+        document.getElementById('system-capacity').textContent = totalCapacity || '-';
 
         // 更新时间戳
         document.getElementById('chart-updated').textContent = `更新于 ${now}`;
@@ -298,36 +303,43 @@
     function updateChannelTable(stats) {
       const tbody = document.getElementById('channel-table-body');
 
-      // DeepSeek 渠道
-      const deepseekTokens = stats.pool?.length || 0;
-      const deepseekAlive = stats.pool?.filter(t => !t.dead).length || 0;
-      const deepseekSessions = stats.sessions?.active || 0;
-      const deepseekRequests = stats.logStats?.totalRequests || 0;
-      const deepseekSuccess = stats.logStats?.successCount || 0;
-      const deepseekSuccessRate = deepseekRequests > 0 ? (deepseekSuccess / deepseekRequests * 100) : 0;
+      const channels = stats.channels || [];
+      if (channels.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="7" class="empty-state">暂无渠道状态</td>
+          </tr>
+        `;
+        return;
+      }
 
-      // GLM 渠道（暂时使用模拟数据，后续需要添加 API）
-      const glmStatus = '活跃'; // TODO: 从 API 获取
-      const glmTokens = 0; // TODO: 从 API 获取
+      tbody.innerHTML = channels.map(channel => {
+        const statusMeta = statusBadge(channel.status);
+        const usage = channel.usage || {};
+        return `
+          <tr>
+            <td><strong>${escapeHtml(channel.name || channel.id)}</strong></td>
+            <td><span class="badge ${statusMeta.className}">${statusMeta.label}</span></td>
+            <td>${escapeHtml(channel.mode || '-')}</td>
+            <td>${channel.availableCount || 0} / ${channel.credentialCount || 0}</td>
+            <td>${channel.activeRequests || 0} / ${channel.capacity || 0}</td>
+            <td>${formatNumber(usage.requests || 0)}</td>
+            <td><span class="${(usage.errors || 0) > 0 ? 'text-error' : 'text-success'}">${usage.errors || 0}</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
 
-      tbody.innerHTML = `
-        <tr>
-          <td><strong>DeepSeek</strong></td>
-          <td><span class="badge badge-success">活跃</span></td>
-          <td>${deepseekAlive} / ${deepseekTokens}</td>
-          <td>${deepseekSessions}</td>
-          <td>${formatNumber(deepseekRequests)}</td>
-          <td><span class="text-success">${deepseekSuccessRate.toFixed(1)}%</span></td>
-        </tr>
-        <tr>
-          <td><strong>GLM</strong></td>
-          <td><span class="badge badge-info">访客模式</span></td>
-          <td>${glmTokens}</td>
-          <td>-</td>
-          <td>-</td>
-          <td>-</td>
-        </tr>
-      `;
+    function statusBadge(status) {
+      if (status === 'healthy') return { label: '健康', className: 'badge-success' };
+      if (status === 'degraded') return { label: '降级', className: 'badge-warning' };
+      return { label: '未配置', className: 'badge-default' };
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text == null ? '' : String(text);
+      return div.innerHTML;
     }
 
     // 启动轮询（每 5 秒更新一次）

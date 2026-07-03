@@ -53,3 +53,9 @@ export function handleGLMModels(req, res) {
 
   res.json({ object: 'list', data });
 }
+
+export function getGLMStatus() {
+  return {
+    auth: tokenManager.getPoolInfo(),
+  };
+}

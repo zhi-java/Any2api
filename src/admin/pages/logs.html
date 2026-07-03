@@ -69,9 +69,28 @@
       margin-bottom: var(--space-6);
     }
 
+    .toolbar-left {
+      flex-wrap: wrap;
+    }
+
     @media (max-width: 1024px) {
       .stats-grid {
         grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 640px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .log-line {
+        flex-wrap: wrap;
+        gap: var(--space-2);
+      }
+
+      .log-message {
+        flex-basis: 100%;
       }
     }
   </style>
@@ -113,12 +132,30 @@
           <option value="200">最近 200 条</option>
         </select>
 
-        <select class="select" id="logTypeSelect" onchange="filterLogs()">
-          <option value="all">全部类型</option>
-          <option value="INFO">INFO</option>
-          <option value="ERROR">ERROR</option>
-          <option value="WARN">WARN</option>
-          <option value="SUCCESS">SUCCESS</option>
+        <select class="select" id="channelSelect" onchange="changeFilters()">
+          <option value="all">全部渠道</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="glm">GLM</option>
+          <option value="qwen">Qwen</option>
+          <option value="kimi">Kimi</option>
+          <option value="api">API</option>
+        </select>
+
+        <select class="select" id="modelSelect" onchange="changeFilters()">
+          <option value="all">全部模型</option>
+        </select>
+
+        <select class="select" id="statusSelect" onchange="changeFilters()">
+          <option value="all">全部状态</option>
+          <option value="success">成功</option>
+          <option value="error">错误</option>
+          <option value="400">400</option>
+          <option value="401">401</option>
+          <option value="403">403</option>
+          <option value="429">429</option>
+          <option value="500">500</option>
+          <option value="502">502</option>
+          <option value="503">503</option>
         </select>
 
         <input
@@ -126,17 +163,18 @@
           class="input"
           placeholder="搜索日志..."
           id="searchInput"
-          onkeyup="filterLogs()"
+          onkeyup="changeFilters()"
           style="min-width: 300px;"
         />
       </div>
 
       <div class="toolbar-right">
+        <span class="text-tertiary text-sm" id="refresh-status">自动刷新中</span>
         <button class="btn btn-secondary" onclick="refreshLogs()">
-          🔄 刷新
+          刷新
         </button>
         <button class="btn btn-secondary" onclick="exportLogs()">
-          📥 导出
+          导出
         </button>
       </div>
     </div>
@@ -162,29 +200,56 @@
     import PollingManager from '/admin/scripts/polling.js';
 
     let allLogs = [];
-    let filteredLogs = [];
+    let modelsLoaded = false;
+    let filterTimer = null;
+
+    function getFilters() {
+      return {
+        channel: document.getElementById('channelSelect').value,
+        model: document.getElementById('modelSelect').value,
+        status: document.getElementById('statusSelect').value,
+        search: document.getElementById('searchInput').value.trim(),
+      };
+    }
+
+    async function loadModels() {
+      if (modelsLoaded) return;
+      try {
+        const result = await API.getModels();
+        const modelSelect = document.getElementById('modelSelect');
+        const models = result.models || [];
+        modelSelect.innerHTML = '<option value="all">全部模型</option>' + models
+          .map(model => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.id)}</option>`)
+          .join('');
+        modelsLoaded = true;
+      } catch (err) {
+        console.error('[Logs] Failed to load models:', err);
+      }
+    }
 
     // 更新日志
     async function updateLogs() {
       try {
+        await loadModels();
         const count = parseInt(document.getElementById('logCountSelect').value);
-        const result = await API.getLogs(count);
+        const result = await API.getLogs(count, getFilters());
 
         allLogs = result.logs || [];
 
-        // 更新统计
-        const stats = result.stats || {};
-        document.getElementById('stat-total').textContent = stats.totalRequests || 0;
-        document.getElementById('stat-success').textContent = stats.successCount || 0;
-        document.getElementById('stat-error').textContent = stats.errorCount || 0;
+        // 更新统计（按当前筛选后的对外 API 调用计算）
+        const total = allLogs.length;
+        const success = allLogs.filter(log => Number(log.status) < 400).length;
+        const error = allLogs.filter(log => Number(log.status) >= 400).length;
+        document.getElementById('stat-total').textContent = total;
+        document.getElementById('stat-success').textContent = success;
+        document.getElementById('stat-error').textContent = error;
 
-        const successRate = stats.totalRequests > 0
-          ? (stats.successCount / stats.totalRequests * 100).toFixed(1)
+        const successRate = total > 0
+          ? (success / total * 100).toFixed(1)
           : 0;
         document.getElementById('stat-rate').textContent = successRate + '%';
 
-        // 应用过滤
-        filterLogs();
+        renderLogs();
 
         // 更新时间戳
         const now = new Date().toLocaleTimeString('zh-CN');
@@ -196,39 +261,19 @@
     }
 
     // 过滤日志
-    window.filterLogs = () => {
-      const typeFilter = document.getElementById('logTypeSelect').value;
-      const searchText = document.getElementById('searchInput').value.toLowerCase();
-
-      filteredLogs = allLogs.filter(log => {
-        // 类型过滤
-        if (typeFilter !== 'all' && log.level !== typeFilter) {
-          return false;
-        }
-
-        // 搜索过滤
-        if (searchText) {
-          const logText = `${log.time} ${log.level} ${log.message}`.toLowerCase();
-          if (!logText.includes(searchText)) {
-            return false;
-          }
-        }
-
-        return true;
-      });
-
-      renderLogs();
+    window.changeFilters = () => {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(updateLogs, 250);
     };
 
     // 渲染日志
     function renderLogs() {
       const container = document.getElementById('log-container');
-      document.getElementById('log-count').textContent = filteredLogs.length;
+      document.getElementById('log-count').textContent = allLogs.length;
 
-      if (filteredLogs.length === 0) {
+      if (allLogs.length === 0) {
         container.innerHTML = `
           <div class="empty-state">
-            <div class="empty-state-icon">📭</div>
             <div class="empty-state-text">无匹配日志</div>
             <div class="empty-state-hint">尝试调整过滤条件</div>
           </div>
@@ -236,10 +281,12 @@
         return;
       }
 
-      container.innerHTML = filteredLogs.map(log => `
+      container.innerHTML = allLogs.map(log => `
         <div class="log-line">
-          <span class="log-time">${log.time}</span>
+          <span class="log-time">${escapeHtml(formatTime(log.time))}</span>
           <span class="log-level ${log.level}">${log.level}</span>
+          <span class="badge badge-default">${escapeHtml(log.channel || '-')}</span>
+          <span class="badge badge-info">${escapeHtml(log.model || '-')}</span>
           <span class="log-message">${escapeHtml(log.message)}</span>
         </div>
       `).join('');
@@ -250,6 +297,13 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function formatTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
 
     // 改变日志数量
@@ -264,13 +318,13 @@
 
     // 导出日志
     window.exportLogs = () => {
-      if (filteredLogs.length === 0) {
+      if (allLogs.length === 0) {
         alert('无日志可导出');
         return;
       }
 
-      const text = filteredLogs.map(log =>
-        `${log.time} [${log.level}] ${log.message}`
+      const text = allLogs.map(log =>
+        `${log.time} [${log.level}] [${log.channel || '-'}] ${log.message}`
       ).join('\n');
 
       const blob = new Blob([text], { type: 'text/plain' });
@@ -285,6 +339,7 @@
     // 启动轮询（每 2 秒更新一次，日志更新频率较高）
     const poller = new PollingManager(2000);
     poller.start(updateLogs);
+    document.getElementById('refresh-status').textContent = '自动刷新：2 秒';
 
     // 页面卸载时停止轮询
     window.addEventListener('beforeunload', () => {

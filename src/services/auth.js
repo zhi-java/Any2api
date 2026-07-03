@@ -1,12 +1,10 @@
-import { config } from 'dotenv';
 import { readFileSync, writeFileSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { getEnvironmentPath, loadEnvironment } from '../utils/env.js';
+import { invalidateByTokenPrefix } from './conversation.js';
+import { invalidateTokenSessions as invalidateSessionCache } from './session.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ENV_PATH = resolve(__dirname, '..', '..', '.env'); // 从 src/services/ 向上两级到根目录
-
-config();
+loadEnvironment();
+const ENV_PATH = getEnvironmentPath();
 
 const BASE_URL = 'https://chat.deepseek.com';
 
@@ -43,10 +41,6 @@ function generateDeviceId() {
   const bytes = new Uint8Array(48);
   for (let i = 0; i < 48; i++) bytes[i] = Math.floor(Math.random() * 256);
   return Buffer.from(bytes).toString('base64').replace(/=/g, '') + '==';
-}
-
-if (tokens.length === 0 && accounts.length === 0) {
-  throw new Error('No DS_TOKEN/DS_TOKENS or DS_ACCOUNTS configured');
 }
 
 // DS_ACCOUNTS_EXTENDED=email:password:token_prefix — links existing tokens to accounts
@@ -198,6 +192,9 @@ async function refreshToken(entry) {
 
 export async function initTokenPool() {
   console.log(`Token pool: ${tokenPool.length} entries (${tokens.length} tokens + ${accounts.length} accounts), max ${MAX_CONCURRENT_PER_TOKEN} concurrent each`);
+  if (tokens.length === 0 && accounts.length === 0) {
+    console.warn('No DS_TOKEN/DS_TOKENS or DS_ACCOUNTS configured; DeepSeek requests will fail until a token or account is added.');
+  }
 
   // Validate existing tokens, mark dead ones (auto-refresh if account linked)
   for (const entry of tokenPool) {
@@ -335,11 +332,10 @@ export function reportTokenSuccess(token) {
 // Invalidate cached sessions for a token (after refresh)
 function invalidateTokenSessions(token) {
   const prefix = token.slice(0, 12);
-  // Dynamic import to avoid circular dependency
-  import('./session.js').then(m => m.invalidateTokenSessions(prefix)).catch(() => {});
+  invalidateSessionCache(prefix);
   // Also drop conversation-affinity bindings pointing at this token's sessions,
   // so chained turns don't keep targeting a now-stale session id.
-  import('./conversation.js').then(m => m.invalidateByTokenPrefix(prefix)).catch(() => {});
+  invalidateByTokenPrefix(prefix);
 }
 
 // Legacy: pickToken returns just the token string
@@ -470,6 +466,19 @@ export async function addTokenToPool(tokenStr) {
   tokenPool.push(entry);
   persistTokensToEnv();
   return entry;
+}
+
+export function removeTokenFromPool(tokenPrefix) {
+  const prefix = String(tokenPrefix || '').replace(/\.+$/, '').trim();
+  if (!prefix || prefix === 'NONE') return false;
+
+  const index = tokenPool.findIndex(entry => entry.token && entry.token.startsWith(prefix));
+  if (index === -1) return false;
+
+  const [removed] = tokenPool.splice(index, 1);
+  invalidateTokenSessions(removed.token);
+  persistTokensToEnv();
+  return true;
 }
 
 // Periodic health check — validate alive tokens and detect banned accounts early

@@ -393,7 +393,7 @@
         document.getElementById('conversation-total').textContent = stats.conversations?.total || 0;
 
         const affinityBadge = document.getElementById('conversation-affinity');
-        const affinityEnabled = process.env.ENABLE_CONVERSATION_AFFINITY === 'true'; // 从环境变量读取
+        const affinityEnabled = stats.conversations?.affinityEnabled === true;
         affinityBadge.textContent = affinityEnabled ? '已启用' : '未启用';
         affinityBadge.className = affinityEnabled ? 'badge badge-success' : 'badge badge-default';
 
@@ -410,7 +410,6 @@
         tbody.innerHTML = `
           <tr>
             <td colspan="7" class="empty-state">
-              <div class="empty-state-icon">📭</div>
               <div class="empty-state-text">暂无 Token</div>
               <div class="empty-state-hint">点击上方按钮添加 Token 或账号</div>
             </td>
@@ -446,7 +445,7 @@
             <td>${visionBadge}</td>
             <td>
               <button class="btn btn-sm btn-ghost" onclick="removeToken('${tokenPrefix}')">
-                🗑️ 删除
+                删除
               </button>
             </td>
           </tr>

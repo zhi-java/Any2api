@@ -53,17 +53,40 @@ const API = {
   },
 
   /**
+   * 获取统一健康状态
+   */
+  async getHealth() {
+    return request(`${this.base}/health`);
+  },
+
+  /**
+   * 获取渠道状态
+   */
+  async getChannels() {
+    return request(`${this.base}/channels`);
+  },
+
+  /**
+   * 获取模型清单
+   */
+  async getModels() {
+    return request(`${this.base}/models`);
+  },
+
+  /**
    * 获取日志
    */
-  async getLogs(count = 50) {
-    return request(`${this.base}/logs?count=${count}`);
+  async getLogs(count = 50, filters = {}) {
+    const params = new URLSearchParams({ count: String(count), ...filters });
+    return request(`${this.base}/logs?${params}`);
   },
 
   /**
    * 获取历史日志
    */
-  async getHistoricalLogs(date, count = 100) {
-    return request(`${this.base}/logs/history?date=${date}&count=${count}`);
+  async getHistoricalLogs(date, count = 100, filters = {}) {
+    const params = new URLSearchParams({ date, count: String(count), ...filters });
+    return request(`${this.base}/logs/history?${params}`);
   },
 
   /**

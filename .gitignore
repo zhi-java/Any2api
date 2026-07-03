@@ -1,4 +1,6 @@
 node_modules/
+dist/
+release/
 .env
 .pm2/
 __pycache__/

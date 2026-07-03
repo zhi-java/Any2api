@@ -6,19 +6,38 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "desktop": "tauri dev",
+    "desktop:dev": "tauri dev",
+    "build:sidecar": "pkg src/desktop-sidecar.js --targets node22-win-x64 --fallback-to-source --compress Zstd --output src-tauri/binaries/zhi2api-sidecar-x86_64-pc-windows-msvc.exe",
+    "dist:win": "tauri build --bundles nsis"
   },
   "dependencies": {
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "ali-oss": "^6.23.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
-    "ssh2": "^1.17.0",
     "undici": "^6.21.2"
   },
   "displayName": "zhi2Api",
+  "pkg": {
+    "assets": [
+      "src/admin/**/*",
+      "src/performance/**/*",
+      "src/sha3_wasm_bg.wasm",
+      ".env.example"
+    ],
+    "scripts": [
+      "src/**/*.js"
+    ]
+  },
   "files": [
     "src",
     "README.md",
     ".env.example"
-  ]
+  ],
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@yao-pkg/pkg": "^6.21.0"
+  }
 }

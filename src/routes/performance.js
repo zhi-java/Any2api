@@ -8,19 +8,17 @@
  */
 
 import express from 'express';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { srcPath } from '../utils/runtime-paths.js';
 import { getMetrics, getTimeseries } from '../middleware/metrics.js';
 import { getPoolInfo, getTotalCapacity } from '../services/auth.js';
 import { getQueueInfo } from '../services/queue.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
 
 // ============= Performance 面板 UI =============
 
 router.get('/', (req, res) => {
-  res.sendFile(join(__dirname, '..', 'performance', 'index.html'));
+  res.sendFile(srcPath('performance', 'index.html'));
 });
 
 // ============= Performance API =============
