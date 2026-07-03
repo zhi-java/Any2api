@@ -23,6 +23,8 @@ import {
   setupClientDisconnect,
   safeAppendToBuffer,
   parseToolCallsFromText,
+  validateToolCallsPipeline,
+  createJsonContentExtractor,
 } from '../../utils/response-utils.js';
 
 import {
@@ -44,6 +46,8 @@ import {
   writeClaudeMessageStart,
   writeClaudeTextBlockStart,
   writeClaudeTextDelta,
+  writeClaudeThinkingBlockStart,
+  writeClaudeThinkingDelta,
   writeClaudeToolUseBlockStart,
   writeClaudeInputJsonDelta,
   writeClaudeContentBlockStop,
@@ -53,6 +57,11 @@ import {
   openAIToolCallsToClaude,
   sendClaudeError,
 } from '../../utils/claude-response.js';
+
+function mayBeJsonToolWrapper(buffer) {
+  const trimmed = String(buffer || '').trimStart();
+  return trimmed.startsWith('{') || trimmed.startsWith('```') || /^json\s*\{/i.test(trimmed);
+}
 
 // ============================================================
 // OpenAI 格式处理器 (POST /v1/chat/completions)
@@ -67,6 +76,7 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
   const tools = normalizeTools(req.body.tools);
   const toolChoice = req.body.tool_choice ?? 'auto';
   const toolCallingEnabled = tools.length > 0 && toolChoice !== 'none';
+  const effectiveToolChoice = toolCallingEnabled ? toolChoice : 'none';
 
   if (!model || !messages || !messages.length) {
     return sendOpenAIError(res, 400, 'model and messages are required');
@@ -77,7 +87,7 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
   const requestId = generateChatCompletionId();
   const requestStart = Date.now();
 
-  const glmMessages = convertMessages(messages, tools);
+  const glmMessages = convertMessages(messages, tools, effectiveToolChoice);
 
   try {
     const streamBody = await glmChatCompletion(glmMessages, {
@@ -94,11 +104,11 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
     try {
       if (stream) {
         await handleGLMStreamingOpenAI(req, res, streamBody, {
-          requestId, model, toolCallingEnabled, requestStart, clientGone,
+          requestId, model, toolCallingEnabled, tools, toolChoice: effectiveToolChoice, requestStart, clientGone,
         });
       } else {
         await handleGLMNonStreamingOpenAI(res, streamBody, {
-          requestId, model, toolCallingEnabled, requestStart, clientGone,
+          requestId, model, toolCallingEnabled, tools, toolChoice: effectiveToolChoice, requestStart, clientGone,
         });
       }
     } finally {
@@ -118,27 +128,45 @@ export async function handleGLMOpenAI(req, res, tokenManager) {
  * GLM 流式 OpenAI 响应处理
  *
  * 内容缓冲策略：
- * - 非工具调用请求 → 实时流式输出（打字机效果）
- * - 工具调用请求 → 缓冲到 done，解析工具调用后统一输出
- *   （因为 GLM 把工具调用 JSON 嵌入文本中，需要先解析再分别输出）
+ * - 普通文本实时流式输出
+ * - 工具 JSON 包装使用增量提取器实时输出 assistant_response，并在 done 时输出 tool_calls
+ * - 疑似 JSON 包装先缓冲解析，避免 assistant_response/tool_calls 泄漏
  */
-async function handleGLMStreamingOpenAI(req, res, streamBody, { requestId, model, toolCallingEnabled, requestStart, clientGone }) {
+async function handleGLMStreamingOpenAI(req, res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice, requestStart, clientGone }) {
   setTCPNoDelay(req);
   writeStreamingHeader(res, requestId, model);
 
   let contentBuffer = '';
   let toolCallsEmitted = false;
+  const jsonExtractor = createJsonContentExtractor();
+  let contentFlushBuffer = '';
+  let streamedStructuredContent = false;
+  let plainStreamingStarted = false;
+  const CONTENT_FLUSH_THRESHOLD = 20;
 
   for await (const event of parseGLMStream(streamBody)) {
     if (clientGone) break;
 
     switch (event.type) {
       case 'content': {
-        // 始终缓冲（用于结束时工具调用解析）
         const { buffer } = safeAppendToBuffer(contentBuffer, event.content);
         contentBuffer = buffer;
-        // 无工具调用时实时输出
-        if (!toolCallingEnabled && event.content) {
+
+        if (toolCallingEnabled) {
+          // JSON 工具包装：增量提取 assistant_response，保留原始缓冲用于 done 时解析 tool_calls。
+          const delta = jsonExtractor.process(event.content);
+          if (delta) {
+            contentFlushBuffer += delta;
+            streamedStructuredContent = true;
+            if (contentFlushBuffer.length >= CONTENT_FLUSH_THRESHOLD || jsonExtractor.isDone()) {
+              writeStreamingContent(res, requestId, model, contentFlushBuffer);
+              contentFlushBuffer = '';
+              flushSSE(res);
+            }
+          }
+        } else if (!mayBeJsonToolWrapper(contentBuffer)) {
+          // 普通无工具文本保持真正 SSE 打字机输出；疑似 JSON 包装则等 done 后清洗。
+          plainStreamingStarted = true;
           writeStreamingContent(res, requestId, model, event.content);
           flushSSE(res);
         }
@@ -173,16 +201,19 @@ async function handleGLMStreamingOpenAI(req, res, streamBody, { requestId, model
         break;
 
       case 'done': {
-        if (toolCallingEnabled && contentBuffer) {
-          // 有工具调用 → 从缓冲中解析，剥离 JSON 后分别输出
-          const wroteToolCalls = writeStreamingToolCalls(res, requestId, model, contentBuffer, true);
-          if (!wroteToolCalls) {
-            // 无工具调用 → 输出缓冲的全部内容
+        if (contentFlushBuffer) {
+          writeStreamingContent(res, requestId, model, contentFlushBuffer);
+          contentFlushBuffer = '';
+        }
+
+        if (contentBuffer && (toolCallingEnabled || !plainStreamingStarted)) {
+          // 从缓冲中解析并剥离 JSON 工具调用包装；已流式输出的 assistant_response 不重复发送。
+          const wroteParsed = writeStreamingToolCalls(res, requestId, model, contentBuffer, !streamedStructuredContent, tools, toolChoice);
+          if (!wroteParsed) {
             writeStreamingContent(res, requestId, model, contentBuffer);
             writeStreamingFinish(res, requestId, model, 'stop');
           }
-        } else if (!toolCallingEnabled) {
-          // 已实时输出，只需 finish
+        } else if (!toolCallsEmitted) {
           writeStreamingFinish(res, requestId, model, 'stop');
         }
         writeStreamingDone(res);
@@ -210,7 +241,7 @@ async function handleGLMStreamingOpenAI(req, res, streamBody, { requestId, model
 /**
  * GLM 非流式 OpenAI 响应处理
  */
-async function handleGLMNonStreamingOpenAI(res, streamBody, { requestId, model, toolCallingEnabled, requestStart, clientGone }) {
+async function handleGLMNonStreamingOpenAI(res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice, requestStart, clientGone }) {
   let fullContent = '';
   let fullThinking = '';
   let usage = 0;
@@ -245,6 +276,8 @@ async function handleGLMNonStreamingOpenAI(res, streamBody, { requestId, model, 
     toolCallingEnabled,
     usage: usage || Math.round((fullContent.length + fullThinking.length) / 4),
     mergeThinking,
+    definedTools: tools,
+    toolChoice,
   });
 
   res.json(response);
@@ -268,9 +301,11 @@ export async function handleGLMClaude(req, res, tokenManager) {
     const openaiReq = convertClaudeRequest(claudeReq);
     const tools = normalizeTools(openaiReq.tools);
     const toolCallingEnabled = tools.length > 0;
+    const toolChoice = openaiReq.tool_choice ?? 'auto';
+    const effectiveToolChoice = toolCallingEnabled ? toolChoice : 'none';
 
     // 2. 构建 GLM 消息
-    const glmMessages = convertMessages(openaiReq.messages, tools);
+    const glmMessages = convertMessages(openaiReq.messages, tools, effectiveToolChoice);
     const modelConfig = resolveModel(model);
     const requestId = generateMessageId();
 
@@ -286,9 +321,9 @@ export async function handleGLMClaude(req, res, tokenManager) {
 
     // 4. 根据类型处理响应
     if (stream) {
-      await handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled });
+      await handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice: effectiveToolChoice });
     } else {
-      await handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled });
+      await handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice: effectiveToolChoice });
     }
 
   } catch (err) {
@@ -301,9 +336,9 @@ export async function handleGLMClaude(req, res, tokenManager) {
 
 /**
  * GLM 流式 Claude 响应处理
- * 统一使用缓冲 + 结束时解析模式（支持工具调用）
+ * 普通文本实时输出；疑似工具 JSON 包装增量提取 assistant_response 并在结束时输出 tool_use。
  */
-async function handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled }) {
+async function handleGLMStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice }) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -313,10 +348,15 @@ async function handleGLMStreamingClaude(res, streamBody, { requestId, model, too
   // message_start
   writeClaudeMessageStart(res, requestId, model);
 
-  // content_block_start (text block)
-  writeClaudeTextBlockStart(res, 0);
-
   let contentBuffer = '';
+  let blockIndex = 0;
+  let thinkingBlockOpen = false;
+  let textBlockOpen = false;
+  const jsonExtractor = createJsonContentExtractor();
+  let contentFlushBuffer = '';
+  let streamedStructuredContent = false;
+  let plainStreamingStarted = false;
+  const CONTENT_FLUSH_THRESHOLD = 20;
 
   for await (const event of parseGLMStream(streamBody)) {
     if (res.writableEnded) break;
@@ -324,17 +364,60 @@ async function handleGLMStreamingClaude(res, streamBody, { requestId, model, too
     switch (event.type) {
       case 'content': {
         contentBuffer += event.content;
-        if (event.content) {
-          writeClaudeTextDelta(res, 0, event.content);
+
+        if (toolCallingEnabled) {
+          const delta = jsonExtractor.process(event.content);
+          if (delta) {
+            contentFlushBuffer += delta;
+            streamedStructuredContent = true;
+            if (contentFlushBuffer.length >= CONTENT_FLUSH_THRESHOLD || jsonExtractor.isDone()) {
+              if (thinkingBlockOpen) {
+                writeClaudeContentBlockStop(res, blockIndex);
+                blockIndex++;
+                thinkingBlockOpen = false;
+              }
+              if (!textBlockOpen) {
+                writeClaudeTextBlockStart(res, blockIndex);
+                textBlockOpen = true;
+              }
+              writeClaudeTextDelta(res, blockIndex, contentFlushBuffer);
+              contentFlushBuffer = '';
+              flushSSE(res);
+            }
+          }
+        } else if (!mayBeJsonToolWrapper(contentBuffer)) {
+          plainStreamingStarted = true;
+          if (thinkingBlockOpen) {
+            writeClaudeContentBlockStop(res, blockIndex);
+            blockIndex++;
+            thinkingBlockOpen = false;
+          }
+          if (!textBlockOpen) {
+            writeClaudeTextBlockStart(res, blockIndex);
+            textBlockOpen = true;
+          }
+          writeClaudeTextDelta(res, blockIndex, event.content);
           flushSSE(res);
         }
         break;
       }
       case 'thinking':
-        // Claude 格式无独立 thinking 字段，静默合并
+        if (event.content) {
+          if (textBlockOpen) {
+            writeClaudeContentBlockStop(res, blockIndex);
+            blockIndex++;
+            textBlockOpen = false;
+          }
+          if (!thinkingBlockOpen) {
+            writeClaudeThinkingBlockStart(res, blockIndex);
+            thinkingBlockOpen = true;
+          }
+          writeClaudeThinkingDelta(res, blockIndex, event.content);
+          flushSSE(res);
+        }
         break;
       case 'error':
-        writeClaudeContentBlockStop(res, 0);
+        if (thinkingBlockOpen || textBlockOpen) writeClaudeContentBlockStop(res, blockIndex);
         writeClaudeMessageDelta(res, 'end_turn', 0);
         writeClaudeMessageStop(res);
         res.end();
@@ -342,17 +425,55 @@ async function handleGLMStreamingClaude(res, streamBody, { requestId, model, too
     }
   }
 
-  // content_block_stop (text)
-  writeClaudeContentBlockStop(res, 0);
+  if (contentFlushBuffer) {
+    if (thinkingBlockOpen) {
+      writeClaudeContentBlockStop(res, blockIndex);
+      blockIndex++;
+      thinkingBlockOpen = false;
+    }
+    if (!textBlockOpen) {
+      writeClaudeTextBlockStart(res, blockIndex);
+      textBlockOpen = true;
+    }
+    writeClaudeTextDelta(res, blockIndex, contentFlushBuffer);
+    contentFlushBuffer = '';
+  }
 
-  // 从累积内容中解析工具调用（如果有）
-  const parsedToolCalls = toolCallingEnabled && contentBuffer
-    ? parseToolCallsFromText(contentBuffer)
-    : null;
+  const shouldParseBufferedContent = contentBuffer && (toolCallingEnabled || !plainStreamingStarted);
+  const parsed = shouldParseBufferedContent ? parseToolCallsFromText(contentBuffer) : null;
+  const rawToolCalls = parsed?.toolCalls?.length ? parsed.toolCalls : null;
+  const { toolCalls, warning } = validateToolCallsPipeline(rawToolCalls, toolChoice, tools);
+  if (warning) console.warn(`[GLM Claude stream] ${warning}`);
 
-  if (parsedToolCalls?.toolCalls?.length) {
-    const toolUses = openAIToolCallsToClaude(parsedToolCalls.toolCalls);
-    let blockIndex = 1;
+  const cleanText = parsed ? (parsed.content || '') : '';
+  if (cleanText && !streamedStructuredContent) {
+    if (thinkingBlockOpen) {
+      writeClaudeContentBlockStop(res, blockIndex);
+      blockIndex++;
+      thinkingBlockOpen = false;
+    }
+    if (!textBlockOpen) {
+      writeClaudeTextBlockStart(res, blockIndex);
+      textBlockOpen = true;
+    }
+    writeClaudeTextDelta(res, blockIndex, cleanText);
+  } else if (contentBuffer && shouldParseBufferedContent && !parsed && !plainStreamingStarted) {
+    if (!textBlockOpen) {
+      writeClaudeTextBlockStart(res, blockIndex);
+      textBlockOpen = true;
+    }
+    writeClaudeTextDelta(res, blockIndex, contentBuffer);
+  }
+
+  if (thinkingBlockOpen || textBlockOpen) {
+    writeClaudeContentBlockStop(res, blockIndex);
+    blockIndex++;
+    thinkingBlockOpen = false;
+    textBlockOpen = false;
+  }
+
+  if (toolCalls?.length) {
+    const toolUses = openAIToolCallsToClaude(toolCalls);
     for (const toolUse of toolUses) {
       writeClaudeToolUseBlockStart(res, blockIndex, toolUse.id, toolUse.name);
       writeClaudeInputJsonDelta(res, blockIndex, JSON.stringify(toolUse.input));
@@ -373,12 +494,15 @@ async function handleGLMStreamingClaude(res, streamBody, { requestId, model, too
 /**
  * GLM 非流式 Claude 响应处理
  */
-async function handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled }) {
+async function handleGLMNonStreamingClaude(res, streamBody, { requestId, model, toolCallingEnabled, tools, toolChoice }) {
   let fullContent = '';
+  let fullThinking = '';
 
   for await (const event of parseGLMStream(streamBody)) {
     if (event.type === 'content') {
       fullContent += event.content;
+    } else if (event.type === 'thinking') {
+      fullThinking += event.content;
     } else if (event.type === 'error') {
       throw new Error(event.message);
     }
@@ -388,9 +512,12 @@ async function handleGLMNonStreamingClaude(res, streamBody, { requestId, model, 
     id: requestId,
     model,
     fullContent,
+    thinking: fullThinking,
     toolCallingEnabled,
+    definedTools: tools,
+    toolChoice,
     inputTokens: 0,
-    outputTokens: Math.round(fullContent.length / 4),
+    outputTokens: Math.round((fullContent.length + fullThinking.length) / 4),
   });
 
   res.json(response);

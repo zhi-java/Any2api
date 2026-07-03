@@ -79,6 +79,7 @@ export function buildClaudeResponse({
   id,
   model,
   text = '',
+  thinking = '',
   toolUses = [],
   stopReason = 'end_turn',
   inputTokens = 0,
@@ -86,6 +87,10 @@ export function buildClaudeResponse({
 } = {}) {
   // 构建 content 块数组
   const content = [];
+
+  if (thinking) {
+    content.push({ type: 'thinking', thinking, signature: '' });
+  }
 
   if (text) {
     content.push({ type: 'text', text });
@@ -148,6 +153,7 @@ export function buildClaudeResponseFromContent({
   id,
   model,
   fullContent = '',
+  thinking = '',
   stopReason = 'end_turn',
   inputTokens = 0,
   outputTokens = 0,
@@ -163,15 +169,17 @@ export function buildClaudeResponseFromContent({
   const { toolCalls, warning } = validateToolCallsPipeline(rawToolCalls, toolChoice, definedTools);
   if (warning) console.warn(`[Claude response] ${warning}`);
 
-  // 步骤3: 【缺口2】检测静默解析失败
-  const parseWarning = detectFailedToolParse(fullContent, toolCallingEnabled);
-  if (parseWarning) console.warn(`[Claude response] ${parseWarning}`);
+  // 步骤3: 【缺口2】检测静默解析失败；已成功解析出工具调用时不报警。
+  if (!toolCalls?.length) {
+    const parseWarning = detectFailedToolParse(fullContent, toolCallingEnabled);
+    if (parseWarning) console.warn(`[Claude response] ${parseWarning}`);
+  }
 
   if (toolCalls?.length) {
     const text = parsed?.content || '';
     const toolUses = openAIToolCallsToClaude(toolCalls);
     return buildClaudeResponse({
-      id, model, text, toolUses,
+      id, model, text, thinking, toolUses,
       stopReason: 'tool_use',
       inputTokens, outputTokens,
     });
@@ -181,7 +189,7 @@ export function buildClaudeResponseFromContent({
   const text = (parsed?.content ?? fullContent) || '';
 
   return buildClaudeResponse({
-    id, model, text, stopReason, inputTokens, outputTokens,
+    id, model, text, thinking, stopReason, inputTokens, outputTokens,
   });
 }
 

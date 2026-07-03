@@ -141,9 +141,11 @@ export function buildOpenAIResponseFromContent({
   const { toolCalls, warning } = validateToolCallsPipeline(rawToolCalls, toolChoice, definedTools);
   if (warning) console.warn(`[OpenAI response] ${warning}`);
 
-  // 步骤3: 【缺口2】检测静默解析失败
-  const parseWarning = detectFailedToolParse(fullContent, toolCallingEnabled);
-  if (parseWarning) console.warn(`[OpenAI response] ${parseWarning}`);
+  // 步骤3: 【缺口2】检测静默解析失败；已成功解析出工具调用时不报警。
+  if (!toolCalls?.length) {
+    const parseWarning = detectFailedToolParse(fullContent, toolCallingEnabled);
+    if (parseWarning) console.warn(`[OpenAI response] ${parseWarning}`);
+  }
 
   // 步骤4: 确定最终 content 和 finish_reason
   // 降级：当无工具调用、thinking 有内容时，用 thinking 作为回复文本

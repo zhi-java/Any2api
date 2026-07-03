@@ -18,11 +18,20 @@ import {
   extractAssistantResponse,
   looksLikeMalformedToolOutput,
   normalizeTools as normalizeSharedTools,
+  normalizeJsonEscapedText,
   parseToolCallsFromText,
   sanitizePathMentions,
   validateToolCallsPipeline,
 } from '../../utils/response-utils.js';
 import { mapModel, DEEPSEEK_MODEL_MAP } from './models.js';
+import {
+  createRuntimeContextFallbackPlan,
+  DEEPSEEK_FLASH_MODEL,
+  isContextFallbackEnabled,
+  isContextLimitError,
+  isDeepSeekProModel,
+  selectContextExecutionPlan,
+} from './context-budget.js';
 
 // Flush SSE data immediately - prevents buffering in Node.js, nginx, and Cloudflare
 function flushSSE(res) {
@@ -53,13 +62,16 @@ async function extractImages(messages, token) {
 
 function textFromContent(content) {
   if (content == null) return '';
-  if (typeof content === 'string') return sanitizePathMentions(content);
+  if (typeof content === 'string') return sanitizePathMentions(normalizeJsonEscapedText(content));
   if (Array.isArray(content)) {
     return content.map(part => {
-      if (part.type === 'text') return sanitizePathMentions(part.text || '');
+      if (part.type === 'text') return sanitizePathMentions(normalizeJsonEscapedText(part.text || ''));
       if (part.type === 'image_url') return '[Image]';
       return sanitizePathMentions(JSON.stringify(part));
     }).filter(Boolean).join('\n');
+  }
+  if (content.type === 'text' && typeof content.text === 'string') {
+    return sanitizePathMentions(normalizeJsonEscapedText(content.text));
   }
   return sanitizePathMentions(JSON.stringify(content));
 }
@@ -202,9 +214,28 @@ function buildToolInstructions(tools, toolChoice) {
   return buildSharedToolInstructions(tools, toolChoice);
 }
 
-function buildPrompt(messages, tools = [], toolChoice = 'auto') {
+function findToolCallName(messages, beforeIndex, toolCallId) {
+  if (!toolCallId) return null;
+  for (let i = beforeIndex - 1; i >= 0; i--) {
+    const calls = messages[i]?.tool_calls;
+    if (!Array.isArray(calls)) continue;
+    const matched = calls.find(tc => tc?.id === toolCallId);
+    if (matched?.function?.name) return matched.function.name;
+  }
+  return null;
+}
+
+function toolResultLabel(messages, index, msg) {
+  const id = msg.tool_call_id || '';
+  const name = msg.name || findToolCallName(messages, index, id) || id || 'tool';
+  return id && name !== id ? `${name} (${id})` : name;
+}
+
+function renderPromptRange(messages, startIdx, endIdx) {
   let prompt = '';
-  for (const msg of messages) {
+  let hasToolResult = false;
+  for (let i = startIdx; i < endIdx; i++) {
+    const msg = messages[i];
     if (msg.role === 'system') {
       prompt += `[System]: ${textFromContent(msg.content)}\n\n`;
     } else if (msg.role === 'user') {
@@ -216,14 +247,23 @@ function buildPrompt(messages, tools = [], toolChoice = 'auto') {
         prompt += `[Assistant tool calls]: ${JSON.stringify(msg.tool_calls)}\n\n`;
       }
     } else if (msg.role === 'tool') {
-      const name = msg.name || msg.tool_call_id || 'tool';
+      const name = toolResultLabel(messages, i, msg);
       prompt += `[Tool result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
+      hasToolResult = true;
     } else if (msg.role === 'function') {
       const name = msg.name || 'function';
       prompt += `[Function result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
+      hasToolResult = true;
     }
   }
-  return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
+  if (hasToolResult) {
+    prompt += `[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；不要忽略工具结果，也不要重复调用已经得到充分结果的同一个工具。如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。\n\n`;
+  }
+  return prompt;
+}
+
+function buildPrompt(messages, tools = [], toolChoice = 'auto') {
+  return (renderPromptRange(messages, 0, messages.length).trim() + buildToolInstructions(tools, toolChoice)).trim();
 }
 
 // Affinity-mode prompt: only the latest user turn (+ tool instructions), since
@@ -240,27 +280,7 @@ function buildLatestPrompt(messages, tools = [], toolChoice = 'auto') {
   // Include everything from that last user message onward — user text, assistant
   // tool_calls, AND tool results — so DeepSeek knows the outcomes of tools it
   // requested when parent_message_id chains back to its earlier response.
-  let prompt = '';
-  for (let i = lastUserIdx; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === 'user') {
-      prompt += `[User]: ${textFromContent(msg.content)}\n\n`;
-    } else if (msg.role === 'assistant') {
-      const content = textFromContent(msg.content);
-      if (content) prompt += `[Assistant]: ${content}\n\n`;
-      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
-        prompt += `[Assistant tool calls]: ${JSON.stringify(msg.tool_calls)}\n\n`;
-      }
-    } else if (msg.role === 'tool') {
-      const name = msg.name || msg.tool_call_id || 'tool';
-      prompt += `[Tool result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
-    } else if (msg.role === 'function') {
-      const name = msg.name || 'function';
-      prompt += `[Function result ${name}]: ${compressToolResultContent(msg.content, name)}\n\n`;
-    }
-  }
-
-  return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
+  return (renderPromptRange(messages, lastUserIdx, messages.length).trim() + buildToolInstructions(tools, toolChoice)).trim();
 }
 
 function tryParseJson(value) {
@@ -387,6 +407,52 @@ function writeSSE(res, payload) {
   flushSSE(res);
 }
 
+function writeOpenAISSEDone(res) {
+  res.write('data: [DONE]\n\n');
+  flushSSE(res);
+}
+
+function setContextPlanHeaders(res, plan) {
+  if (!plan || res.headersSent) return;
+  res.setHeader('X-DeepSeek-Effective-Model', plan.effectiveModel);
+  res.setHeader('X-DeepSeek-Estimated-Prompt-Tokens', String(plan.estimatedPromptTokens));
+  res.setHeader('X-DeepSeek-Pro-Safe-Input-Tokens', String(plan.safeInputTokens));
+  if (plan.fallbackReason) {
+    res.setHeader('X-DeepSeek-Fallback-Reason', plan.fallbackReason);
+  }
+}
+
+function logContextFallback(plan) {
+  if (!plan?.fallbackReason) return;
+  console.warn(
+    `[DeepSeek context] ${plan.requestedModel} -> ${plan.effectiveModel} ` +
+    `(${plan.fallbackReason}; estimated=${plan.estimatedPromptTokens}; safe=${plan.safeInputTokens})`
+  );
+}
+
+async function completionWithContextFallback(initialPlan, buildArgs) {
+  let plan = initialPlan;
+  logContextFallback(plan);
+
+  try {
+    const result = await completion(buildArgs(plan));
+    return { result, plan };
+  } catch (err) {
+    if (
+      !plan.fallbackReason &&
+      isContextFallbackEnabled() &&
+      isDeepSeekProModel(plan.requestedModel) &&
+      isContextLimitError(err)
+    ) {
+      plan = createRuntimeContextFallbackPlan(plan);
+      logContextFallback(plan);
+      const result = await completion(buildArgs(plan));
+      return { result, plan };
+    }
+    throw err;
+  }
+}
+
 export async function handleOpenAICompletion(req, res) {
   const { model, messages, stream = false, max_tokens } = req.body;
   const tools = normalizeTools(req.body.tools);
@@ -403,7 +469,7 @@ export async function handleOpenAICompletion(req, res) {
   // upstream gets just the new user message (DeepSeek keeps the rest server-side
   // via parent_message_id). Falls back to fullPrompt when affinity is off.
   const latestPrompt = buildLatestPrompt(messages, tools, toolChoice);
-  const thinkingEnabled = true;
+  const thinkingEnabled = req.body.thinking_enabled ?? true;
   const searchEnabled = req.body.search_enabled ?? true;
   // Default: send thinking as separate reasoning_content field (recognized by Claude Code, OpenAI clients)
   // Set merge_thinking=true or MERGE_THINKING=true to merge into content with <arg_key> tags instead
@@ -414,11 +480,16 @@ export async function handleOpenAICompletion(req, res) {
   const requestId = `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const requestStart = Date.now();
   let result;
+  let contextPlan = selectContextExecutionPlan({
+    requestedModel: model,
+    requestedModelType: modelType,
+    promptForBudget: conversationId ? latestPrompt : fullPrompt,
+  });
 
   try {
     let refFileIds = [];
     // v4-flash 支持上传图片/PDF；只在消息含图片时获取 upload slot
-    if (model === 'deepseek-v4-flash' && messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'))) {
+    if (contextPlan.effectiveModel === DEEPSEEK_FLASH_MODEL && messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'))) {
       const uploadSlot = await enqueueRequest(true);
       try {
         refFileIds = await extractImages(messages, uploadSlot.token);
@@ -432,21 +503,34 @@ export async function handleOpenAICompletion(req, res) {
     // this conversation, bound to the token that completion() acquires. The
     // prompt is selected after resolution via getPrompt (latest-only when
     // affinity engages, full history otherwise).
-    const resolveSession = conversationId
+    const makeResolveSession = (activeModelType) => conversationId
       ? async (token) => {
-          const r = await resolveConversation({ conversationId, modelType, token });
+          const r = await resolveConversation({ conversationId, modelType: activeModelType, token });
           return { sessionId: r.sessionId, parentMessageId: r.parentMessageId, affinity: r.affinity };
         }
       : null;
     const getPrompt = (affinity) => affinity ? latestPrompt : fullPrompt;
 
-    result = await completion({ modelType, prompt: fullPrompt, thinkingEnabled, searchEnabled, refFileIds, preferVision: model === 'deepseek-v4-flash', resolveSession, getPrompt });
+    const completionResult = await completionWithContextFallback(contextPlan, (activePlan) => ({
+      modelType: activePlan.modelType,
+      prompt: fullPrompt,
+      thinkingEnabled,
+      searchEnabled,
+      refFileIds,
+      preferVision: activePlan.effectiveModel === DEEPSEEK_FLASH_MODEL,
+      resolveSession: makeResolveSession(activePlan.modelType),
+      getPrompt,
+    }));
+    result = completionResult.result;
+    contextPlan = completionResult.plan;
+    setContextPlanHeaders(res, contextPlan);
   } catch (err) {
     console.error('Completion error:', err.message);
     return res.status(500).json({ error: { message: err.message } });
   }
 
   const { body: streamBody, slot } = result;
+  const responseModel = contextPlan.effectiveModel || model;
 
   // Detect client disconnect so we can cancel the upstream stream and release
   // the token slot instead of blocking on parseSSEStream until upstream ends.
@@ -473,7 +557,7 @@ export async function handleOpenAICompletion(req, res) {
         id: requestId,
         object: 'chat.completion.chunk',
         created: Math.floor(Date.now() / 1000),
-        model,
+        model: responseModel,
         choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       });
 
@@ -486,6 +570,7 @@ export async function handleOpenAICompletion(req, res) {
       let rawContentBuffer = '';
       // 缓冲增量提取的文本，累积到一定量再输出，避免逐字符 SSE 事件
       let contentFlushBuffer = '';
+      let streamedContent = false;
       const CONTENT_FLUSH_THRESHOLD = 20;
       // 部分 DeepSeek 变体可能在 THINK 片段中输出工具标签
       let toolParseBuffer = '';
@@ -494,7 +579,7 @@ export async function handleOpenAICompletion(req, res) {
         id: requestId,
         object: 'chat.completion.chunk',
         created: Math.floor(Date.now() / 1000),
-        model,
+        model: responseModel,
       };
 
       for await (const event of parseSSEStream(streamBody)) {
@@ -509,10 +594,16 @@ export async function handleOpenAICompletion(req, res) {
           recordResponseMessageId(conversationId, event.messageIds.responseMessageId);
         }
         if (event.type === 'content') {
+          rawContentBuffer += event.content;
+          if (!toolCallingEnabled) {
+            writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: event.content }, finish_reason: null }] });
+            streamedContent = true;
+            continue;
+          }
+
           // 增量提取 assistant_response 文本，实时流式输出
           // 模型输出格式：{"assistant_response": "...", "tool_calls": [...]}
           const delta = jsonExtractor.process(event.content);
-          rawContentBuffer += event.content;
           if (delta) {
             contentFlushBuffer += delta;
             // 累积到阈值或值结束时批量输出，避免逐字符 SSE 事件
@@ -522,6 +613,7 @@ export async function handleOpenAICompletion(req, res) {
                 writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: '\n response\n' }, finish_reason: null }] });
               }
               writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: contentFlushBuffer }, finish_reason: null }] });
+              streamedContent = true;
               contentFlushBuffer = '';
             }
           }
@@ -538,7 +630,7 @@ export async function handleOpenAICompletion(req, res) {
                 id: requestId,
                 object: 'chat.completion.chunk',
                 created: Math.floor(Date.now() / 1000),
-                model,
+                model: responseModel,
                 choices: [{ index: 0, delta: { reasoning_content: event.content }, finish_reason: null }],
               });
             }
@@ -549,7 +641,7 @@ export async function handleOpenAICompletion(req, res) {
             if (!thinkingTagOpened) {
               thinkingTagOpened = true;
               writeSSE(res, {
-                id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
+                id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: responseModel,
                 choices: [{ index: 0, delta: { content: '<think>\n' }, finish_reason: null }],
               });
             }
@@ -557,7 +649,7 @@ export async function handleOpenAICompletion(req, res) {
               id: requestId,
               object: 'chat.completion.chunk',
               created: Math.floor(Date.now() / 1000),
-              model,
+              model: responseModel,
               choices: [{ index: 0, delta: { content: event.content }, finish_reason: null }],
             });
           } else {
@@ -565,7 +657,7 @@ export async function handleOpenAICompletion(req, res) {
               id: requestId,
               object: 'chat.completion.chunk',
               created: Math.floor(Date.now() / 1000),
-              model,
+              model: responseModel,
               choices: [{ index: 0, delta: { reasoning_content: event.content }, finish_reason: null }],
             });
           }
@@ -575,7 +667,7 @@ export async function handleOpenAICompletion(req, res) {
           if (mergeThinking && thinkingTagOpened) {
             thinkingTagOpened = false;
             writeSSE(res, {
-              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model,
+              id: requestId, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: responseModel,
               choices: [{ index: 0, delta: { content: '\n</think>\n' }, finish_reason: null }],
             });
           }
@@ -585,6 +677,7 @@ export async function handleOpenAICompletion(req, res) {
           // 刷新剩余的内容缓冲
           if (contentFlushBuffer) {
             writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: contentFlushBuffer }, finish_reason: null }] });
+            streamedContent = true;
             contentFlushBuffer = '';
           }
 
@@ -612,6 +705,10 @@ export async function handleOpenAICompletion(req, res) {
               choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
             });
           } else {
+            if (extracted.content && !streamedContent) {
+              writeSSE(res, { ...writeOpts, choices: [{ index: 0, delta: { content: extracted.content }, finish_reason: null }] });
+              streamedContent = true;
+            }
             writeSSE(res, {
               ...writeOpts,
               choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
@@ -630,11 +727,12 @@ export async function handleOpenAICompletion(req, res) {
         const hasToolCalls = extracted.toolCalls?.length;
 
         if (hasToolCalls) {
-          if (extracted.content) {
+          if (extracted.content && !streamedContent) {
             writeSSE(res, {
               ...writeOpts,
               choices: [{ index: 0, delta: { content: extracted.content }, finish_reason: null }],
             });
+            streamedContent = true;
           }
           streamToolCallsIncremental(res, writeOpts, extracted.toolCalls);
           writeSSE(res, {
@@ -642,14 +740,22 @@ export async function handleOpenAICompletion(req, res) {
             choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
           });
         } else {
+          if (extracted.content && !streamedContent) {
+            writeSSE(res, {
+              ...writeOpts,
+              choices: [{ index: 0, delta: { content: extracted.content }, finish_reason: null }],
+            });
+            streamedContent = true;
+          }
           writeSSE(res, {
             ...writeOpts,
             choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
           });
         }
-        res.write('data: [DONE]\n\n');
-        flushSSE(res);
-      }      res.end();
+      }
+
+      writeOpenAISSEDone(res);
+      res.end();
     } else {
       let fullContent = '';
       let fullThinking = '';
@@ -677,9 +783,9 @@ export async function handleOpenAICompletion(req, res) {
 
       // Record TTFB and token speed for non-streaming
       const totalDuration = Date.now() - requestStart;
-      recordTTFB(model, totalDuration);
+      recordTTFB(responseModel, totalDuration);
       if (usage > 0 && totalDuration > 0) {
-        recordTokenSpeed(model, usage, totalDuration);
+        recordTokenSpeed(responseModel, usage, totalDuration);
       }
 
       // 使用 extractAssistantResponse 解析 JSON 格式输出
@@ -720,7 +826,7 @@ export async function handleOpenAICompletion(req, res) {
         id: requestId,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model,
+        model: responseModel,
         choices: [{
           index: 0,
           message,
@@ -791,22 +897,31 @@ export async function handleDeepSeekClaude(req, res) {
     const toolChoice = openaiReq.tool_choice ?? 'auto';
     const toolCallingEnabled = tools.length > 0 && toolChoice !== 'none';
     const fullPrompt = buildPrompt(openaiReq.messages, tools, toolChoice);
-    const thinkingEnabled = true;
+    const thinkingEnabled = openaiReq.thinking_enabled ?? true;
     const searchEnabled = true;
 
     const requestId = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let contextPlan = selectContextExecutionPlan({
+      requestedModel: model,
+      requestedModelType: modelType,
+      promptForBudget: fullPrompt,
+    });
 
     // 4. 调用自建系统（使用 Token 池 + chat.deepseek.com）
-    const result = await completion({
-      modelType,
+    const completionResult = await completionWithContextFallback(contextPlan, (activePlan) => ({
+      modelType: activePlan.modelType,
       prompt: fullPrompt,
       thinkingEnabled,
       searchEnabled,
       refFileIds: [],
-      preferVision: model === 'deepseek-v4-flash',
-    });
+      preferVision: activePlan.effectiveModel === DEEPSEEK_FLASH_MODEL,
+    }));
+    const result = completionResult.result;
+    contextPlan = completionResult.plan;
+    setContextPlanHeaders(res, contextPlan);
 
     const { body: streamBody, slot } = result;
+    const responseModel = contextPlan.effectiveModel || model;
 
     // 监听客户端断开
     let clientGone = false;
@@ -831,7 +946,7 @@ export async function handleDeepSeekClaude(req, res) {
             id: requestId,
             type: 'message',
             role: 'assistant',
-            model,
+            model: responseModel,
             content: [],
             usage: { input_tokens: 0, output_tokens: 0 },
           },
@@ -842,6 +957,7 @@ export async function handleDeepSeekClaude(req, res) {
         let rawContentBuffer = '';
         let thinkingBlockOpened = false;
         let textBlockOpened = false;
+        let streamedTextContent = false;
         let blockIdx = 0;
         let hasStreamError = null;
         let streamFinished = false;
@@ -865,18 +981,32 @@ export async function handleDeepSeekClaude(req, res) {
               writeClaudeSSE(res, {
                 type: 'content_block_start',
                 index: blockIdx,
-                content_block: { type: 'thinking', thinking: event.content },
+                content_block: { type: 'thinking', thinking: '', signature: '' },
               });
               thinkingBlockOpened = true;
-            } else {
-              writeClaudeSSE(res, {
-                type: 'content_block_delta',
-                index: blockIdx,
-                delta: { type: 'thinking_delta', thinking: event.content },
-              });
             }
+            writeClaudeSSE(res, {
+              type: 'content_block_delta',
+              index: blockIdx,
+              delta: { type: 'thinking_delta', thinking: event.content },
+            });
           } else if (event.type === 'content' && event.content) {
             rawContentBuffer += event.content;
+            if (!toolCallingEnabled) {
+              if (thinkingBlockOpened) {
+                writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+                blockIdx++;
+                thinkingBlockOpened = false;
+              }
+              if (!textBlockOpened) {
+                writeClaudeSSE(res, { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
+                textBlockOpened = true;
+              }
+              writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: event.content } });
+              streamedTextContent = true;
+              continue;
+            }
+
             const delta = claudeExtractor.process(event.content);
             if (delta) {
               claudeFlushBuffer += delta;
@@ -893,6 +1023,7 @@ export async function handleDeepSeekClaude(req, res) {
                   textBlockOpened = true;
                 }
                 writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: claudeFlushBuffer } });
+                streamedTextContent = true;
                 claudeFlushBuffer = '';
               }
             }
@@ -929,6 +1060,14 @@ export async function handleDeepSeekClaude(req, res) {
         // 解析完整 JSON 获取 tool_calls
         const extracted = extractAssistantResponse(rawContentBuffer);
         const hasValidToolCalls = extracted.toolCalls?.length;
+
+        if (extracted.content && !streamedTextContent) {
+          writeClaudeSSE(res, { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
+          writeClaudeSSE(res, { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: extracted.content } });
+          writeClaudeSSE(res, { type: 'content_block_stop', index: blockIdx });
+          blockIdx++;
+          streamedTextContent = true;
+        }
 
         if (hasValidToolCalls) {
           // 输出 tool_use blocks
@@ -1020,7 +1159,7 @@ export async function handleDeepSeekClaude(req, res) {
             id: requestId,
             type: 'message',
             role: 'assistant',
-            model,
+            model: responseModel,
             content: contentBlocks,
             stop_reason: 'tool_use',
             usage: { input_tokens: 0, output_tokens: 0 },
@@ -1035,7 +1174,7 @@ export async function handleDeepSeekClaude(req, res) {
             id: requestId,
             type: 'message',
             role: 'assistant',
-            model,
+            model: responseModel,
             content: contentBlocks,
             stop_reason: 'end_turn',
             usage: { input_tokens: 0, output_tokens: 0 },

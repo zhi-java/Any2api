@@ -10,6 +10,13 @@ import { makeTimestamp, makeNonce, makeSign, makeAuthHeaders } from './utils.js'
 const GUEST_ACCESS_URL = 'https://chatglm.cn/chatglm/user-api/guest/access';
 const USER_REFRESH_URL = 'https://chatglm.cn/chatglm/user-api/user/refresh';
 
+function parseTokenList(value) {
+  return String(value || '')
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean);
+}
+
 export class GlmTokenManager {
   constructor() {
     // Token 池加载（支持多个 tokens）
@@ -27,10 +34,7 @@ export class GlmTokenManager {
   _loadTokens() {
     // 优先级 1: GLM_REFRESH_TOKENS (多个 tokens, 逗号分隔)
     if (process.env.GLM_REFRESH_TOKENS) {
-      const tokens = process.env.GLM_REFRESH_TOKENS
-        .split(',')
-        .map(t => t.trim())
-        .filter(Boolean);
+      const tokens = parseTokenList(process.env.GLM_REFRESH_TOKENS);
 
       if (tokens.length > 0) {
         console.log(`[GLM] Loaded ${tokens.length} tokens from GLM_REFRESH_TOKENS`);
@@ -38,10 +42,13 @@ export class GlmTokenManager {
       }
     }
 
-    // 优先级 2: GLM_REFRESH_TOKEN (单个 token, 向后兼容)
+    // 优先级 2: GLM_REFRESH_TOKEN (支持逗号分隔，向后兼容单个 token)
     if (process.env.GLM_REFRESH_TOKEN) {
-      console.log('[GLM] Loaded 1 token from GLM_REFRESH_TOKEN');
-      return [process.env.GLM_REFRESH_TOKEN];
+      const tokens = parseTokenList(process.env.GLM_REFRESH_TOKEN);
+      if (tokens.length > 0) {
+        console.log(`[GLM] Loaded ${tokens.length} token(s) from GLM_REFRESH_TOKEN`);
+        return tokens;
+      }
     }
 
     // 优先级 3: 空数组（访客模式）
@@ -75,8 +82,18 @@ export class GlmTokenManager {
   async _acquireToken() {
     // 如果有 token 池，轮询选择
     if (this.tokens.length > 0) {
-      const refreshToken = this._selectToken();
-      return await this._getAccessTokenForRefresh(refreshToken);
+      let lastError = null;
+      for (let i = 0; i < this.tokens.length; i++) {
+        const refreshToken = this._selectToken();
+        try {
+          return await this._getAccessTokenForRefresh(refreshToken);
+        } catch (err) {
+          lastError = err;
+          console.warn(`[GLM] Refresh token failed: ${err.message}, trying next token`);
+        }
+      }
+      console.warn(`[GLM] All refresh tokens failed${lastError ? `: ${lastError.message}` : ''}, falling back to guest mode`);
+      return await this._guestAccessToken();
     }
 
     // 降级到访客模式
@@ -91,35 +108,27 @@ export class GlmTokenManager {
       return cached.accessToken;
     }
 
-    // 刷新 token
-    try {
-      const result = await this._refresh(refreshToken);
+    const result = await this._refresh(refreshToken);
 
-      // 更新缓存
-      this.tokenCache.set(refreshToken, {
-        accessToken: result.access_token,
-        expiresAt: Date.now() + 3600 * 1000,
-        userId: result.user_id || null,
-      });
+    // 更新缓存
+    this.tokenCache.set(refreshToken, {
+      accessToken: result.access_token,
+      expiresAt: Date.now() + 3600 * 1000,
+      userId: result.user_id || null,
+    });
 
-      // 如果返回了新的 refresh token，更新池中的 token
-      if (result.refresh_token && result.refresh_token !== refreshToken) {
-        const index = this.tokens.indexOf(refreshToken);
-        if (index !== -1) {
-          this.tokens[index] = result.refresh_token;
-          // 将缓存迁移到新 token
-          this.tokenCache.set(result.refresh_token, this.tokenCache.get(refreshToken));
-          this.tokenCache.delete(refreshToken);
-        }
+    // 如果返回了新的 refresh token，更新池中的 token
+    if (result.refresh_token && result.refresh_token !== refreshToken) {
+      const index = this.tokens.indexOf(refreshToken);
+      if (index !== -1) {
+        this.tokens[index] = result.refresh_token;
+        // 将缓存迁移到新 token
+        this.tokenCache.set(result.refresh_token, this.tokenCache.get(refreshToken));
+        this.tokenCache.delete(refreshToken);
       }
-
-      return result.access_token;
-    } catch (err) {
-      console.warn(`[GLM] Refresh token failed: ${err.message}, falling back to guest mode`);
-
-      // 刷新失败，降级到访客模式
-      return await this._guestAccessToken();
     }
+
+    return result.access_token;
   }
 
   /** 访客模式获取 token（带缓存） */
