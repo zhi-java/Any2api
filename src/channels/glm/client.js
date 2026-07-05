@@ -4,12 +4,12 @@
  * 封装 GLM API 调用逻辑，包括消息转换、流解析等
  *
  * 重构要点：
- * - 使用共享工具函数（response-utils.js）处理工具相关的逻辑
- * - 使用共享的 textFromContent 和 buildToolInstructions
+ * - 使用共享 textFromContent 处理内容文本
+ * - 工具说明由调用方的 prompt strategy 生成并传入
  */
 
 import { makeTimestamp, makeNonce, makeSign, makeAuthHeaders } from './utils.js';
-import { textFromContent, buildToolInstructions, normalizeTools } from '../../utils/response-utils.js';
+import { normalizeTools, textFromContent } from '../../utils/response-utils.js';
 import { resolveUploadableBytes } from '../../utils/message-files.js';
 
 const ASSISTANT_STREAM_URL = 'https://chatglm.cn/chatglm/backend-api/assistant/stream';
@@ -32,7 +32,7 @@ function convertToolMessages(messages) {
       const name = msg.name || msg.tool_call_id || 'tool';
       result.push({
         role: 'user',
-        content: [{ type: 'text', text: `[Tool result from ${name}]: ${textFromContent(msg.content)}\n\n[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。` }],
+        content: [{ type: 'text', text: `[Tool result from ${name}]: ${textFromContent(msg.content)}\n\n[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，请直接用自然语言反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。` }],
       });
     } else if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
       const text = textFromContent(msg.content);
@@ -62,6 +62,15 @@ function convertToolMessages(messages) {
  * 使用 <|user|> / <|assistant|> 标签分隔
  */
 function messagesPrepare(converted) {
+  // GLM Web accepts native user message blocks. For the common single-turn case,
+  // do not wrap the text in synthetic <|user|>/<|assistant|> transcript tags:
+  // GLM-5.2 can treat those control-like markers as special/garbled input and
+  // answer with “无法理解/乱码”. Keep transcript flattening only for multi-turn or
+  // non-user history where role preservation is needed.
+  if (converted.length === 1 && converted[0]?.role === 'user') {
+    return [{ role: 'user', content: converted[0].content }];
+  }
+
   const parts = [];
   for (const msg of converted) {
     const tag = msg.role === 'user' ? 'user' : 'assistant';
@@ -77,19 +86,16 @@ function messagesPrepare(converted) {
 /**
  * 将 OpenAI 格式消息转换为 GLM 格式
  * @param {Array} messages - OpenAI 格式消息
- * @param {Array} [tools=[]] - 工具定义，非空时附加工具调用指令
- * @param {string|object} [toolChoice='auto'] - 工具选择约束
+ * @param {object} [options]
+ * @param {string} [options.toolInstructions] - 调用方生成的工具说明，必须与解析器使用同一个 trigger
  */
-export function convertMessages(messages, tools = [], toolChoice = 'auto') {
+export function convertMessages(messages, options = {}) {
+  const { toolInstructions = '' } = options || {};
   const result = messagesPrepare(convertToolMessages(messages));
-  // 将工具定义指令注入到最后一条 user 消息末尾
-  if (tools.length) {
-    const instructions = buildToolInstructions(tools, toolChoice);
-    if (instructions) {
-      const lastMsg = result[result.length - 1];
-      if (lastMsg?.content?.[0]?.text) {
-        lastMsg.content[0].text += '\n\n' + instructions;
-      }
+  if (toolInstructions) {
+    const lastMsg = result[result.length - 1];
+    if (lastMsg?.content?.[0]?.text) {
+      lastMsg.content[0].text += '\n\n' + toolInstructions;
     }
   }
   return result;
@@ -103,7 +109,8 @@ export function convertMessages(messages, tools = [], toolChoice = 'auto') {
  * 构建最终发送给 GLM 的 prompt
  * 将系统消息、对话历史和工具定义合并
  */
-export function buildPrompt(messages, tools = [], toolChoice = 'auto') {
+export function buildPrompt(messages, options = {}) {
+  const { toolInstructions = '' } = options || {};
   let prompt = '';
   let hasToolResult = false;
   for (const msg of messages) {
@@ -128,9 +135,9 @@ export function buildPrompt(messages, tools = [], toolChoice = 'auto') {
     }
   }
   if (hasToolResult) {
-    prompt += `[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。\n\n`;
+    prompt += `[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，请直接用自然语言反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。\n\n`;
   }
-  return (prompt.trim() + buildToolInstructions(tools, toolChoice)).trim();
+  return (prompt.trim() + (toolInstructions || '')).trim();
 }
 
 function glmFileContentTypeFor(file, result) {
@@ -296,6 +303,7 @@ export async function glmChatCompletion(glmMessages, options = {}) {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: options.signal,
   });
 
   if (!res.ok) {
@@ -308,6 +316,7 @@ export async function glmChatCompletion(glmMessages, options = {}) {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        signal: options.signal,
       });
       if (!retryRes.ok) {
         const text = await retryRes.text();
@@ -322,5 +331,5 @@ export async function glmChatCompletion(glmMessages, options = {}) {
   return res.body;
 }
 
-// 导出共享的 normalizeTools、buildToolInstructions、textFromContent 供 handlers 使用
+// 导出共享的 textFromContent 供 handlers 使用
 export { normalizeTools, textFromContent };

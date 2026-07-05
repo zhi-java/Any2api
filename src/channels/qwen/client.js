@@ -1,7 +1,7 @@
 import OSS from 'ali-oss';
 
 import { chatHeaders, requestHeaders } from './headers.js';
-import { buildToolInstructions, normalizeTools, textFromContent } from '../../utils/response-utils.js';
+import { textFromContent } from '../../utils/response-utils.js';
 import { resolveUploadableBytes } from '../../utils/message-files.js';
 
 const BASE_URL = 'https://chat.qwen.ai';
@@ -141,7 +141,8 @@ async function uploadQwenFiles({ token, attachments = [], signal, tokenManager }
   return files;
 }
 
-export function buildQwenMessages(messages, tools = [], toolChoice = 'auto') {
+export function buildQwenMessages(messages, options = {}) {
+  const { toolInstructions = '' } = options || {};
   const parts = [];
   let hasToolResult = false;
 
@@ -169,11 +170,10 @@ export function buildQwenMessages(messages, tools = [], toolChoice = 'auto') {
   }
 
   if (hasToolResult) {
-    parts.push('[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，必须在 assistant_response 中反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。');
+    parts.push('[Tool result instruction]: 上面是客户端已经执行工具后返回的真实结果。请基于这些工具结果继续完成用户请求；如果无需继续调用工具，请直接用自然语言反馈已完成的操作、关键结果和验证情况，禁止空回复结束多轮任务。');
   }
 
-  const instructions = buildToolInstructions(normalizeTools(tools), toolChoice);
-  if (instructions) parts.push(instructions);
+  if (toolInstructions) parts.push(toolInstructions);
 
   return [{ role: 'user', content: parts.filter(Boolean).join('\n\n') }];
 }

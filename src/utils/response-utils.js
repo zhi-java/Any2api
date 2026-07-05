@@ -18,6 +18,7 @@
  */
 
 import { fileLabelForContentPart } from './message-files.js';
+import { isPromptInjectionEnabled } from './env.js';
 
 // ============================================================
 // 安全 SSE 写入
@@ -65,6 +66,37 @@ export function safeEnd(res) {
 export function setTCPNoDelay(req) {
   const socket = req.socket || req.connection;
   if (socket && typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
+}
+
+export function isPromptInjectionDisabledForRequest(req) {
+  if (typeof req?.any2api?.promptInjectionEnabled === 'boolean') {
+    return !req.any2api.promptInjectionEnabled;
+  }
+  return !isPromptInjectionEnabled();
+}
+
+export function getRawJsonPromptForRequest(req) {
+  if (typeof req?.any2api?.rawRequestJsonText === 'string') return req.any2api.rawRequestJsonText;
+  if (Buffer.isBuffer(req?.rawBody)) return req.rawBody.toString('utf8');
+  if (req?.rawBody != null) return String(req.rawBody);
+  return JSON.stringify(req?.body ?? {}, null, 2);
+}
+
+/**
+ * When prompt injection is disabled, send the complete raw client request JSON
+ * body as the Web prompt. Do not extract, relabel, or concatenate messages.
+ */
+export function buildDisabledPrompt(req) {
+  return getRawJsonPromptForRequest(req);
+}
+
+export function captureRawJsonPromptMetadata(req) {
+  req.any2api = {
+    ...(req.any2api || {}),
+    promptInjectionEnabled: isPromptInjectionEnabled(),
+    rawRequestJsonText: getRawJsonPromptForRequest(req),
+  };
+  return req.any2api;
 }
 
 // ============================================================
@@ -202,7 +234,7 @@ export function normalizeTools(tools) {
       function: {
         name: tool.function.name,
         description: tool.function.description || '',
-        parameters: tool.function.parameters || { type: 'object', properties: {} },
+        parameters: Object.prototype.hasOwnProperty.call(tool.function, 'parameters') ? tool.function.parameters : { type: 'object', properties: {} },
       },
     }));
 }
@@ -237,7 +269,7 @@ function summarizeDescription(description) {
 }
 
 function simplifyParameters(parameters, compact = false) {
-  if (!compact || !parameters?.properties) return parameters || { type: 'object', properties: {} };
+  if (!compact || !parameters?.properties) return parameters ?? { type: 'object', properties: {} };
   const simplified = {
     type: parameters.type || 'object',
     properties: {},
@@ -261,6 +293,8 @@ function forcedToolName(toolChoice) {
 }
 
 export function buildToolInstructions(tools, toolChoice = 'auto', customPrefix = null) {
+  if (!isPromptInjectionEnabled()) return '';
+
   const normalized = normalizeTools(tools);
   if (!normalized.length || toolChoice === 'none') return '';
 
@@ -363,7 +397,7 @@ export function buildPersistentToolDefs(messages, tools, knownToolDefs = []) {
     const toolList = knownToolDefs.map(t => ({
       name: t.function?.name || t.name,
       description: t.function?.description || t.description || '',
-      parameters: t.function?.parameters || t.parameters || { type: 'object', properties: {} },
+      parameters: t.function?.parameters ?? t.parameters ?? { type: 'object', properties: {} },
     }));
     return `\n\n[持久化工具定义 — 以下工具仍然可用]：
 ${JSON.stringify(toolList, null, 2)}
@@ -744,7 +778,10 @@ export function extractJsonBlock(text, tag) {
  * 支持不闭合的标签（防模型死循环）
  */
 function stripTrailingCodeLanguageMarker(text) {
-  return (text || '').replace(/(?:^|\n)\s*(?:json|xml)\s*$/i, '').trim();
+  return (text || '')
+    .replace(/^\s*```(?:json|xml)?\s*/i, '')
+    .replace(/(?:^|\n)\s*(?:json|xml)\s*$/i, '')
+    .trim();
 }
 
 export function stripToolBlocks(text) {
@@ -949,7 +986,7 @@ export function parseVirtualToolJSON(text) {
  *   3. 裸 JSON 兜底
  */
 export function parseToolCallsFromText(text) {
-  if (!text) return null;
+  if (!text || !isPromptInjectionEnabled()) return null;
 
   // 策略0: XML 属性格式（向后兼容 DeepSeek 旧输出）。
   // <tool_call name="Read">{"file_path":"..."}</tool_call>
@@ -1265,11 +1302,23 @@ export function buildLatestPrompt(messages) {
 export function extractAssistantResponse(text) {
   if (!text) return { content: null, toolCalls: null };
 
+  // Use the same tolerant parser as tool-call extraction so streamed handlers can
+  // still recover the final正文 when the model wraps JSON in code fences, omits
+  // spaces, or emits a short prefix before the JSON object.
+  const virtual = parseVirtualToolJSON(text);
+  if (virtual) {
+    return {
+      content: virtual.content ?? null,
+      toolCalls: virtual.toolCalls ?? null,
+    };
+  }
+
   const trimmed = text.trim();
   // 使用 tryParseJson 替代 JSON.parse，容错处理 Windows 路径等非法转义
   const parsed = tryParseJson(trimmed);
   if (!parsed || typeof parsed !== 'object') {
-    return { content: text, toolCalls: null };
+    const sanitized = sanitizeModelOutput(text);
+    return { content: sanitized || text, toolCalls: null };
   }
 
   const assistantResponse = parsed.assistant_response;
@@ -1364,36 +1413,40 @@ export function buildToolRetryPrompt(previousResponse) {
  *   }
  */
 export function createJsonContentExtractor() {
-  let phase = 'waiting'; // 'waiting' | 'in_value' | 'value_done'
-  let searchPos = 0;
+  let phase = 'waiting_key'; // waiting_key | waiting_colon | waiting_value | in_string | value_done
+  let keyMatchPos = 0;
   let pendingEscape = false;
-  const MARKER = '"assistant_response": "';
+  let unicodeEscape = null;
+  const KEY = '"assistant_response"';
 
-  function decodeEscape(esc, source, index) {
+  function resetKeySearch(char) {
+    keyMatchPos = char === KEY[0] ? 1 : 0;
+  }
+
+  function hexValue(char) {
+    return /^[0-9a-fA-F]$/.test(char) ? char : null;
+  }
+
+  function decodeSimpleEscape(esc) {
     switch (esc) {
-      case '"': return { text: '"', index };
-      case '\\': return { text: '\\', index };
-      case '/': return { text: '/', index };
-      case 'b': return { text: '\b', index };
-      case 'f': return { text: '\f', index };
-      case 'n': return { text: '\n', index };
-      case 'r': return { text: '\r', index };
-      case 't': return { text: '\t', index };
-      case 'u': {
-        // \uXXXX — consume up to 4 hex digits
-        const hex = source.slice(index + 1, index + 5);
-        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-          return { text: String.fromCharCode(parseInt(hex, 16)), index: index + 4 };
-        }
-        return { text: 'u', index }; // not a valid unicode escape, output literal
-      }
-      default: return { text: esc, index }; // unknown escape, output literal
+      case '"': return '"';
+      case '\\': return '\\';
+      case '/': return '/';
+      case 'b': return '\b';
+      case 'f': return '\f';
+      case 'n': return '\n';
+      case 'r': return '\r';
+      case 't': return '\t';
+      default: return esc;
     }
   }
 
   return {
     /**
-     * 处理一个内容 chunk，返回应流式输出的内容增量
+     * 处理一个内容 chunk，返回应流式输出的内容增量。
+     * 支持 `"assistant_response":"..."`、`"assistant_response" : "..."`
+     * 以及标记被拆分到多个 chunk 的情况；旧实现只匹配带固定空格的
+     * `"assistant_response": "`，导致模型输出紧凑 JSON 时对外没有正文增量。
      * @param {string} chunk - 模型输出的内容片段
      * @returns {string} 应流式输出的文本增量
      */
@@ -1405,43 +1458,74 @@ export function createJsonContentExtractor() {
       for (let i = 0; i < chunk.length; i++) {
         const char = chunk[i];
 
-        if (phase === 'waiting') {
-          if (char === MARKER[searchPos]) {
-            searchPos++;
-            if (searchPos === MARKER.length) {
-              phase = 'in_value';
-            }
+        if (phase === 'waiting_key') {
+          if (char === KEY[keyMatchPos]) {
+            keyMatchPos++;
+            if (keyMatchPos === KEY.length) phase = 'waiting_colon';
           } else {
-            searchPos = 0;
+            resetKeySearch(char);
           }
           continue;
         }
 
-        if (phase === 'in_value') {
-          if (pendingEscape) {
+        if (phase === 'waiting_colon') {
+          if (/\s/.test(char)) continue;
+          if (char === ':') phase = 'waiting_value';
+          else {
+            phase = 'waiting_key';
+            resetKeySearch(char);
+          }
+          continue;
+        }
+
+        if (phase === 'waiting_value') {
+          if (/\s/.test(char)) continue;
+          if (char === '"') phase = 'in_string';
+          else if (/^n/i.test(char)) phase = 'value_done'; // assistant_response: null
+          else {
+            phase = 'waiting_key';
+            resetKeySearch(char);
+          }
+          continue;
+        }
+
+        if (phase === 'in_string') {
+          if (unicodeEscape) {
+            const hex = hexValue(char);
+            if (hex) {
+              unicodeEscape.hex += hex;
+              if (unicodeEscape.hex.length === 4) {
+                delta += String.fromCharCode(parseInt(unicodeEscape.hex, 16));
+                unicodeEscape = null;
+                pendingEscape = false;
+              }
+              continue;
+            }
+            delta += 'u' + unicodeEscape.hex + char;
+            unicodeEscape = null;
             pendingEscape = false;
-            const decoded = decodeEscape(char, chunk, i);
-            delta += decoded.text;
-            i = decoded.index;
+            continue;
+          }
+
+          if (pendingEscape) {
+            if (char === 'u') {
+              unicodeEscape = { hex: '' };
+              continue;
+            }
+            delta += decodeSimpleEscape(char);
+            pendingEscape = false;
             continue;
           }
 
           if (char === '\\') {
-            if (i + 1 >= chunk.length) {
-              pendingEscape = true;
-              continue;
-            }
-
-            i++;
-            const decoded = decodeEscape(chunk[i], chunk, i);
-            delta += decoded.text;
-            i = decoded.index;
-          } else if (char === '"') {
+            pendingEscape = true;
+            continue;
+          }
+          if (char === '"') {
             phase = 'value_done';
             break;
-          } else {
-            delta += char;
           }
+          delta += char;
         }
       }
 
@@ -1449,7 +1533,7 @@ export function createJsonContentExtractor() {
     },
 
     /** 是否已检测到 assistant_response 标记 */
-    isFound() { return phase !== 'waiting'; },
+    isFound() { return phase !== 'waiting_key'; },
 
     /** assistant_response 值是否已完整提取 */
     isDone() { return phase === 'value_done'; },

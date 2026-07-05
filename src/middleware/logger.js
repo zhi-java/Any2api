@@ -46,10 +46,20 @@ function channelForModel(model) {
 function isExternalApiPath(path) {
   return path === '/v1/chat/completions'
     || path === '/v1/messages'
+    || path === '/v1/responses'
     || path === '/v1/models'
     || path === '/chat/completions'
     || path === '/messages'
+    || path === '/responses'
     || path === '/models';
+}
+
+function protocolForPath(path) {
+  if (path === '/v1/chat/completions' || path === '/chat/completions') return 'chat_completions';
+  if (path === '/v1/messages' || path === '/messages') return 'claude_messages';
+  if (path === '/v1/responses' || path === '/responses') return 'responses';
+  if (path === '/v1/models' || path === '/models') return 'models';
+  return 'other';
 }
 
 function channelForEntry(entry) {
@@ -92,6 +102,93 @@ function writeChatLog(entry) {
   }
 }
 
+const REDACTED_HEADER_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key',
+  'proxy-authorization',
+]);
+
+function envFlag(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  return ['true', '1', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
+}
+
+function maxDebugChars() {
+  const parsed = parseInt(process.env.CLIENT_DEBUG_LOG_MAX_CHARS || '200000', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 200000;
+}
+
+function truncateDebugValue(value, maxChars = maxDebugChars()) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (text.length <= maxChars) return value;
+  return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
+}
+
+function redactHeaders(headers = {}) {
+  const redacted = {};
+  for (const [name, value] of Object.entries(headers || {})) {
+    redacted[name] = REDACTED_HEADER_NAMES.has(String(name).toLowerCase()) ? '[REDACTED]' : value;
+  }
+  return redacted;
+}
+
+function getClientDebugLogPath(date) {
+  const safeDate = sanitizeDate(date);
+  const root = process.env.CLIENT_DEBUG_LOG_DIR || logDir;
+  const dir = join(root, serviceName, 'client-debug');
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `${safeDate}.jsonl`);
+  const rel = relative(resolve(root), resolve(p));
+  if (rel.startsWith('..') || resolve(p) === resolve(root)) {
+    throw new Error('path escapes debug log directory');
+  }
+  return p;
+}
+
+function writeClientDebugLog(entry) {
+  if (!envFlag('CLIENT_DEBUG_LOG')) return;
+  try {
+    appendFileSync(getClientDebugLogPath(), JSON.stringify(entry) + '\n');
+  } catch (e) {
+    console.error('Client debug log write failed:', e.message);
+  }
+}
+
+function requestBodySnapshot(req) {
+  const raw = Buffer.isBuffer(req.rawBody) ? req.rawBody.toString('utf8') : null;
+  if (raw) {
+    try { return JSON.parse(raw); } catch { return raw; }
+  }
+  return req.body ?? null;
+}
+
+function sseStats(rawBody) {
+  const stats = { dataLines: 0, eventLines: 0, events: {}, openaiContentDeltas: 0, claudeTextDeltas: 0, claudeThinkingDeltas: 0 };
+  for (const line of String(rawBody || '').split('\n')) {
+    if (line.startsWith('event: ')) {
+      stats.eventLines++;
+      const eventName = line.slice(7).trim();
+      stats.events[eventName] = (stats.events[eventName] || 0) + 1;
+    } else if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+      stats.dataLines++;
+      try {
+        const data = JSON.parse(line.slice(6));
+        const delta = data.choices?.[0]?.delta;
+        if (typeof delta?.content === 'string') stats.openaiContentDeltas++;
+        if (data.type === 'content_block_delta') {
+          if (typeof data.delta?.text === 'string') stats.claudeTextDeltas++;
+          if (typeof data.delta?.thinking === 'string') stats.claudeThinkingDeltas++;
+        }
+      } catch {}
+    }
+  }
+  return stats;
+}
+
 export function requestLogger(name) {
   serviceName = name || serviceName;
   if (process.env.LOG_DIR) logDir = process.env.LOG_DIR;
@@ -99,10 +196,11 @@ export function requestLogger(name) {
   return (req, res, next) => {
     const start = Date.now();
     const requestPath = (req.originalUrl || req.path || '').split('?')[0];
-    const isChat = requestPath === '/v1/chat/completions' || requestPath === '/v1/messages' || requestPath === '/api/v0/chat/completion';
-    const messages = req.body?.messages || null;
+    const protocol = protocolForPath(requestPath);
+    const isChat = requestPath === '/v1/chat/completions' || requestPath === '/v1/messages' || requestPath === '/v1/responses';
+    const messages = req.body?.messages ?? req.body?.input ?? null;
     const model = req.body?.model || '-';
-    const stream = req.body?.stream || false;
+    const initialStream = req.body?.stream === true;
 
     // Capture response body
     const chunks = [];
@@ -121,20 +219,47 @@ export function requestLogger(name) {
 
     res.on('finish', () => {
       const duration = Date.now() - start;
+      const rawBody = chunks.join('');
+      const responseWasStream = initialStream
+        || req.body?.stream === true
+        || /(?:^|\n)(?:event|data): /m.test(rawBody);
+      let assistantContent = '';
+      let reasoningContent = '';
+      let finishReason = null;
+      let usage = null;
+      let requestId = null;
+      let responseModel = null;
       const entry = {
         time: new Date().toISOString(),
         method: req.method,
         path: requestPath,
+        protocol,
         model,
         channel: channelForModel(model),
         status: res.statusCode,
         duration,
       };
 
-      console.log(`[${entry.time}] ${entry.method} ${entry.path} model=${entry.model} ${entry.status} ${entry.duration}ms`);
+      // Add prompt injection flag for chat endpoints
+      if (isChat) {
+        entry.promptInjectionEnabled = req.any2api?.promptInjectionEnabled;
+      }
+
+      console.log(`[${entry.time}] ${entry.method} ${entry.path} model=${entry.model} ${entry.status} ${entry.duration}ms${entry.error?.message ? ' error=' + entry.error.message.slice(0,120) : ''}`);
 
       // Record to metrics collector
       recordRequest(model, duration, res.statusCode);
+
+      // Add error details for failed requests
+      if (res.statusCode >= 400) {
+        const rawBody = chunks.join('');
+        try {
+          const errJson = JSON.parse(rawBody.split('\n').find(l => l.startsWith('data: '))?.slice(6) || rawBody);
+          entry.error = errJson.error || errJson;
+        } catch {
+          entry.error = rawBody.slice(0, 500);
+        }
+      }
 
       // Write request log (metadata only)
       writeLog(entry);
@@ -147,44 +272,122 @@ export function requestLogger(name) {
       recentLogs.push(entry);
 
       // Write full chat log for chat endpoints
-      if (isChat && messages && res.statusCode === 200) {
-        let assistantContent = '';
-        let reasoningContent = '';
-        if (stream) {
-          // Parse SSE stream to extract both content and reasoning_content deltas
-          for (const chunk of chunks) {
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+      if (isChat && res.statusCode === 200) {
+        if (responseWasStream) {
+          const lines = rawBody.split('\n');
+          for (let li = 0; li < lines.length; li++) {
+            const line = lines[li];
+            if (line.startsWith('event: ')) {
+              const eventName = line.slice(7).trim();
+              const dataLine = lines[li + 1];
+              if (dataLine?.startsWith('data: ')) {
                 try {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(dataLine.slice(6));
+                  if (protocol === 'claude_messages') {
+                    if (data.type === 'content_block_delta') {
+                      if (data.delta?.text) assistantContent += data.delta.text;
+                      if (data.delta?.thinking) reasoningContent += data.delta.thinking;
+                    }
+                    if (data.type === 'message_start') {
+                      requestId = data.message?.id;
+                      responseModel = data.message?.model;
+                      usage = data.message?.usage;
+                    }
+                    if (data.type === 'message_delta') {
+                      finishReason = data.delta?.stop_reason;
+                      usage = data.usage || usage;
+                    }
+                  }
+                } catch {}
+              }
+              continue;
+            }
+            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (protocol === 'responses') {
+                  if (data.type === 'response.output_text.delta' && data.delta) assistantContent += data.delta;
+                  if (data.type === 'response.created') { requestId = data.response?.id; responseModel = data.response?.model; }
+                  if (data.type === 'response.completed') { finishReason = 'completed'; usage = data.response?.usage; }
+                  if (data.type === 'response.failed') { finishReason = 'failed'; }
+                } else {
                   const delta = data.choices?.[0]?.delta;
                   if (delta?.content) assistantContent += delta.content;
                   if (delta?.reasoning_content) reasoningContent += delta.reasoning_content;
-                } catch {}
-              }
+                  if (data.choices?.[0]?.finish_reason) finishReason = data.choices[0].finish_reason;
+                  if (data.id) requestId = data.id;
+                  if (data.usage) usage = data.usage;
+                }
+              } catch {}
             }
           }
         } else {
           try {
-            const body = chunks.join('');
-            const json = JSON.parse(body);
-            const msg = json.choices?.[0]?.message;
-            assistantContent = msg?.content || '';
-            reasoningContent = msg?.reasoning_content || '';
+            const json = JSON.parse(rawBody);
+            if (protocol === 'responses') {
+              assistantContent = json.output_text || '';
+              requestId = json.id;
+              finishReason = json.status;
+              usage = json.usage;
+            } else if (protocol === 'claude_messages') {
+              assistantContent = json.content?.filter(c => c.type === 'text').map(c => c.text).join('') || '';
+              reasoningContent = json.content?.filter(c => c.type === 'thinking').map(c => c.thinking).join('') || '';
+              requestId = json.id;
+              finishReason = json.stop_reason;
+              usage = json.usage;
+              responseModel = json.model;
+            } else {
+              const msg = json.choices?.[0]?.message;
+              assistantContent = msg?.content || '';
+              reasoningContent = msg?.reasoning_content || '';
+              requestId = json.id;
+              finishReason = json.choices?.[0]?.finish_reason;
+              usage = json.usage;
+            }
           } catch {}
         }
 
         writeChatLog({
           time: entry.time,
-          model,
-          stream,
+          protocol,
+          model: responseModel || model,
+          stream: responseWasStream,
           duration,
+          requestId,
+          finishReason,
           messages,
           response: assistantContent,
           reasoning: reasoningContent || undefined,
+          usage,
         });
       }
+
+      writeClientDebugLog({
+        time: entry.time,
+        duration,
+        protocol,
+        request: {
+          method: req.method,
+          path: requestPath,
+          originalUrl: req.originalUrl,
+          headers: redactHeaders(req.headers),
+          body: truncateDebugValue(requestBodySnapshot(req)),
+          effectiveBody: truncateDebugValue(req.body ?? null),
+        },
+        response: {
+          status: res.statusCode,
+          headers: redactHeaders(typeof res.getHeaders === 'function' ? res.getHeaders() : {}),
+          isStream: responseWasStream,
+          sse: responseWasStream ? sseStats(rawBody) : undefined,
+          rawBody: truncateDebugValue(rawBody),
+          assistantText: assistantContent,
+          reasoningText: reasoningContent,
+          finishReason,
+          usage,
+          requestId,
+          model: responseModel || model,
+        },
+      });
     });
 
     next();

@@ -1,0 +1,194 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createPromptPlan } from '../../src/core/prompt-strategy.js';
+import {
+  attemptToolParseWithRetry,
+  classifyToolFailure,
+  getFcErrorRetryMaxAttempts,
+  getToolContinuationPrompt,
+  getToolErrorRetryPrompt,
+  isFcErrorRetryEnabled,
+  mergeTruncatedAndContinuation,
+} from '../../src/core/tool-retry.js';
+
+const tools = [{
+  type: 'function',
+  function: {
+    name: 'Read',
+    description: 'Read a file',
+    parameters: {
+      type: 'object',
+      properties: { file_path: { type: 'string' } },
+      required: ['file_path'],
+    },
+  },
+}];
+
+function rawReq(body = {}) {
+  return {
+    body,
+    headers: {},
+    any2api: {
+      promptInjectionEnabled: true,
+      rawRequestJsonText: JSON.stringify(body),
+    },
+  };
+}
+
+function plan() {
+  return createPromptPlan({ req: rawReq({ messages: [{ role: 'user', content: 'hi' }] }), tools, toolChoice: 'auto' });
+}
+
+function validXml(trigger, path = 'README.md') {
+  return `${trigger}\n<function_calls><function_call><tool>Read</tool><args_json>{"file_path":"${path}"}</args_json></function_call></function_calls>`;
+}
+
+test('retry configuration defaults and clamps env values', () => {
+  const oldEnabled = process.env.ENABLE_FC_ERROR_RETRY;
+  const oldAttempts = process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
+  try {
+    delete process.env.ENABLE_FC_ERROR_RETRY;
+    delete process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
+    assert.equal(isFcErrorRetryEnabled(), true);
+    assert.equal(getFcErrorRetryMaxAttempts(), 3);
+
+    process.env.ENABLE_FC_ERROR_RETRY = 'off';
+    process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = '100';
+    assert.equal(isFcErrorRetryEnabled(), false);
+    assert.equal(getFcErrorRetryMaxAttempts(), 10);
+
+    process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = '0';
+    assert.equal(getFcErrorRetryMaxAttempts(), 1);
+  } finally {
+    if (oldEnabled == null) delete process.env.ENABLE_FC_ERROR_RETRY;
+    else process.env.ENABLE_FC_ERROR_RETRY = oldEnabled;
+    if (oldAttempts == null) delete process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
+    else process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = oldAttempts;
+  }
+});
+
+test('no_fc does not call retry callback and returns ordinary content', async () => {
+  const promptPlan = plan();
+  let called = false;
+  const result = await attemptToolParseWithRetry({
+    content: 'ordinary answer',
+    promptPlan,
+    retryToolRequest: async () => { called = true; return ''; },
+  });
+  assert.equal(called, false);
+  assert.equal(result.failureType, 'no_fc');
+  assert.equal(result.content, 'ordinary answer');
+});
+
+test('syntax_error builds rewrite prompt and retries successfully', async () => {
+  const promptPlan = plan();
+  let seenPrompt = '';
+  const result = await attemptToolParseWithRetry({
+    content: `${validXml(promptPlan.triggerSignal)} trailing`,
+    promptPlan,
+    retryToolRequest: async ({ retryPrompt, failureType }) => {
+      seenPrompt = retryPrompt;
+      assert.equal(failureType, 'syntax_error');
+      return validXml(promptPlan.triggerSignal, 'fixed.txt');
+    },
+    maxAttempts: 2,
+  });
+  assert.match(seenPrompt, /Your previous response attempted to make a function call/);
+  assert.match(seenPrompt, /Unexpected text after/);
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(JSON.parse(result.toolCalls[0].function.arguments).file_path, 'fixed.txt');
+});
+
+test('schema_error builds rewrite prompt and retries successfully', async () => {
+  const promptPlan = plan();
+  const result = await attemptToolParseWithRetry({
+    content: `${promptPlan.triggerSignal}\n<function_calls><function_call><tool>Read</tool><args_json>{}</args_json></function_call></function_calls>`,
+    promptPlan,
+    retryToolRequest: async ({ retryPrompt, failureType, errorDetails }) => {
+      assert.equal(failureType, 'schema_error');
+      assert.match(errorDetails, /missing required property/);
+      assert.match(retryPrompt, /arguments must match the declared tool schema/);
+      return validXml(promptPlan.triggerSignal, 'schema-fixed.txt');
+    },
+    maxAttempts: 2,
+  });
+  assert.equal(JSON.parse(result.toolCalls[0].function.arguments).file_path, 'schema-fixed.txt');
+});
+
+test('truncated output builds continuation prompt and merges exact continuation', async () => {
+  const promptPlan = plan();
+  const truncated = `${promptPlan.triggerSignal}\n<function_calls><function_call><tool>Read</tool><args_json>{"file_path":"line\\n`;
+  const continuation = `two"}</args_json></function_call></function_calls>`;
+  const result = await attemptToolParseWithRetry({
+    content: truncated,
+    promptPlan,
+    retryToolRequest: async ({ retryPrompt, failureType }) => {
+      assert.equal(failureType, 'truncated');
+      assert.match(retryPrompt, /cut off before the function call XML was complete/);
+      return continuation;
+    },
+    maxAttempts: 2,
+  });
+  assert.equal(JSON.parse(result.toolCalls[0].function.arguments).file_path, 'line\ntwo');
+  assert.equal(result.finalContent, truncated + continuation);
+});
+
+test('truncated retry accepts full rewrite when response restarts with trigger', async () => {
+  const promptPlan = plan();
+  const result = await attemptToolParseWithRetry({
+    content: `${promptPlan.triggerSignal}\n<function_calls><function_call><tool>Read</tool><args_json>{"file_path":"a"}`,
+    promptPlan,
+    retryToolRequest: async () => validXml(promptPlan.triggerSignal, 'rewrite.txt'),
+    maxAttempts: 2,
+  });
+  assert.equal(JSON.parse(result.toolCalls[0].function.arguments).file_path, 'rewrite.txt');
+});
+
+test('retry disabled returns failure without callback', async () => {
+  const promptPlan = plan();
+  let called = false;
+  const result = await attemptToolParseWithRetry({
+    content: `${validXml(promptPlan.triggerSignal)} trailing`,
+    promptPlan,
+    retryEnabled: false,
+    retryToolRequest: async () => { called = true; return validXml(promptPlan.triggerSignal); },
+  });
+  assert.equal(called, false);
+  assert.equal(result.toolCalls, null);
+  assert.equal(result.failureType, 'syntax_error');
+});
+
+test('max attempts are respected and explicit zero still parses once', async () => {
+  const promptPlan = plan();
+  const valid = await attemptToolParseWithRetry({
+    content: validXml(promptPlan.triggerSignal, 'once.txt'),
+    promptPlan,
+    maxAttempts: 0,
+  });
+  assert.equal(JSON.parse(valid.toolCalls[0].function.arguments).file_path, 'once.txt');
+
+  let calls = 0;
+  const failed = await attemptToolParseWithRetry({
+    content: `${validXml(promptPlan.triggerSignal)} trailing`,
+    promptPlan,
+    maxAttempts: 2,
+    retryToolRequest: async () => {
+      calls += 1;
+      return `${validXml(promptPlan.triggerSignal)} still trailing`;
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(failed.toolCalls, null);
+  assert.equal(failed.attempts, 2);
+});
+
+test('classifyToolFailure and prompt builders expose expected wording', () => {
+  const promptPlan = plan();
+  assert.equal(classifyToolFailure('hello', promptPlan.triggerSignal), 'no_fc');
+  assert.equal(classifyToolFailure(`${promptPlan.triggerSignal}\n<function_calls>`, promptPlan.triggerSignal), 'truncated');
+  assert.equal(classifyToolFailure(`${promptPlan.triggerSignal}\nno xml`, promptPlan.triggerSignal), 'syntax_error');
+  assert.match(getToolErrorRetryPrompt('bad', 'details', promptPlan.triggerSignal), /Please retry/);
+  assert.match(getToolContinuationPrompt('tail', 'missing close'), /Option A/);
+  assert.equal(mergeTruncatedAndContinuation('a\n', '\nb'), 'a\n\nb');
+});
