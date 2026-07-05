@@ -4,15 +4,23 @@
  * 处理所有 /v1/* 端点
  * - POST /v1/chat/completions (OpenAI 格式)
  * - POST /v1/messages (Claude 格式)
+ * - POST /v1/responses (Responses 格式)
  * - GET /v1/models (模型列表)
  */
 
 import express from 'express';
-import { routeModel } from '../utils/model-router.js';
-import deepseek from '../channels/deepseek/index.js';
-import { handleGLMCompletion, handleGLMClaudeMessages, GLM_MODEL_MAP } from '../channels/glm/index.js';
-import { handleQwenCompletion, handleQwenClaudeMessages, listQwenModels } from '../channels/qwen/index.js';
-import { handleKimiCompletion, handleKimiClaudeMessages, listKimiModels } from '../channels/kimi/index.js';
+import { captureRawJsonPromptMetadata } from '../utils/response-utils.js';
+import { createChatCompletionsRequestAdapter } from '../protocols/chat-completions/request-adapter.js';
+import { renderChatCompletions, writeChatError } from '../protocols/chat-completions/renderer.js';
+import { createClaudeMessagesRequestAdapter } from '../protocols/claude-messages/request-adapter.js';
+import { renderClaudeMessages, writeClaudeProtocolError } from '../protocols/claude-messages/renderer.js';
+import { createResponsesRequestAdapter } from '../protocols/responses/request-adapter.js';
+import { renderResponses, writeResponsesError } from '../protocols/responses/renderer.js';
+import { generateInternalEvents, prepareInternalGeneration } from '../core/generation.js';
+import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
+import { GLM_MODEL_MAP } from '../channels/glm/index.js';
+import { listQwenModels } from '../channels/qwen/index.js';
+import { listKimiModels } from '../channels/kimi/index.js';
 
 const router = express.Router();
 
@@ -22,8 +30,8 @@ const router = express.Router();
  * 无路径匹配，对经过此路由器的所有请求生效，手动按 req.path 分流。
  */
 router.use((req, res, next) => {
-  const isCompletion = req.originalUrl?.endsWith('/chat/completions');
-  const isMessages = req.originalUrl?.endsWith('/messages');
+  const isCompletion = req.path === '/chat/completions';
+  const isMessages = req.path === '/messages';
   if ((isCompletion || isMessages) && req.body) {
     if (req.body.stream === false) {
       return res.status(400).json(isMessages ? {
@@ -49,68 +57,56 @@ router.use((req, res, next) => {
 // ============= OpenAI 格式 - 统一端点（支持所有渠道） =============
 router.post('/chat/completions', async (req, res) => {
   try {
-    // 1. 路由模型到正确的渠道
-    const { channel, model } = routeModel(req.body.model);
-    req.body.model = model;
-
-    // 2. 分发到对应处理器
-    if (channel === 'deepseek') {
-      return await deepseek.handleOpenAI(req, res);
-    } else if (channel === 'glm') {
-      return await handleGLMCompletion(req, res);
-    } else if (channel === 'qwen') {
-      return await handleQwenCompletion(req, res);
-    } else if (channel === 'kimi') {
-      return await handleKimiCompletion(req, res);
-    }
-
-  } catch (err) {
-    // 3. 错误处理（OpenAI 格式）
-    return res.status(400).json({
-      error: {
-        message: err.message,
-        type: 'invalid_request_error',
-        param: 'model',
-        code: 'model_not_found'
-      }
+    captureRawJsonPromptMetadata(req);
+    const internalRequest = createChatCompletionsRequestAdapter(req);
+    prepareInternalGeneration(internalRequest);
+    const events = generateInternalEvents(internalRequest, { req, res });
+    return await renderChatCompletions(res, events, {
+      model: internalRequest.model.requested,
+      stream: internalRequest.stream,
     });
+  } catch (err) {
+    return writeChatError(res, err);
   }
 });
 
 // ============= Claude 格式 - 统一端点（支持所有渠道） =============
 router.post('/messages', async (req, res) => {
   try {
-    // 1. 路由模型到正确的渠道
-    const { channel, model } = routeModel(req.body.model);
-    req.body.model = model;
-
-    // 2. 分发到对应处理器
-    if (channel === 'deepseek') {
-      return await deepseek.handleClaude(req, res);
-    } else if (channel === 'glm') {
-      return await handleGLMClaudeMessages(req, res);
-    } else if (channel === 'qwen') {
-      return await handleQwenClaudeMessages(req, res);
-    } else if (channel === 'kimi') {
-      return await handleKimiClaudeMessages(req, res);
-    }
-
-  } catch (err) {
-    // 3. 错误处理（Claude 格式）
-    return res.status(400).json({
-      type: 'error',
-      error: {
-        type: 'invalid_request_error',
-        message: err.message
-      }
+    captureRawJsonPromptMetadata(req);
+    const internalRequest = createClaudeMessagesRequestAdapter(req);
+    prepareInternalGeneration(internalRequest);
+    const events = generateInternalEvents(internalRequest, { req, res });
+    return await renderClaudeMessages(res, events, {
+      model: internalRequest.model.requested,
+      stream: internalRequest.stream,
     });
+  } catch (err) {
+    return writeClaudeProtocolError(res, err);
+  }
+});
+
+// ============= Responses 格式 - Internal Event 端点 =============
+router.post('/responses', async (req, res) => {
+  try {
+    captureRawJsonPromptMetadata(req);
+    const internalRequest = createResponsesRequestAdapter(req);
+    // Resolve model/channel before writing SSE headers so unsupported channels return a pre-stream error.
+    prepareInternalGeneration(internalRequest);
+    const events = generateInternalEvents(internalRequest, { req, res });
+    return await renderResponses(res, events, {
+      model: internalRequest.model.requested,
+      stream: internalRequest.stream,
+    });
+  } catch (err) {
+    return writeResponsesError(res, err);
   }
 });
 
 // ============= 模型列表 - 统一端点（所有渠道的模型） =============
 router.get('/models', (req, res) => {
   // DeepSeek 模型
-  const deepseekModels = Object.keys(deepseek.models).map(id => ({
+  const deepseekModels = Object.keys(DEEPSEEK_MODEL_MAP).map(id => ({
     id,
     object: 'model',
     created: 1718000000,

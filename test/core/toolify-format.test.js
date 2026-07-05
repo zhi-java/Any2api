@@ -1,0 +1,106 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  buildToolCallIndexFromMessages,
+  formatAssistantToolCallsForAI,
+  formatToolResultForAI,
+  preprocessMessagesForToolify,
+} from '../../src/core/toolify-format.js';
+
+const trigger = '<Function_AB12_Start/>';
+
+const readCall = {
+  id: 'call_read',
+  type: 'function',
+  function: {
+    name: 'read_file',
+    arguments: JSON.stringify({ path: 'README.md' }),
+  },
+};
+
+test('assistant tool calls become one trigger XML block', () => {
+  const xml = formatAssistantToolCallsForAI([readCall], trigger);
+  assert.match(xml, new RegExp(`^${trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n<function_calls>`));
+  assert.match(xml, /<function_call>/);
+  assert.match(xml, /<tool>read_file<\/tool>/);
+  assert.match(xml, /<args_json><!\[CDATA\[{"path":"README.md"}\]\]><\/args_json>/);
+  assert.match(xml, /<\/function_calls>$/);
+});
+
+test('assistant multiple tool calls are placed inside one wrapper', () => {
+  const xml = formatAssistantToolCallsForAI([
+    readCall,
+    { id: 'call_write', function: { name: 'write_file', arguments: { path: 'out.txt', content: 'ok' } } },
+  ], trigger);
+  assert.equal((xml.match(/<function_calls>/g) || []).length, 1);
+  assert.equal((xml.match(/<function_call>/g) || []).length, 2);
+  assert.match(xml, /<tool>read_file<\/tool>/);
+  assert.match(xml, /<tool>write_file<\/tool>/);
+});
+
+test('assistant text is preserved before XML during preprocessing', () => {
+  const processed = preprocessMessagesForToolify([
+    { role: 'assistant', content: 'I will inspect it.', tool_calls: [readCall] },
+  ], trigger);
+  assert.equal(processed.length, 1);
+  assert.equal(processed[0].role, 'assistant');
+  assert.equal(processed[0].tool_calls, undefined);
+  const text = processed[0].content[0].text;
+  assert.match(text, /^I will inspect it\.\n<Function_AB12_Start\/>/);
+  assert.match(text, /<function_calls>/);
+});
+
+test('CDATA escaping preserves embedded CDATA close marker', () => {
+  const xml = formatAssistantToolCallsForAI([
+    { id: 'call_escape', function: { name: 'write_file', arguments: { content: 'a]]>b' } } },
+  ], trigger);
+  assert.match(xml, /<!\[CDATA\[{"content":"a\]\]\]\]><!\[CDATA\[>b"}\]\]>/);
+});
+
+test('non-object assistant arguments are rejected', () => {
+  assert.throws(
+    () => formatAssistantToolCallsForAI([{ id: 'bad', function: { name: 'bad_tool', arguments: '[]' } }], trigger),
+    (err) => err.status === 400 && err.code === 'invalid_tool_arguments',
+  );
+});
+
+test('tool call index resolves historical assistant calls', () => {
+  const index = buildToolCallIndexFromMessages([{ role: 'assistant', tool_calls: [readCall] }]);
+  assert.deepEqual(index.get('call_read'), {
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  });
+});
+
+test('tool result messages are converted to Toolify result blocks', () => {
+  const processed = preprocessMessagesForToolify([
+    { role: 'assistant', content: null, tool_calls: [readCall] },
+    { role: 'tool', tool_call_id: 'call_read', content: [{ type: 'text', text: 'file content' }] },
+  ], trigger);
+  assert.equal(processed[1].role, 'user');
+  const text = processed[1].content[0].text;
+  assert.match(text, /^Tool execution result:/);
+  assert.match(text, /- Tool name: read_file/);
+  assert.match(text, /- Tool arguments: {"path":"README.md"}/);
+  assert.match(text, /<tool_result>\n<!\[CDATA\[file content\]\]>\n<\/tool_result>/);
+});
+
+test('missing tool_call_id reference is rejected', () => {
+  assert.throws(
+    () => preprocessMessagesForToolify([{ role: 'tool', tool_call_id: 'missing', content: 'result' }], trigger),
+    (err) => err.status === 400 && err.code === 'invalid_tool_message',
+  );
+});
+
+test('formatToolResultForAI emits escaped Toolify block directly', () => {
+  assert.equal(
+    formatToolResultForAI('read_file', '{"path":"README.md"}', 'ok </tool_result> ]]>'),
+    'Tool execution result:\n- Tool name: read_file\n- Tool arguments: {"path":"README.md"}\n- Execution result:\n<tool_result>\n<![CDATA[ok </tool_result> ]]]]><![CDATA[>]]>\n</tool_result>',
+  );
+});
+
+test('preprocess is a no-op without trigger', () => {
+  const messages = [{ role: 'assistant', content: 'x', tool_calls: [readCall] }];
+  assert.equal(preprocessMessagesForToolify(messages, null), messages);
+});

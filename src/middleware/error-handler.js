@@ -1,7 +1,7 @@
 /**
  * 统一错误处理中间件
  *
- * 根据请求路径自动选择 OpenAI 或 Claude 格式的错误响应。
+ * 根据请求路径自动选择 OpenAI、Claude 或 Responses 格式的错误响应。
  *
  * OpenAI 格式:
  * {
@@ -30,6 +30,10 @@ function isClaudePath(req) {
   return req.path?.startsWith('/v1/messages');
 }
 
+function isResponsesPath(req) {
+  return req.path?.startsWith('/v1/responses');
+}
+
 /**
  * OpenAI 格式错误
  */
@@ -48,6 +52,10 @@ function claudeError(message, type = 'api_error') {
     type: 'error',
     error: { type, message },
   };
+}
+
+function responsesError(status, message, type = 'api_error', param = null, code = null) {
+  return openAIError(status, message, type, param, code);
 }
 
 /**
@@ -91,6 +99,9 @@ export function errorHandler(err, req, res, next) {
 
   if (isClaudePath(req)) {
     return res.status(status).json(claudeError(message, type));
+  }
+  if (isResponsesPath(req)) {
+    return res.status(status).json(responsesError(status, message, type, err.param || null, err.code || null));
   }
 
   // 默认使用 OpenAI 格式

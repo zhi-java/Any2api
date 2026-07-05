@@ -22,7 +22,12 @@ setupUnhandledRejectionHandler();
 export function createApp() {
   const app = express();
 
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({
+    limit: '50mb',
+    verify: (req, _res, buf) => {
+      req.rawBody = Buffer.from(buf);
+    },
+  }));
   app.use(requestLogger('zhi2api'));
 
   app.get('/', (req, res) => {
@@ -77,8 +82,8 @@ function logStartup(port) {
   console.log('  Health:       GET  /');
   console.log('  OpenAI:       POST /v1/chat/completions');
   console.log('  Claude:       POST /v1/messages');
+  console.log('  Responses:    POST /v1/responses');
   console.log('  Models:       GET  /v1/models');
-  console.log('  DeepSeek native: POST /api/v0/chat/completion');
   console.log(`\nAdmin Panel:    http://localhost:${port}/admin`);
   console.log(`Performance:    http://localhost:${port}/performance`);
 

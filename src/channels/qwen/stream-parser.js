@@ -4,6 +4,7 @@ export async function* parseQwenStream(body) {
   let buffer = '';
   let doneEmitted = false;
   let lastPhaseStatus = '';
+  let answerContentSeen = false;
 
   try {
     while (true) {
@@ -25,8 +26,9 @@ export async function* parseQwenStream(body) {
           continue;
         }
 
-        const events = parseQwenEvent(data, lastPhaseStatus);
+        const events = parseQwenEvent(data, lastPhaseStatus, { answerContentSeen });
         if (events.lastPhaseStatus) lastPhaseStatus = events.lastPhaseStatus;
+        answerContentSeen = events.answerContentSeen;
         for (const event of events.items) {
           if (event.type === 'done') doneEmitted = true;
           yield event;
@@ -39,7 +41,8 @@ export async function* parseQwenStream(body) {
     if (leftover.startsWith('data:')) {
       const data = leftover.slice(5).trim();
       if (data && data !== '[DONE]') {
-        const events = parseQwenEvent(data, lastPhaseStatus);
+        const events = parseQwenEvent(data, lastPhaseStatus, { answerContentSeen });
+        answerContentSeen = events.answerContentSeen;
         for (const event of events.items) yield event;
       }
     }
@@ -50,23 +53,24 @@ export async function* parseQwenStream(body) {
   }
 }
 
-export function parseQwenEvent(data, previousPhaseStatus = '') {
+export function parseQwenEvent(data, previousPhaseStatus = '', options = {}) {
   const items = [];
   let lastPhaseStatus = previousPhaseStatus;
+  let answerContentSeen = Boolean(options.answerContentSeen);
 
   let parsed;
   try {
     parsed = typeof data === 'string' ? JSON.parse(data) : data;
   } catch {
-    return { items, lastPhaseStatus };
+    return { items, lastPhaseStatus, answerContentSeen };
   }
 
   if (parsed['response.created'] || parsed['response.info']) {
-    return { items, lastPhaseStatus };
+    return { items, lastPhaseStatus, answerContentSeen };
   }
 
   if (!Array.isArray(parsed.choices)) {
-    return { items, lastPhaseStatus };
+    return { items, lastPhaseStatus, answerContentSeen };
   }
 
   for (const choice of parsed.choices) {
@@ -82,8 +86,17 @@ export function parseQwenEvent(data, previousPhaseStatus = '') {
     if (key === lastPhaseStatus && status === 'typing' && !content) continue;
     lastPhaseStatus = key;
 
-    if (status === 'finished' && phase === 'answer') {
-      items.push({ type: 'done', usage, finishReason: 'stop' });
+    if (phase === 'answer') {
+      if (content) {
+        answerContentSeen = true;
+        items.push({ type: 'content', content, usage });
+      }
+      // Qwen can emit empty answer/finished lifecycle events before a later
+      // answer stream. Treat only a finish after answer content as terminal;
+      // otherwise callers may stop before any正文/body text arrives.
+      if (status === 'finished' && answerContentSeen) {
+        items.push({ type: 'done', usage, finishReason: 'stop' });
+      }
       continue;
     }
 
@@ -112,10 +125,7 @@ export function parseQwenEvent(data, previousPhaseStatus = '') {
       continue;
     }
 
-    if (phase === 'answer' && content) {
-      items.push({ type: 'content', content, usage });
-    }
   }
 
-  return { items, lastPhaseStatus };
+  return { items, lastPhaseStatus, answerContentSeen };
 }

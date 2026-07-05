@@ -20,6 +20,7 @@ export async function* parseGLMStream(body) {
   let accumulatedContent = '';
   let accumulatedThinking = '';
   let lastRawContent = ''; // 完整快照去重
+  let accumulatedDeltaContent = '';
 
   /**
    * 从完整文本中分离 <think>...</think> 推理部分
@@ -79,14 +80,26 @@ export async function* parseGLMStream(body) {
         accumulatedContent = text;
         if (delta) events.push({ type: 'content', content: delta });
       } else if (text !== accumulatedContent) {
-        // 标准模式或首次
-        const delta = text.slice(accumulatedContent.length);
+        const delta = accumulatedContent && text.startsWith(accumulatedContent)
+          ? text.slice(accumulatedContent.length)
+          : text;
         accumulatedContent = text;
         if (delta) events.push({ type: 'content', content: delta });
       }
     }
 
     return events.length ? events : null;
+  }
+
+  function processContentResult(result) {
+    if (!result?.content) return null;
+    if (result.snapshot !== false) return processContent(result.content);
+
+    // OpenAI-style SSE content is already a delta. Accumulate it into a
+    // synthetic full snapshot so the existing thinking splitter and snapshot
+    // diff logic can be reused without dropping later chunks.
+    accumulatedDeltaContent += result.content;
+    return processContent(accumulatedDeltaContent);
   }
 
   try {
@@ -99,7 +112,16 @@ export async function* parseGLMStream(body) {
           try {
             const parsed = JSON.parse(leftover);
             const result = parseGLMEvent(parsed);
-            if (result) yield result;
+            if (result) {
+              if (result.type === 'content') {
+                const events = processContentResult(result);
+                if (events) {
+                  for (const evt of events) yield evt;
+                }
+              } else {
+                yield result;
+              }
+            }
           } catch { /* 忽略无法解析的剩余数据 */ }
         }
         // GLM 网页版格式：最后一条 SSE 事件可能同时包含内容+status:"finish"，
@@ -132,7 +154,7 @@ export async function* parseGLMStream(body) {
             if (result) {
               // 处理 content 事件的增量 + thinking 提取
               if (result.type === 'content') {
-                const events = processContent(result.content);
+                const events = processContentResult(result);
                 if (events) {
                   for (const evt of events) yield evt;
                 }
@@ -150,7 +172,7 @@ export async function* parseGLMStream(body) {
           const result = parseGLMEvent(parsed);
           if (result) {
             if (result.type === 'content') {
-              const events = processContent(result.content);
+              const events = processContentResult(result);
               if (events) {
                 for (const evt of events) yield evt;
               }
@@ -177,7 +199,7 @@ function parseGLMEvent(parsed) {
     const delta = choice.delta || {};
 
     if (delta.content) {
-      return { type: 'content', content: delta.content };
+      return { type: 'content', content: delta.content, snapshot: false };
     }
 
     if (delta.tool_calls) {
@@ -253,16 +275,27 @@ function parseGLMEvent(parsed) {
     // 空 parts 数组 → 会话初始化事件，跳过
     if (parsed.parts.length === 0) return null;
 
-    const part = parsed.parts[0];
-    if (part && part.content) {
-      const items = Array.isArray(part.content) ? part.content : [part.content];
+    let fullText = '';
+    let hasToolCalls = false;
+    let toolCalls = [];
+    let sawInternalToolActivity = false;
 
-      let fullText = '';
-      let hasToolCalls = false;
-      let toolCalls = [];
+    // Deep-research/search mode emits internal Web tool call/result parts with
+    // status:"finish" before the final assistant text. Those are not API-level
+    // completion markers; stopping there makes the channel return an empty body.
+    // Scan all parts and only surface assistant text/tool calls intended for the
+    // client, while ignoring GLM's own retrieve tool lifecycle events.
+    for (const part of parsed.parts) {
+      const items = Array.isArray(part?.content) ? part.content : (part?.content ? [part.content] : []);
+      if (part?.role === 'tool') sawInternalToolActivity = true;
 
       for (const item of items) {
-        if (item.type === 'text' && item.text) {
+        if (item?.type === 'tool_calls' || item?.type === 'tool_result') {
+          sawInternalToolActivity = true;
+          continue;
+        }
+
+        if (item?.type === 'text' && item.text) {
           fullText += item.text;
 
           // 检查 tool_calls（空对象 {} 表示无工具调用）
@@ -278,17 +311,19 @@ function parseGLMEvent(parsed) {
           }
         }
       }
-
-      if (fullText && hasToolCalls) {
-        return { type: 'tool_calls', toolCalls };
-      }
-      if (fullText) {
-        return { type: 'content', content: fullText };
-      }
     }
 
-    // status = finish → done
-    if (part?.status === 'finish' || part?.status === 'done') {
+    if (fullText && hasToolCalls) {
+      return { type: 'tool_calls', toolCalls };
+    }
+    if (fullText) {
+      return { type: 'content', content: fullText };
+    }
+
+    // GLM internal tool events also use status:"finish"; do not convert them to
+    // done or callers will break before the final answer arrives. Non-tool finish
+    // markers remain safe to surface, and TCP close still emits a final done.
+    if (!sawInternalToolActivity && parsed.parts.some(part => part?.status === 'finish' || part?.status === 'done')) {
       return { type: 'done', finishReason: 'stop' };
     }
 

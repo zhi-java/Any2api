@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "node --test",
     "desktop": "tauri dev",
     "desktop:dev": "tauri dev",
     "build:sidecar": "pkg src/desktop-sidecar.js --targets node22-win-x64 --fallback-to-source --compress Zstd --output src-tauri/binaries/zhi2api-sidecar-x86_64-pc-windows-msvc.exe",

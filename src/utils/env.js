@@ -40,3 +40,9 @@ export function loadEnvironment() {
 export function getEnvironmentPath() {
   return loadEnvironment();
 }
+
+export function isPromptInjectionEnabled() {
+  const raw = process.env.ENABLE_PROMPT_INJECTION;
+  if (raw == null || raw === '') return true;
+  return !['false', '0', 'no', 'off'].includes(String(raw).trim().toLowerCase());
+}

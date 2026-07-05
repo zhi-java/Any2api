@@ -79,17 +79,28 @@ async function throwDeepSeekErrorFromJson(json, slot) {
 // getPrompt(affinity): optional sync hook returning the prompt string to send,
 // chosen based on whether affinity engaged. When omitted, the `prompt` arg is
 // used as-is. This keeps prompt selection sequenced after session resolution.
-export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null }) {
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const err = new Error('The operation was aborted.');
+  err.name = 'AbortError';
+  throw err;
+}
+
+export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null }) {
+  throwIfAborted(signal);
   // Step 1: Acquire token slot first — PoW and completion must use the same token
   const slot = await enqueueRequest(preferVision);
 
   try {
+    throwIfAborted(signal);
     let lastErr;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         // Step 2: Solve PoW using the same token. Retry attempts resolve a new
         // session after the stale one has been invalidated.
+        throwIfAborted(signal);
         const { powResponse } = await solvePowChallengeWithToken(slot.token);
+        throwIfAborted(signal);
 
         let sessionIdFinal;
         let parentMessageIdFinal = parentMessageId;
@@ -98,6 +109,7 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
           // Affinity mode: the caller decides which session + parent to use,
           // bound to the token that was just acquired.
           const resolved = await resolveSession(slot.token);
+          throwIfAborted(signal);
           sessionIdFinal = resolved.sessionId;
           parentMessageIdFinal = resolved.parentMessageId;
           affinity = !!resolved.affinity;
@@ -105,12 +117,14 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
           setRequestToken(slot.token);
           try {
             const session = await getSession(slot.token, modelType);
+            throwIfAborted(signal);
             sessionIdFinal = session.id;
           } finally {
             setRequestToken(null);
           }
         }
 
+        throwIfAborted(signal);
         const promptFinal = getPrompt ? getPrompt(affinity) : prompt;
 
         const body = {
@@ -125,10 +139,13 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
           preempt: false,
         };
 
+        const headers = await streamHeaders(slot.token, powResponse);
+        throwIfAborted(signal);
         const res = await proxiedFetch(`${BASE_URL}/api/v0/chat/completion`, {
           method: 'POST',
-          headers: await streamHeaders(slot.token, powResponse),
+          headers,
           body: JSON.stringify(body),
+          signal,
         });
 
         const contentType = res.headers.get('content-type') || '';
@@ -158,6 +175,7 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
         // DeepSeek sometimes returns HTTP 200 + text/event-stream but the body is a plain JSON error,
         // e.g. {"code":0,"data":{"biz_code":5,"biz_msg":"user is muted"}}.
         // Probe the first chunk so those errors are surfaced instead of being parsed as an empty SSE stream.
+        throwIfAborted(signal);
         const reader = res.body.getReader();
         const first = await reader.read();
         if (first.done) {
@@ -223,15 +241,56 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
   }
 }
 
-export async function* parseSSEStream(body) {
+export async function* parseSSEStream(body, { signal = null } = {}) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let messageIds = {};
   let currentFragmentType = null;
+  const fragmentTypes = new Map();
+  let nextFragmentIndex = 0;
+
+  function rememberFragmentType(index, type) {
+    if (index == null || !type) return;
+    fragmentTypes.set(index, type);
+    if (index >= nextFragmentIndex) nextFragmentIndex = index + 1;
+    currentFragmentType = type;
+  }
+
+  function lastKnownFragmentType() {
+    if (!fragmentTypes.size) return currentFragmentType;
+    const lastIndex = Math.max(...fragmentTypes.keys());
+    return fragmentTypes.get(lastIndex) || currentFragmentType;
+  }
+
+  function fragmentTypeForPath(path) {
+    const match = String(path || '').match(/^(?:response\/)?fragments\/(-?\d+)\/(?:content|status)$/);
+    if (!match) return currentFragmentType;
+    const rawIndex = Number(match[1]);
+    const index = rawIndex < 0 ? Math.max(...fragmentTypes.keys(), 0) : rawIndex;
+    const known = fragmentTypes.get(index);
+    if (known) return known;
+
+    // DeepSeek often streams the RESPONSE fragment content as
+    // response/fragments/1/content immediately after a THINK-only prelude,
+    // without first sending a fragment metadata APPEND for index 1. If we keep
+    // using the previous global THINK state, the first answer delta is emitted as
+    // reasoning and disappears from clients that only display text content.
+    if (index > 0 && currentFragmentType === 'THINK') {
+      rememberFragmentType(index, 'RESPONSE');
+      return 'RESPONSE';
+    }
+
+    return currentFragmentType;
+  }
+  const abortReader = () => {
+    try { reader.cancel(new Error('aborted')); } catch {}
+  };
+  if (signal?.aborted) abortReader();
+  else if (signal?.addEventListener) signal.addEventListener('abort', abortReader, { once: true });
 
   try {
-    while (true) {
+    while (!signal?.aborted) {
       const { done, value } = await reader.read();
       if (done) {
         const leftover = buffer.trim();
@@ -287,15 +346,15 @@ export async function* parseSSEStream(body) {
           let emitted = false;
 
           if (parsed.v?.response?.fragments) {
-            for (const frag of parsed.v.response.fragments) {
+            for (const [index, frag] of parsed.v.response.fragments.entries()) {
               if (frag.type === 'THINK') {
-                currentFragmentType = 'THINK';
+                rememberFragmentType(index, 'THINK');
                 if (frag.content) {
                   yield { type: 'thinking', content: frag.content, messageIds };
                   emitted = true;
                 }
               } else if (frag.type === 'RESPONSE') {
-                currentFragmentType = 'RESPONSE';
+                rememberFragmentType(index, 'RESPONSE');
                 if (frag.content) {
                   yield { type: 'content', content: frag.content, messageIds };
                   emitted = true;
@@ -312,7 +371,8 @@ export async function* parseSSEStream(body) {
 
           if (parsed.p && parsed.o) {
             if (contentPathRx.test(parsed.p) && typeof parsed.v === 'string') {
-              yield { type: currentFragmentType === 'THINK' ? 'thinking' : 'content', content: parsed.v, messageIds };
+              const fragmentType = fragmentTypeForPath(parsed.p);
+              yield { type: fragmentType === 'THINK' ? 'thinking' : 'content', content: parsed.v, messageIds };
               emitted = true;
             } else if (/^(?:response\/)?status$/.test(parsed.p) && parsed.v === 'FINISHED') {
               yield { type: 'done', messageIds };
@@ -326,17 +386,18 @@ export async function* parseSSEStream(body) {
               }
             } else if (/^(?:response\/)?fragments$/.test(parsed.p) && parsed.o === 'APPEND' && Array.isArray(parsed.v)) {
               for (const frag of parsed.v) {
+                const index = nextFragmentIndex;
                 if (frag.type === 'RESPONSE') {
-                  currentFragmentType = 'RESPONSE';
+                  rememberFragmentType(index, 'RESPONSE');
                   if (frag.content) {
                     yield { type: 'content', content: frag.content, messageIds };
-                  emitted = true;
+                    emitted = true;
                   }
                 } else if (frag.type === 'THINK') {
-                  currentFragmentType = 'THINK';
+                  rememberFragmentType(index, 'THINK');
                   if (frag.content) {
                     yield { type: 'thinking', content: frag.content, messageIds };
-                  emitted = true;
+                    emitted = true;
                   }
                 }
               }
@@ -353,7 +414,8 @@ export async function* parseSSEStream(body) {
 
           // Content deltas with p set but o missing/falsy.
           if (contentPathRx.test(parsed.p) && typeof parsed.v === 'string') {
-            yield { type: currentFragmentType === 'THINK' ? 'thinking' : 'content', content: parsed.v, messageIds };
+            const fragmentType = fragmentTypeForPath(parsed.p);
+            yield { type: fragmentType === 'THINK' ? 'thinking' : 'content', content: parsed.v, messageIds };
             emitted = true;
           }
 
@@ -423,6 +485,7 @@ export async function* parseSSEStream(body) {
       }
     }
   } finally {
+    if (signal?.removeEventListener) signal.removeEventListener('abort', abortReader);
     reader.releaseLock();
   }
 }
