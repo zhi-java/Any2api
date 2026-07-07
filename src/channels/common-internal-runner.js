@@ -27,7 +27,7 @@ export function requestLikeFromInternal(internalRequest, context = {}) {
   return context?.req || {
     body: internalRequest.raw?.body || {},
     headers: internalRequest.metadata?.headers || {},
-    any2api: {
+    omni: {
       promptInjectionEnabled: internalRequest.metadata?.promptInjectionEnabled,
       rawRequestJsonText: internalRequest.raw?.rawJsonText,
     },

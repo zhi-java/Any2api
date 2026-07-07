@@ -98,6 +98,23 @@ function descriptorFromImageUrl(part) {
     kind: 'image',
     filename: filenameFromUrl(url, `image.${ext === 'jpeg' ? 'jpg' : ext}`),
     mimeType,
+    data: data ? url : undefined,
+    url: data ? undefined : url,
+  };
+}
+
+function descriptorFromImageSource(part) {
+  const source = part.source || part.image_source || part;
+  const data = source.data || source.content || source.file_data;
+  const url = source.url || source.uri;
+  const mimeType = source.media_type || source.mime_type || source.type || guessMimeType(source.filename || source.name || 'image.png', 'image/png');
+  const ext = mimeType.split('/')[1] || 'png';
+  if (!data && !url) return null;
+  return {
+    kind: 'image',
+    filename: source.filename || source.name || `image.${ext === 'jpeg' ? 'jpg' : ext}`,
+    mimeType,
+    data,
     url,
   };
 }
@@ -110,7 +127,8 @@ export function collectUploadableParts(messages = []) {
       if (!part || typeof part !== 'object') continue;
       let descriptor = null;
       if (part.type === 'image_url') descriptor = descriptorFromImageUrl(part);
-      else if (part.type === 'file' || part.type === 'input_file') descriptor = descriptorFromFilePart(part);
+      else if (part.type === 'image_source') descriptor = descriptorFromImageSource(part);
+      else if (part.type === 'file' || part.type === 'input_file' || part.type === 'document') descriptor = descriptorFromFilePart(part);
       if (descriptor) files.push(descriptor);
     }
   }

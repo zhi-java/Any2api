@@ -7,6 +7,7 @@ const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.me
 test('Web 服务静态资源包含管理界面', () => {
   assert.ok(packageJson.pkg.assets.includes('src/admin/**/*'));
   assert.ok(packageJson.pkg.assets.includes('src/performance/**/*'));
+  assert.ok(packageJson.pkg.assets.includes('src/public/**/*'));
   assert.ok(packageJson.pkg.assets.includes('src/sha3_wasm_bg.wasm'));
   assert.ok(existsSync(new URL('../src/admin/vendor/chart.umd.min.js', import.meta.url)));
   assert.ok(!packageJson.pkg.scripts.includes('src/**/*.js'));

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniAPI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f5f5f7;
+      --surface: rgba(255, 255, 255, .78);
+      --surface-strong: rgba(255, 255, 255, .94);
+      --border: rgba(60, 60, 67, .16);
+      --text: #1d1d1f;
+      --secondary: rgba(29, 29, 31, .68);
+      --muted: rgba(60, 60, 67, .52);
+      --blue: #007aff;
+      --purple: #af52de;
+      --cyan: #32ade6;
+      --green: #248a3d;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .12);
+      --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI', Inter, sans-serif;
+      --mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.94), rgba(245,245,247,.94)),
+        radial-gradient(circle at 18% 8%, rgba(0, 122, 255, .14), transparent 30%),
+        radial-gradient(circle at 90% 18%, rgba(175, 82, 222, .11), transparent 25%),
+        radial-gradient(circle at 72% 92%, rgba(50, 173, 230, .10), transparent 28%),
+        var(--canvas);
+      background-attachment: fixed;
+    }
+    a { color: inherit; text-decoration: none; }
+    .page { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 18px 0 30px; }
+    .window {
+      min-height: calc(100vh - 36px);
+      border: 1px solid rgba(255,255,255,.8);
+      border-bottom-color: var(--border);
+      border-radius: 22px;
+      background: rgba(246, 247, 250, .76);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(34px) saturate(1.45);
+      overflow: hidden;
+    }
+    .traffic { display: flex; gap: 8px; padding: 16px 18px 6px; }
+    .traffic span { width: 12px; height: 12px; border-radius: 50%; display: block; }
+    .red { background: #ff5f57; } .yellow { background: #ffbd2e; } .green { background: #28c840; }
+    .nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 22px 0; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: white; background: linear-gradient(180deg, rgba(255,255,255,.42), transparent 46%), linear-gradient(135deg, var(--blue), var(--cyan) 52%, var(--purple)); box-shadow: 0 12px 28px rgba(0, 122, 255, .24); }
+    .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 11px; border: 1px solid rgba(60, 60, 67, .18); background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(246,247,250,.86)); color: var(--text); font-weight: 700; }
+    .button.primary { background: linear-gradient(180deg, #0a84ff, #007aff); border-color: rgba(0,122,255,.75); color: white; box-shadow: 0 10px 26px rgba(0, 122, 255, .22); }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(320px, .92fr); gap: 24px; padding: 64px 22px 34px; align-items: center; }
+    .kicker { display: inline-flex; width: fit-content; align-items: center; gap: 8px; min-height: 28px; padding: 4px 10px; border-radius: 999px; color: #07559f; background: rgba(0, 122, 255, .10); border: 1px solid rgba(0, 122, 255, .16); font-size: 13px; font-weight: 800; }
+    h1 { max-width: 760px; margin: 16px 0 0; font-size: clamp(44px, 7vw, 76px); line-height: .96; letter-spacing: 0; }
+    .lead { max-width: 700px; margin: 22px 0 0; color: var(--secondary); font-size: 18px; line-height: 1.75; }
+    .hero-actions { display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+    .terminal { border: 1px solid rgba(60,60,67,.14); background: rgba(255,255,255,.76); border-radius: 18px; overflow: hidden; box-shadow: 0 18px 48px rgba(28,34,43,.10); }
+    .terminal-head { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .terminal-body { padding: 18px; display: grid; gap: 12px; font-family: var(--mono); font-size: 13px; color: #0a4f9c; line-height: 1.65; }
+    .line { display: flex; gap: 10px; align-items: flex-start; }
+    .prompt { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding: 12px 22px 26px; }
+    .card { min-height: 150px; padding: 18px; border-radius: 16px; border: 1px solid rgba(255,255,255,.78); border-bottom-color: var(--border); background: var(--surface); box-shadow: 0 14px 38px rgba(28,34,43,.08); }
+    .card strong { display: block; font-size: 17px; }
+    .card p { margin: 10px 0 0; color: var(--secondary); line-height: 1.65; }
+    .endpoint { margin: 0 22px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border: 1px solid rgba(0,122,255,.16); border-radius: 16px; background: rgba(0,122,255,.07); overflow: auto; }
+    code { font-family: var(--mono); color: #0a4f9c; }
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; padding-top: 44px; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .page { width: min(100% - 20px, 1180px); padding-top: 10px; }
+      .nav, .endpoint { align-items: flex-start; flex-direction: column; }
+      .hero { padding: 34px 16px 22px; }
+      .grid { grid-template-columns: 1fr; padding: 10px 16px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="window">
+      <div class="traffic"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+      <nav class="nav" aria-label="导航">
+        <a class="brand" href="/"><span class="mark">A2</span><span>OmniAPI</span></a>
+        <div class="actions">
+          <a class="button" href="/v1/models">模型列表</a>
+          <a class="button primary" href="/admin">进入控制台</a>
+        </div>
+      </nav>
+      <section class="hero">
+        <div>
+          <span class="kicker">Multi-channel Web-to-API Proxy</span>
+          <h1>把多个上游 Web 模型统一成可调用 API。</h1>
+          <p class="lead">OmniAPI 提供 OpenAI、Claude Messages 与 Responses 兼容端点，统一接入 DeepSeek、GLM、Qwen、Kimi，并在本地控制台管理凭据、队列、性能、日志和外部 API Key。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="/admin">打开管理后台</a>
+            <a class="button" href="/healthz">查看健康状态</a>
+          </div>
+        </div>
+        <aside class="terminal" aria-label="接口示例">
+          <div class="terminal-head"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+          <div class="terminal-body">
+            <div class="line"><span class="prompt">POST</span><code>/v1/chat/completions</code></div>
+            <div class="line"><span class="prompt">POST</span><code>/v1/messages</code></div>
+            <div class="line"><span class="prompt">POST</span><code>/v1/responses</code></div>
+            <div class="line"><span class="prompt">GET</span><code>/v1/models</code></div>
+          </div>
+        </aside>
+      </section>
+      <section class="grid" aria-label="能力">
+        <article class="card"><strong>多渠道路由</strong><p>按模型解析到 DeepSeek、GLM、Qwen、Kimi，不同上游统一协议输出。</p></article>
+        <article class="card"><strong>附件上传</strong><p>支持图片、文档、音频、视频等上传型内容在可用渠道中转换。</p></article>
+        <article class="card"><strong>运行控制台</strong><p>管理上游凭据、外部 API Key、运行配置、日志和性能曲线。</p></article>
+        <article class="card"><strong>本地优先</strong><p>配置落盘到本地数据目录，适合私有部署、容器和桌面场景。</p></article>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

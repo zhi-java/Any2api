@@ -29,10 +29,10 @@ function rawReq(body, overrides = {}) {
   return {
     body,
     headers: {},
-    any2api: {
+    omni: {
       promptInjectionEnabled: true,
       rawRequestJsonText: JSON.stringify(body),
-      ...(overrides.any2api || {}),
+      ...(overrides.omni || {}),
     },
     ...overrides,
   };
@@ -86,7 +86,7 @@ test('createPromptPlan disables injection using raw JSON prompt', () => {
   };
   const raw = JSON.stringify(body);
   const plan = createPromptPlan({
-    req: rawReq(body, { any2api: { promptInjectionEnabled: false, rawRequestJsonText: raw } }),
+    req: rawReq(body, { omni: { promptInjectionEnabled: false, rawRequestJsonText: raw } }),
     tools,
     toolChoice: 'required',
   });

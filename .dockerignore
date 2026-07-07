@@ -1,0 +1,44 @@
+# 依赖
+node_modules
+npm-debug.log
+yarn-error.log
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# 日志
+logs
+*.log
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# 测试
+test
+tests
+*.test.js
+coverage
+
+# 文档
+*.md
+!README.md
+docs
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# 其他
+.DS_Store
+Thumbs.db

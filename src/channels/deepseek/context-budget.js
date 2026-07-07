@@ -1,15 +1,10 @@
 import { normalizeRequestedModelName } from '../../utils/response-utils.js';
+import { getConfig } from '../../services/config-store.js';
 
 export const DEEPSEEK_FLASH_MODEL = 'deepseek-v4-flash';
 export const DEEPSEEK_FLASH_MODEL_TYPE = 'default';
-export const DEFAULT_PRO_SAFE_INPUT_TOKENS = 110000;
 
 const PRO_MODEL_NAMES = new Set(['deepseek-v4-pro']);
-
-function parsePositiveInt(value, fallback) {
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 export function estimatePromptTokens(text) {
   const value = String(text || '');
@@ -23,7 +18,7 @@ export function estimatePromptTokens(text) {
 }
 
 export function getProSafeInputTokens() {
-  return parsePositiveInt(process.env.DEEPSEEK_PRO_SAFE_INPUT_TOKENS, DEFAULT_PRO_SAFE_INPUT_TOKENS);
+  return getConfig().deepseek.proSafeInputTokens;
 }
 
 export function isDeepSeekProModel(model) {
@@ -31,7 +26,7 @@ export function isDeepSeekProModel(model) {
 }
 
 export function isContextFallbackEnabled() {
-  return process.env.DEEPSEEK_CONTEXT_FALLBACK !== 'false';
+  return getConfig().deepseek.contextFallback;
 }
 
 export function isContextLimitError(err) {

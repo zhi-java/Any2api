@@ -23,6 +23,9 @@ function normalizeContentPart(part) {
   if (part.type === 'image_url') {
     return [{ type: 'image_url', image_url: part.image_url }];
   }
+  if (part.type === 'image_source') {
+    return [{ type: 'image_source', source: part.source || part.image_source || part }];
+  }
   if (part.type === 'input_image') {
     const imageUrl = part.image_url || part.url || part.source?.url;
     return imageUrl ? [{ type: 'image_url', image_url: typeof imageUrl === 'string' ? { url: imageUrl } : imageUrl }] : [{ ...part }];

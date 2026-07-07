@@ -1,3 +1,4 @@
+import { getConfig } from '../../services/config-store.js';
 import { completion, parseSSEStream } from '../../utils/sse.js';
 import { resolveUploadableToRefId } from '../../services/upload.js';
 import { enqueueRequest, dispatchQueued } from '../../services/queue.js';
@@ -79,7 +80,7 @@ function getRequestLike(internalRequest, context) {
   return context?.req || {
     body: internalRequest.raw?.body || {},
     headers: internalRequest.metadata?.headers || {},
-    any2api: {
+    omni: {
       promptInjectionEnabled: internalRequest.metadata?.promptInjectionEnabled,
       rawRequestJsonText: internalRequest.raw?.rawJsonText,
     },
@@ -170,7 +171,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   const searchEnabled = req.body?.search_enabled ?? false;
   const derivedConversationId = getConversationId(req, openAIMessages);
   const conversationId = internalRequest.conversation?.id
-    || (process.env.ENABLE_CONVERSATION_AFFINITY === 'true' ? (internalRequest.conversation?.previousResponseId || derivedConversationId) : derivedConversationId);
+    || (getConfig().runtime.enableConversationAffinity ? (internalRequest.conversation?.previousResponseId || derivedConversationId) : derivedConversationId);
   const requestStart = Date.now();
 
   let streamBody;

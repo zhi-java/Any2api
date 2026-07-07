@@ -1,7 +1,7 @@
 {
-  "name": "zhi2api",
+  "name": "omni",
   "version": "1.0.0",
-  "description": "zhi2Api multi-channel web-to-API proxy",
+  "description": "OmniAPI multi-channel web-to-API proxy",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
@@ -15,11 +15,12 @@
     "express": "^4.21.0",
     "undici": "^6.21.2"
   },
-  "displayName": "zhi2Api",
+  "displayName": "OmniAPI",
   "pkg": {
     "assets": [
       "src/admin/**/*",
       "src/performance/**/*",
+      "src/public/**/*",
       "src/sha3_wasm_bg.wasm",
       ".env.example"
     ],

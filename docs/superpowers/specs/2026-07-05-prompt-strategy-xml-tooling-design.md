@@ -4,12 +4,12 @@ Date: 2026-07-05
 
 ## Summary
 
-Refactor Any2api prompt-related behavior around a shared prompt strategy layer.
+Refactor OmniAPI prompt-related behavior around a shared prompt strategy layer.
 
 The strategy layer has two modes:
 
-- `ENABLE_PROMPT_INJECTION=true` or unset: keep existing DeepSeek, GLM, Kimi, and Qwen Web upstream integrations, but replace Any2api's old JSON pseudo-tool prompt with a strict Toolify-style dynamic-trigger XML tool protocol.
-- `ENABLE_PROMPT_INJECTION=false`/`0`/`no`/`off`: keep using the same Web upstream integrations, but do not add Any2api-authored prompt text. The Web prompt is the full raw JSON request body text captured from the client request, and Any2api does not parse model text into protocol tool calls.
+- `ENABLE_PROMPT_INJECTION=true` or unset: keep existing DeepSeek, GLM, Kimi, and Qwen Web upstream integrations, but replace OmniAPI's old JSON pseudo-tool prompt with a strict Toolify-style dynamic-trigger XML tool protocol.
+- `ENABLE_PROMPT_INJECTION=false`/`0`/`no`/`off`: keep using the same Web upstream integrations, but do not add OmniAPI-authored prompt text. The Web prompt is the full raw JSON request body text captured from the client request, and OmniAPI does not parse model text into protocol tool calls.
 
 This design extends `2026-07-04-prompt-injection-toggle-design.md` by defining the enabled-mode XML tool protocol and its implementation boundaries.
 
@@ -20,7 +20,7 @@ This design extends `2026-07-04-prompt-injection-toggle-design.md` by defining t
 3. In enabled mode, use a strict dynamic-trigger XML tool-calling protocol instead of the old `assistant_response`/`tool_calls` JSON wrapper.
 4. In enabled mode, allow normal assistant responses to be plain text without JSON wrapping.
 5. In disabled mode, use the complete captured raw JSON request body text as the Web prompt.
-6. In disabled mode, disable Any2api tool prompt generation and tool-call parsing entirely.
+6. In disabled mode, disable OmniAPI tool prompt generation and tool-call parsing entirely.
 7. Cover `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` across DeepSeek, GLM, Kimi, and Qwen.
 8. Add tests for raw JSON disabled mode, XML prompt generation, strict XML parsing, and runner behavior.
 
@@ -93,7 +93,7 @@ The exact object shape can vary, but the implementation must keep these decision
 
 Enabled mode applies when `ENABLE_PROMPT_INJECTION` is unset, empty, or not one of `false`, `0`, `no`, or `off` after trimming and lowercasing.
 
-Enabled mode keeps existing Any2api behavior at the transport level, but changes the tool prompt protocol.
+Enabled mode keeps existing OmniAPI behavior at the transport level, but changes the tool prompt protocol.
 
 ### Plain responses
 
@@ -253,7 +253,7 @@ The disabled prompt is the complete raw JSON request body text captured before r
 Priority:
 
 ```text
-req.any2api.rawRequestJsonText
+req.omni.rawRequestJsonText
   -> req.rawBody.toString('utf8')
   -> JSON.stringify(req.body ?? {}, null, 2)
 ```
@@ -273,7 +273,7 @@ toolCallingEnabled = false
 triggerSignal = null
 ```
 
-The raw JSON prompt may contain client-supplied `tools`, `tool_choice`, `system`, `messages`, `input`, or `instructions` fields. They remain plain text visible to the Web model. Any2api must not transform them into its own tool protocol.
+The raw JSON prompt may contain client-supplied `tools`, `tool_choice`, `system`, `messages`, `input`, or `instructions` fields. They remain plain text visible to the Web model. OmniAPI must not transform them into its own tool protocol.
 
 Disabled mode must not add these strings unless the client JSON already contains them:
 
@@ -287,7 +287,7 @@ Disabled mode must not add these strings unless the client JSON already contains
 - generated XML tool instructions
 - generated dynamic trigger
 
-If the model outputs XML or old JSON pseudo-tool text while disabled, Any2api returns it as normal assistant text.
+If the model outputs XML or old JSON pseudo-tool text while disabled, OmniAPI returns it as normal assistant text.
 
 ## Channel behavior
 
@@ -468,7 +468,7 @@ Protocol renderer tests should continue passing. Add one end-to-end assertion wh
 5. False mode does not require standard upstream URLs or API keys.
 6. False mode still uses DeepSeek, GLM, Kimi, and Qwen Web upstreams.
 7. False mode does not inject `[System]`, `[User]`, `[Tool result instruction]`, generated XML tool instructions, or generated triggers unless they already appear in the client JSON.
-8. False mode disables Any2api tool handling and tool-call parsing.
+8. False mode disables OmniAPI tool handling and tool-call parsing.
 9. DeepSeek disabled mode uses raw JSON for both full and latest prompt, including conversation affinity.
 10. GLM disabled mode sends one user text message containing raw JSON.
 11. Kimi disabled mode sends raw JSON as the prompt override and keeps long-prompt upload behavior.

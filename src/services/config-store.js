@@ -1,16 +1,30 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { appRootPath } from '../utils/runtime-paths.js';
 
 const DEFAULT_CONFIG = Object.freeze({
   version: 1,
   server: {
     apiKey: '',
+    apiKeys: [],
     mergeThinking: false,
     enablePromptInjection: true,
     clientDebugLog: false,
+    clientDebugLogDir: '',
     clientDebugLogMaxChars: 200000,
+    systemFingerprint: 'fp_omni_v1',
+  },
+  runtime: {
+    sessionTtlSeconds: 1800,
+    maxRequestsPerSession: 8,
+    enableConversationAffinity: false,
+    conversationTtlMs: 1800000,
+    maxConversations: 500,
+    maxTurnsPerSession: 10,
+    enableFcErrorRetry: true,
+    fcErrorRetryMaxAttempts: 3,
+    logDir: '',
   },
   deepseek: {
     tokens: [],
@@ -21,6 +35,8 @@ const DEFAULT_CONFIG = Object.freeze({
     idleThresholdSeconds: 1800,
     validateOnStartup: false,
     prewarmSessions: false,
+    contextFallback: true,
+    proSafeInputTokens: 110000,
   },
   glm: {
     refreshTokens: [],
@@ -123,15 +139,44 @@ function normalizeAccounts(accounts = []) {
   return normalized;
 }
 
+function normalizeApiKeys(apiKeys = []) {
+  const seen = new Set();
+  const normalized = [];
+  for (const item of apiKeys || []) {
+    const key = String(typeof item === 'string' ? item : item?.key || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({
+      name: String(typeof item === 'string' ? 'External API Key' : item?.name || 'External API Key').trim() || 'External API Key',
+      key,
+      createdAt: typeof item === 'object' && item?.createdAt ? String(item.createdAt) : '',
+    });
+  }
+  return normalized;
+}
+
 function normalizeConfig(input) {
   const merged = deepMerge(DEFAULT_CONFIG, input || {});
   merged.version = 1;
 
   merged.server.apiKey = String(merged.server.apiKey || '').trim();
+  merged.server.apiKeys = normalizeApiKeys(merged.server.apiKeys);
   merged.server.mergeThinking = Boolean(merged.server.mergeThinking);
   merged.server.enablePromptInjection = merged.server.enablePromptInjection !== false;
   merged.server.clientDebugLog = Boolean(merged.server.clientDebugLog);
+  merged.server.clientDebugLogDir = String(merged.server.clientDebugLogDir || '').trim();
   merged.server.clientDebugLogMaxChars = parseIntValue(merged.server.clientDebugLogMaxChars, 200000, 1000);
+  merged.server.systemFingerprint = String(merged.server.systemFingerprint || 'fp_omni_v1').trim() || 'fp_omni_v1';
+
+  merged.runtime.sessionTtlSeconds = parseIntValue(merged.runtime.sessionTtlSeconds, 1800, 1);
+  merged.runtime.maxRequestsPerSession = parseIntValue(merged.runtime.maxRequestsPerSession, 8, 1);
+  merged.runtime.enableConversationAffinity = Boolean(merged.runtime.enableConversationAffinity);
+  merged.runtime.conversationTtlMs = parseIntValue(merged.runtime.conversationTtlMs, 1800000, 1000);
+  merged.runtime.maxConversations = parseIntValue(merged.runtime.maxConversations, 500, 1);
+  merged.runtime.maxTurnsPerSession = parseIntValue(merged.runtime.maxTurnsPerSession, 10, 1);
+  merged.runtime.enableFcErrorRetry = merged.runtime.enableFcErrorRetry !== false;
+  merged.runtime.fcErrorRetryMaxAttempts = Math.min(10, parseIntValue(merged.runtime.fcErrorRetryMaxAttempts, 3, 1));
+  merged.runtime.logDir = String(merged.runtime.logDir || '').trim();
 
   merged.deepseek.tokens = uniqueStrings(merged.deepseek.tokens);
   merged.deepseek.accounts = normalizeAccounts(merged.deepseek.accounts);
@@ -141,6 +186,8 @@ function normalizeConfig(input) {
   merged.deepseek.idleThresholdSeconds = parseIntValue(merged.deepseek.idleThresholdSeconds, 1800, 1);
   merged.deepseek.validateOnStartup = Boolean(merged.deepseek.validateOnStartup);
   merged.deepseek.prewarmSessions = Boolean(merged.deepseek.prewarmSessions);
+  merged.deepseek.contextFallback = merged.deepseek.contextFallback !== false;
+  merged.deepseek.proSafeInputTokens = parseIntValue(merged.deepseek.proSafeInputTokens, 110000, 1);
 
   merged.glm.refreshTokens = uniqueStrings(merged.glm.refreshTokens);
   merged.glm.guestMode = merged.glm.guestMode !== false;
@@ -174,10 +221,24 @@ function envConfig() {
   return normalizeConfig({
     server: {
       apiKey: process.env.API_KEY || '',
+      apiKeys: splitList(process.env.API_KEYS),
       mergeThinking: parseBool(process.env.MERGE_THINKING, DEFAULT_CONFIG.server.mergeThinking),
       enablePromptInjection: parseBool(process.env.ENABLE_PROMPT_INJECTION, DEFAULT_CONFIG.server.enablePromptInjection),
       clientDebugLog: parseBool(process.env.CLIENT_DEBUG_LOG, DEFAULT_CONFIG.server.clientDebugLog),
+      clientDebugLogDir: process.env.CLIENT_DEBUG_LOG_DIR || '',
       clientDebugLogMaxChars: parseIntValue(process.env.CLIENT_DEBUG_LOG_MAX_CHARS, DEFAULT_CONFIG.server.clientDebugLogMaxChars, 1000),
+      systemFingerprint: process.env.SYSTEM_FINGERPRINT || DEFAULT_CONFIG.server.systemFingerprint,
+    },
+    runtime: {
+      sessionTtlSeconds: parseIntValue(process.env.SESSION_TTL, DEFAULT_CONFIG.runtime.sessionTtlSeconds, 1),
+      maxRequestsPerSession: parseIntValue(process.env.MAX_REQUESTS_PER_SESSION, DEFAULT_CONFIG.runtime.maxRequestsPerSession, 1),
+      enableConversationAffinity: parseBool(process.env.ENABLE_CONVERSATION_AFFINITY, DEFAULT_CONFIG.runtime.enableConversationAffinity),
+      conversationTtlMs: parseIntValue(process.env.CONVERSATION_TTL_MS, DEFAULT_CONFIG.runtime.conversationTtlMs, 1000),
+      maxConversations: parseIntValue(process.env.MAX_CONVERSATIONS, DEFAULT_CONFIG.runtime.maxConversations, 1),
+      maxTurnsPerSession: parseIntValue(process.env.MAX_TURNS_PER_SESSION, DEFAULT_CONFIG.runtime.maxTurnsPerSession, 1),
+      enableFcErrorRetry: parseBool(process.env.ENABLE_FC_ERROR_RETRY, DEFAULT_CONFIG.runtime.enableFcErrorRetry),
+      fcErrorRetryMaxAttempts: parseIntValue(process.env.FC_ERROR_RETRY_MAX_ATTEMPTS, DEFAULT_CONFIG.runtime.fcErrorRetryMaxAttempts, 1),
+      logDir: process.env.LOG_DIR || '',
     },
     deepseek: {
       tokens: deepseekTokens,
@@ -188,6 +249,8 @@ function envConfig() {
       idleThresholdSeconds: parseIntValue(process.env.IDLE_THRESHOLD, DEFAULT_CONFIG.deepseek.idleThresholdSeconds, 1),
       validateOnStartup: parseBool(process.env.DEEPSEEK_VALIDATE_ON_STARTUP, DEFAULT_CONFIG.deepseek.validateOnStartup),
       prewarmSessions: parseBool(process.env.DEEPSEEK_PREWARM_SESSIONS, DEFAULT_CONFIG.deepseek.prewarmSessions),
+      contextFallback: parseBool(process.env.DEEPSEEK_CONTEXT_FALLBACK, DEFAULT_CONFIG.deepseek.contextFallback),
+      proSafeInputTokens: parseIntValue(process.env.DEEPSEEK_PRO_SAFE_INPUT_TOKENS, DEFAULT_CONFIG.deepseek.proSafeInputTokens, 1),
     },
     glm: {
       refreshTokens: glmTokens,
@@ -252,10 +315,23 @@ function setEnv(name, value) {
 export function applyConfigToProcessEnv() {
   const current = loadConfig();
   setEnv('API_KEY', current.server.apiKey);
+  setEnv('API_KEYS', current.server.apiKeys.map(item => item.key).join(','));
   setEnv('MERGE_THINKING', current.server.mergeThinking ? 'true' : 'false');
   setEnv('ENABLE_PROMPT_INJECTION', current.server.enablePromptInjection ? 'true' : 'false');
   setEnv('CLIENT_DEBUG_LOG', current.server.clientDebugLog ? 'true' : 'false');
+  setEnv('CLIENT_DEBUG_LOG_DIR', current.server.clientDebugLogDir);
   setEnv('CLIENT_DEBUG_LOG_MAX_CHARS', current.server.clientDebugLogMaxChars);
+  setEnv('SYSTEM_FINGERPRINT', current.server.systemFingerprint);
+
+  setEnv('SESSION_TTL', current.runtime.sessionTtlSeconds);
+  setEnv('MAX_REQUESTS_PER_SESSION', current.runtime.maxRequestsPerSession);
+  setEnv('ENABLE_CONVERSATION_AFFINITY', current.runtime.enableConversationAffinity ? 'true' : 'false');
+  setEnv('CONVERSATION_TTL_MS', current.runtime.conversationTtlMs);
+  setEnv('MAX_CONVERSATIONS', current.runtime.maxConversations);
+  setEnv('MAX_TURNS_PER_SESSION', current.runtime.maxTurnsPerSession);
+  setEnv('ENABLE_FC_ERROR_RETRY', current.runtime.enableFcErrorRetry ? 'true' : 'false');
+  setEnv('FC_ERROR_RETRY_MAX_ATTEMPTS', current.runtime.fcErrorRetryMaxAttempts);
+  setEnv('LOG_DIR', current.runtime.logDir);
 
   setEnv('DS_TOKENS', current.deepseek.tokens.join(','));
   setEnv('DS_ACCOUNTS', serializeAccounts(current.deepseek.accounts));
@@ -265,6 +341,8 @@ export function applyConfigToProcessEnv() {
   setEnv('IDLE_THRESHOLD', current.deepseek.idleThresholdSeconds);
   setEnv('DEEPSEEK_VALIDATE_ON_STARTUP', current.deepseek.validateOnStartup ? 'true' : 'false');
   setEnv('DEEPSEEK_PREWARM_SESSIONS', current.deepseek.prewarmSessions ? 'true' : 'false');
+  setEnv('DEEPSEEK_CONTEXT_FALLBACK', current.deepseek.contextFallback ? 'true' : 'false');
+  setEnv('DEEPSEEK_PRO_SAFE_INPUT_TOKENS', current.deepseek.proSafeInputTokens);
 
   setEnv('GLM_REFRESH_TOKENS', current.glm.refreshTokens.join(','));
   setEnv('GLM_GUEST_MODE', current.glm.guestMode ? 'true' : 'false');
@@ -302,7 +380,7 @@ export function getDataDir() {
 }
 
 export function getLogDir() {
-  return process.env.LOG_DIR || resolve(getDataDir(), 'logs');
+  return getConfig().runtime.logDir || resolve(getDataDir(), 'logs');
 }
 
 export function saveConfig(nextConfig = config) {
@@ -342,6 +420,16 @@ function publicSecrets(values = []) {
   return values.map(value => ({ id: secretId(value), label: maskSecret(value), configured: true }));
 }
 
+function publicApiKeys(values = []) {
+  return values.map(value => ({
+    id: secretId(value.key),
+    name: value.name,
+    label: maskSecret(value.key),
+    createdAt: value.createdAt || '',
+    configured: true,
+  }));
+}
+
 function publicAccounts(accounts = []) {
   return accounts.map(account => ({
     id: secretId(`${account.email}:${account.password}`),
@@ -358,19 +446,37 @@ export function getPublicConfig() {
       config: getConfigPath(),
       dataDir: getDataDir(),
       logDir: getLogDir(),
-      clientDebugLogDir: process.env.CLIENT_DEBUG_LOG_DIR || resolve(getDataDir(), 'logs-debug'),
+      clientDebugLogDir: current.server.clientDebugLogDir || resolve(getDataDir(), 'logs-debug'),
     },
     loadError: getConfigLoadError(),
     server: {
       apiKeyConfigured: Boolean(current.server.apiKey),
       apiKey: current.server.apiKey ? maskSecret(current.server.apiKey) : '',
+      apiKeys: publicApiKeys(current.server.apiKeys),
+      externalApiKeyCount: current.server.apiKeys.length + (current.server.apiKey ? 1 : 0),
+      adminKeyAcceptedForApi: Boolean(current.server.apiKey),
       mergeThinking: current.server.mergeThinking,
       enablePromptInjection: current.server.enablePromptInjection,
       clientDebugLog: current.server.clientDebugLog,
+      clientDebugLogDir: current.server.clientDebugLogDir,
       clientDebugLogMaxChars: current.server.clientDebugLogMaxChars,
+      systemFingerprint: current.server.systemFingerprint,
+    },
+    runtime: {
+      sessionTtlSeconds: current.runtime.sessionTtlSeconds,
+      maxRequestsPerSession: current.runtime.maxRequestsPerSession,
+      enableConversationAffinity: current.runtime.enableConversationAffinity,
+      conversationTtlMs: current.runtime.conversationTtlMs,
+      maxConversations: current.runtime.maxConversations,
+      maxTurnsPerSession: current.runtime.maxTurnsPerSession,
+      enableFcErrorRetry: current.runtime.enableFcErrorRetry,
+      fcErrorRetryMaxAttempts: current.runtime.fcErrorRetryMaxAttempts,
+      logDir: current.runtime.logDir,
     },
     deepseek: {
-      tokens: publicSecrets(current.deepseek.tokens),
+      authMode: current.deepseek.accounts.length > 0 ? 'account-pool' : 'token-pool',
+      tokenCount: current.deepseek.tokens.length,
+      tokens: current.deepseek.accounts.length > 0 ? [] : publicSecrets(current.deepseek.tokens),
       accounts: publicAccounts(current.deepseek.accounts),
       maxConcurrentPerToken: current.deepseek.maxConcurrentPerToken,
       tokenDeadThreshold: current.deepseek.tokenDeadThreshold,
@@ -378,6 +484,8 @@ export function getPublicConfig() {
       idleThresholdSeconds: current.deepseek.idleThresholdSeconds,
       validateOnStartup: current.deepseek.validateOnStartup,
       prewarmSessions: current.deepseek.prewarmSessions,
+      contextFallback: current.deepseek.contextFallback,
+      proSafeInputTokens: current.deepseek.proSafeInputTokens,
     },
     glm: {
       refreshTokens: publicSecrets(current.glm.refreshTokens),
@@ -407,6 +515,55 @@ export function getPublicChannelConfig(channel) {
     throw new Error(`Unsupported channel: ${channel}`);
   }
   return publicConfig[channel];
+}
+
+function generateApiKey() {
+  return `sk-omni-${randomBytes(24).toString('hex')}`;
+}
+
+export function addServerApiKey(payload = {}) {
+  const key = String(payload.key || '').trim() || generateApiKey();
+  const name = String(payload.name || 'External API Key').trim() || 'External API Key';
+  const current = getConfig();
+  const next = clone(current);
+  next.server.apiKeys.push({
+    name,
+    key,
+    createdAt: new Date().toISOString(),
+  });
+  saveConfig(next);
+  return { key, config: getPublicConfig().server };
+}
+
+export function removeServerApiKey(id) {
+  const current = getConfig();
+  const before = current.server.apiKeys.length;
+  const next = clone(current);
+  next.server.apiKeys = next.server.apiKeys.filter(item => secretId(item.key) !== id);
+  if (next.server.apiKeys.length === before) return false;
+  saveConfig(next);
+  return true;
+}
+
+function safeEqualSecret(left, right) {
+  const a = Buffer.from(String(left || ''));
+  const b = Buffer.from(String(right || ''));
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+export function getAcceptedApiKeys() {
+  const current = getConfig();
+  return uniqueStrings([
+    current.server.apiKey,
+    ...current.server.apiKeys.map(item => item.key),
+  ]);
+}
+
+export function isAcceptedApiKey(value) {
+  const keys = getAcceptedApiKeys();
+  if (!keys.length) return true;
+  return keys.some(key => safeEqualSecret(value, key));
 }
 
 export function addChannelCredential(channel, payload = {}) {

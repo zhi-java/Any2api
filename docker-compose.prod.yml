@@ -1,0 +1,117 @@
+# 生产环境 Docker Compose 配置
+version: '3.8'
+
+services:
+  omni:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: omni:production
+    container_name: omni-prod
+    restart: always
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # DeepSeek 认证
+      DS_TOKEN: ${DS_TOKEN:-}
+      DS_TOKENS: ${DS_TOKENS:-}
+      DS_ACCOUNTS: ${DS_ACCOUNTS:-}
+      DS_ACCOUNTS_EXTENDED: ${DS_ACCOUNTS_EXTENDED:-}
+
+      # 服务配置
+      PORT: 3000
+      API_KEY: ${API_KEY}
+      API_KEYS: ${API_KEYS:-}
+
+      # 代理配置
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+
+      # Token 池调优
+      MAX_CONCURRENT_PER_TOKEN: ${MAX_CONCURRENT_PER_TOKEN:-4}
+      TOKEN_DEAD_THRESHOLD: ${TOKEN_DEAD_THRESHOLD:-5}
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-600}
+      IDLE_THRESHOLD: ${IDLE_THRESHOLD:-1800}
+
+      # 会话管理
+      SESSION_TTL: ${SESSION_TTL:-1800}
+      MAX_REQUESTS_PER_SESSION: ${MAX_REQUESTS_PER_SESSION:-8}
+
+      # 日志配置
+      LOG_DIR: /app/logs
+      CLIENT_DEBUG_LOG: ${CLIENT_DEBUG_LOG:-false}
+      CLIENT_DEBUG_LOG_DIR: ${CLIENT_DEBUG_LOG_DIR:-}
+      CLIENT_DEBUG_LOG_MAX_CHARS: ${CLIENT_DEBUG_LOG_MAX_CHARS:-200000}
+
+      # 功能开关
+      MERGE_THINKING: ${MERGE_THINKING:-false}
+      ENABLE_PROMPT_INJECTION: ${ENABLE_PROMPT_INJECTION:-true}
+      SYSTEM_FINGERPRINT: ${SYSTEM_FINGERPRINT:-fp_omni_v1}
+      ENABLE_CONVERSATION_AFFINITY: ${ENABLE_CONVERSATION_AFFINITY:-false}
+      CONVERSATION_TTL_MS: ${CONVERSATION_TTL_MS:-1800000}
+      MAX_CONVERSATIONS: ${MAX_CONVERSATIONS:-500}
+      MAX_TURNS_PER_SESSION: ${MAX_TURNS_PER_SESSION:-10}
+      ENABLE_FC_ERROR_RETRY: ${ENABLE_FC_ERROR_RETRY:-true}
+      FC_ERROR_RETRY_MAX_ATTEMPTS: ${FC_ERROR_RETRY_MAX_ATTEMPTS:-3}
+      DEEPSEEK_CONTEXT_FALLBACK: ${DEEPSEEK_CONTEXT_FALLBACK:-true}
+      DEEPSEEK_PRO_SAFE_INPUT_TOKENS: ${DEEPSEEK_PRO_SAFE_INPUT_TOKENS:-110000}
+
+      # GLM 认证
+      GLM_REFRESH_TOKEN: ${GLM_REFRESH_TOKEN:-}
+      GLM_REFRESH_TOKENS: ${GLM_REFRESH_TOKENS:-}
+      GLM_GUEST_MODE: ${GLM_GUEST_MODE:-true}
+
+      # Qwen 认证
+      QWEN_TOKENS: ${QWEN_TOKENS:-}
+      QWEN_ACCOUNTS: ${QWEN_ACCOUNTS:-}
+      QWEN_MAX_CONCURRENT_PER_TOKEN: ${QWEN_MAX_CONCURRENT_PER_TOKEN:-1}
+      QWEN_MAX_QUEUE_SIZE: ${QWEN_MAX_QUEUE_SIZE:-100}
+      QWEN_QUEUE_TIMEOUT_MS: ${QWEN_QUEUE_TIMEOUT_MS:-30000}
+      QWEN_ACCOUNT_MIN_INTERVAL_MS: ${QWEN_ACCOUNT_MIN_INTERVAL_MS:-1200}
+      QWEN_RATE_LIMIT_BASE_COOLDOWN_MS: ${QWEN_RATE_LIMIT_BASE_COOLDOWN_MS:-600000}
+      QWEN_RATE_LIMIT_MAX_COOLDOWN_MS: ${QWEN_RATE_LIMIT_MAX_COOLDOWN_MS:-3600000}
+      QWEN_MAX_TOKEN_ERRORS: ${QWEN_MAX_TOKEN_ERRORS:-3}
+
+      # Kimi 认证
+      KIMI_AUTH_TOKEN: ${KIMI_AUTH_TOKEN:-}
+      KIMI_AUTH_TOKENS: ${KIMI_AUTH_TOKENS:-}
+      KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES: ${KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES:-450000}
+
+    volumes:
+      # 持久化日志
+      - logs:/app/logs
+
+    networks:
+      - omni-network
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # 日志轮转
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  omni-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

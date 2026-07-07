@@ -1,5 +1,5 @@
 /**
- * API Client - zhi2Api Admin
+ * API Client - OmniAPI Admin
  *
  * 封装所有 API 调用
  */
@@ -19,11 +19,7 @@ async function errorFromResponse(response) {
 }
 
 function notifyAuthExpired() {
-  if (window.parent && window.parent !== window) {
-    window.parent.postMessage({ type: 'auth:expired' }, window.location.origin);
-  } else {
-    window.dispatchEvent(new CustomEvent('auth:expired'));
-  }
+  window.dispatchEvent(new CustomEvent('auth:expired'));
 }
 
 // 通用请求方法
@@ -85,6 +81,19 @@ const API = {
     return request(`${this.base}/config`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    });
+  },
+
+  async createServerApiKey(payload) {
+    return request(`${this.base}/server/api-keys`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async removeServerApiKey(id) {
+    return request(`${this.base}/server/api-keys/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     });
   },
 

@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { srcPath } from '../utils/runtime-paths.js';
-import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken } from '../services/auth.js';
+import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck } from '../services/auth.js';
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
 import { getQueueInfo } from '../services/queue.js';
@@ -24,8 +24,8 @@ import { KIMI_MODEL_MAP, listKimiModels } from '../channels/kimi/models.js';
 import { getQwenStatus } from '../channels/qwen/index.js';
 import { getKimiStatus } from '../channels/kimi/index.js';
 import { getGLMStatus } from '../channels/glm/index.js';
-import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig } from '../services/config-store.js';
-import { authStatus, clearAdminSessionCookie, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
+import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig, secretId } from '../services/config-store.js';
+import { authStatus, clearAdminSessionCookie, hasValidAdminAuth, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
 import { glmTokenManager } from '../channels/glm/runner.js';
 import { qwenTokenManager } from '../channels/qwen/runner.js';
 import { kimiTokenManager } from '../channels/kimi/runner.js';
@@ -128,7 +128,7 @@ function buildChannels() {
       availableCount: deepseekAlive,
       activeRequests: deepseekPool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
       capacity: getTotalCapacity(),
-      mode: 'token-pool',
+      mode: config.deepseek.accounts.length > 0 ? 'account-pool' : 'token-pool',
       queue: getQueueInfo(),
       detail: deepseekPool,
     },
@@ -219,7 +219,11 @@ function ensureChannel(channel) {
 }
 
 function applyChannelRuntime(channel) {
-  if (channel === 'deepseek') syncTokenPoolFromConfig();
+  if (channel === 'deepseek') {
+    syncTokenPoolFromConfig();
+    stopHealthCheck();
+    startHealthCheck();
+  }
   if (channel === 'glm') glmTokenManager.configure();
   if (channel === 'qwen') qwenTokenManager.configure();
   if (channel === 'kimi') kimiTokenManager.configure();
@@ -229,14 +233,19 @@ function jsonError(res, error, fallbackStatus = 500) {
   res.status(error.statusCode || fallbackStatus).json({ error: { message: error.message } });
 }
 
+function requireAdminPageAuth(req, res, next) {
+  if (hasValidAdminAuth(req)) return next();
+  return res.status(401).json({ error: { message: 'Authentication required' } });
+}
+
 // ============= 静态资源服务 =============
 
 // 静态资源（CSS, JS, 页面等）
-router.use('/styles', express.static(srcPath('admin', 'styles')));
-router.use('/scripts', express.static(srcPath('admin', 'scripts')));
-router.use('/pages', express.static(srcPath('admin', 'pages')));
-router.use('/assets', express.static(srcPath('admin', 'assets')));
-router.use('/vendor', express.static(srcPath('admin', 'vendor')));
+router.use('/styles', requireAdminPageAuth, express.static(srcPath('admin', 'styles')));
+router.use('/scripts', requireAdminPageAuth, express.static(srcPath('admin', 'scripts')));
+router.use('/pages', requireAdminPageAuth, express.static(srcPath('admin', 'pages')));
+router.use('/assets', requireAdminPageAuth, express.static(srcPath('admin', 'assets')));
+router.use('/vendor', requireAdminPageAuth, express.static(srcPath('admin', 'vendor')));
 
 // ============= Admin 面板 UI =============
 
@@ -275,10 +284,31 @@ router.patch('/api/config', (req, res) => {
   try {
     const saved = updateConfig(req.body || {});
     syncTokenPoolFromConfig();
+    stopHealthCheck();
+    startHealthCheck();
     glmTokenManager.configure();
     qwenTokenManager.configure();
     kimiTokenManager.configure();
     res.json({ success: true, config: getPublicConfig(), saved: Boolean(saved) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
+router.post('/api/server/api-keys', (req, res) => {
+  try {
+    const result = addServerApiKey(req.body || {});
+    res.json({ success: true, key: result.key, config: result.config });
+  } catch (error) {
+    jsonError(res, error, 400);
+  }
+});
+
+router.delete('/api/server/api-keys/:id', (req, res) => {
+  try {
+    const removed = removeServerApiKey(req.params.id);
+    if (!removed) return res.status(404).json({ error: { message: 'api key not found' } });
+    res.json({ success: true, config: getPublicConfig().server });
   } catch (error) {
     jsonError(res, error);
   }
@@ -331,39 +361,120 @@ router.delete('/api/channels/:channel/credentials/:id', (req, res) => {
   }
 });
 
+function secretLabel(value) {
+  const text = String(value || '');
+  return text.length <= 12 ? text : `${text.slice(0, 6)}...${text.slice(-4)}`;
+}
+
 router.post('/api/channels/:channel/test', async (req, res) => {
   try {
     const { channel } = req.params;
     ensureChannel(channel);
     const config = getConfig();
+    const results = [];
+    const removedIds = [];
 
     if (channel === 'deepseek') {
-      const token = config.deepseek.tokens[0];
-      if (!token) return res.status(400).json({ error: { message: '请先保存 DeepSeek Token 后再测试' } });
-      const result = await testDeepSeekToken(token);
-      return res.json({ success: result.valid, channel, message: result.valid ? 'DeepSeek Token 验证通过' : 'DeepSeek Token 验证失败', result });
+      const { testDeepSeekToken, getDeepSeekPoolEntries, loginAndAddToken } = await import('../services/auth.js');
+      let pool = getDeepSeekPoolEntries();
+      const needsLogin = pool.length === 0 || pool.some(entry => !entry.token);
+      if (needsLogin && config.deepseek.accounts.length > 0) {
+        for (const account of config.deepseek.accounts) {
+          try {
+            await loginAndAddToken(String(account.email), String(account.password));
+            results.push({ label: account.email, success: true, message: '账号登录成功，Token 已获取' });
+          } catch (err) {
+            const id = secretId(String(account.email) + ':' + String(account.password));
+            removeChannelCredential('deepseek', id);
+            removedIds.push(id);
+            results.push({ label: account.email, success: false, message: `登录失败，凭据已删除: ${err.message}` });
+          }
+        }
+        pool = getDeepSeekPoolEntries();
+      }
+      for (const entry of pool) {
+        if (!entry.token) {
+          results.push({ label: entry.email || 'unknown', success: false, message: '无可用 Token' });
+          continue;
+        }
+        try {
+          const result = await testDeepSeekToken(entry.token);
+          if (result.valid) {
+            results.push({ label: entry.email || entry.token.replace(/^(.{6}).*(.{4})$/, '$1...$2'), success: true, message: '有效' });
+          } else {
+            const id = secretId(entry.token);
+            removeChannelCredential('deepseek', id);
+            removedIds.push(id);
+            results.push({ label: entry.email || entry.token.replace(/^(.{6}).*(.{4})$/, '$1...$2'), success: false, message: '无效，凭据已删除' });
+          }
+        } catch (err) {
+          results.push({ label: entry.email || entry.token, success: false, message: err.message });
+        }
+      }
+      return res.json({ success: results.some(r => r.success), channel, results, removed: removedIds.length > 0 });
     }
 
     if (channel === 'glm') {
-      const accessToken = await glmTokenManager.getAccessToken();
-      return res.json({ success: true, channel, message: 'GLM 访问令牌获取成功', result: { hasAccessToken: Boolean(accessToken) } });
+      for (const rt of config.glm.refreshTokens || []) {
+        try {
+          const accessToken = await glmTokenManager.getAccessToken();
+          results.push({ label: secretLabel(rt), success: Boolean(accessToken), message: accessToken ? '访问令牌获取成功' : '无法获取访问令牌' });
+          if (!accessToken) {
+            removeChannelCredential('glm', secretId(rt));
+          }
+        } catch (err) {
+          removeChannelCredential('glm', secretId(rt));
+          results.push({ label: secretLabel(rt), success: false, message: `测试失败，凭据已删除: ${err.message}` });
+        }
+      }
+      if (!results.length && config.glm.guestMode) {
+        results.push({ label: '访客模式', success: true, message: '访客模式已启用，无需配置凭据' });
+      }
+      return res.json({ success: results.some(r => r.success), channel, results });
     }
 
     if (channel === 'qwen') {
-      const slot = await qwenTokenManager.acquireToken();
-      if (!slot) return res.status(400).json({ error: { message: qwenTokenManager.getUnavailableReason() } });
-      slot.release();
-      return res.json({ success: true, channel, message: 'Qwen 凭据可用，已成功获取运行时 Token' });
+      const entries = [...(config.qwen.tokens || []).map(t => ({ type: 'token', value: t })), ...(config.qwen.accounts || []).map(a => ({ type: 'account', value: a.email, password: a.password }))];
+      for (const entry of entries) {
+        try {
+          const slot = await qwenTokenManager.acquireToken();
+          if (!slot) {
+            const id = entry.type === 'token' ? secretId(entry.value) : secretId(String(entry.value) + ':' + String(entry.password));
+            removeChannelCredential('qwen', id);
+            results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: false, message: '凭据不可用，已删除' });
+          } else {
+            slot.release();
+            results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: true, message: '凭据可用' });
+          }
+        } catch (err) {
+          const id = entry.type === 'token' ? secretId(entry.value) : secretId(String(entry.value) + ':' + String(entry.password));
+          removeChannelCredential('qwen', id);
+          results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: false, message: `测试失败，凭据已删除: ${err.message}` });
+        }
+      }
+      return res.json({ success: results.some(r => r.success), channel, results });
     }
 
     if (channel === 'kimi') {
-      const slot = kimiTokenManager.acquireToken();
-      if (!slot) return res.status(400).json({ error: { message: kimiTokenManager.getUnavailableReason() } });
-      slot.release();
-      return res.json({ success: true, channel, message: 'Kimi Token 已加载且未过期' });
+      for (const token of config.kimi.authTokens || []) {
+        try {
+          const slot = kimiTokenManager.acquireToken();
+          if (!slot) {
+            removeChannelCredential('kimi', secretId(token));
+            results.push({ label: secretLabel(token), success: false, message: 'Token 不可用，已删除' });
+          } else {
+            slot.release();
+            results.push({ label: secretLabel(token), success: true, message: 'Token 已加载且未过期' });
+          }
+        } catch (err) {
+          removeChannelCredential('kimi', secretId(token));
+          results.push({ label: secretLabel(token), success: false, message: `测试失败，凭据已删除: ${err.message}` });
+        }
+      }
+      return res.json({ success: results.some(r => r.success), channel, results });
     }
 
-    res.json({ success: true, channel });
+    res.json({ success: true, channel, results });
   } catch (error) {
     jsonError(res, error);
   }
@@ -387,7 +498,7 @@ router.get('/api/stats', (req, res) => {
     sessions: getSessionInfo(),
     conversations: {
       ...getConversationInfo(),
-      affinityEnabled: process.env.ENABLE_CONVERSATION_AFFINITY === 'true',
+      affinityEnabled: getConfig().runtime.enableConversationAffinity,
     },
     logStats: getLogStats(),
     channels,

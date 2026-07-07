@@ -1,19 +1,12 @@
 import { findLastTriggerSignalOutsideThink } from './prompt-strategy.js';
-
-function boolEnvEnabled(name, defaultValue) {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return defaultValue;
-  return !['false', '0', 'no', 'off'].includes(String(raw).trim().toLowerCase());
-}
+import { getConfig } from '../services/config-store.js';
 
 export function isFcErrorRetryEnabled() {
-  return boolEnvEnabled('ENABLE_FC_ERROR_RETRY', true);
+  return getConfig().runtime.enableFcErrorRetry;
 }
 
 export function getFcErrorRetryMaxAttempts() {
-  const parsed = Number.parseInt(process.env.FC_ERROR_RETRY_MAX_ATTEMPTS || '', 10);
-  if (!Number.isFinite(parsed)) return 3;
-  return Math.min(10, Math.max(1, parsed));
+  return getConfig().runtime.fcErrorRetryMaxAttempts;
 }
 
 export function classifyToolFailure(content, triggerSignal, parseResult = null) {

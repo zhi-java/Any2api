@@ -1,5 +1,5 @@
 /**
- * Polling Manager - zhi2Api Admin
+ * Polling Manager - OmniAPI Admin
  *
  * 管理数据轮询，支持页面可见性检测
  */

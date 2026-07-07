@@ -43,7 +43,7 @@ export function createChatCompletionsRequestAdapter(req) {
     metadata: {
       path: req?.originalUrl || req?.path || '/v1/chat/completions',
       headers: req?.headers || {},
-      promptInjectionEnabled: req?.any2api?.promptInjectionEnabled,
+      promptInjectionEnabled: req?.omni?.promptInjectionEnabled,
     },
   });
 }

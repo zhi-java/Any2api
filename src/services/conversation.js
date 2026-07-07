@@ -14,13 +14,11 @@
 
 import { createHash } from 'crypto';
 import { createSession } from './session.js';
+import { getConfig } from './config-store.js';
 
-const ENABLED = process.env.ENABLE_CONVERSATION_AFFINITY === 'true';
-const TTL_MS = parseInt(process.env.CONVERSATION_TTL_MS || String(30 * 60 * 1000), 10); // 30 min idle -> evict
-const MAX_CONVERSATIONS = parseInt(process.env.MAX_CONVERSATIONS || '500', 10);
-// Hard cap on turns per DeepSeek session before we rotate (defence against the
-// non-deterministic empty-content seen beyond ~12 chained turns).
-const MAX_TURNS_PER_SESSION = parseInt(process.env.MAX_TURNS_PER_SESSION || '10', 10);
+function settings() {
+  return getConfig().runtime;
+}
 
 const store = new Map(); // conversationId -> entry
 
@@ -41,24 +39,25 @@ function hashMessages(messages) {
 function now() { return Date.now(); }
 
 function evictExpired() {
-  const cutoff = now() - TTL_MS;
+  const cutoff = now() - settings().conversationTtlMs;
   for (const [id, e] of store) {
     if (e.lastSeen < cutoff) store.delete(id);
   }
 }
 
 function enforceCapacity() {
-  if (store.size <= MAX_CONVERSATIONS) return;
+  const maxConversations = settings().maxConversations;
+  if (store.size <= maxConversations) return;
   // Drop the oldest-seen entries first.
   const entries = [...store.entries()].sort((a, b) => a[1].lastSeen - b[1].lastSeen);
-  const drop = store.size - MAX_CONVERSATIONS;
+  const drop = store.size - maxConversations;
   for (let i = 0; i < drop; i++) store.delete(entries[i][0]);
 }
 
 // Resolve the conversation id for an incoming request. Returns null when
 // affinity is disabled or no id can be derived (e.g. empty messages).
 export function getConversationId(req, messages) {
-  if (!ENABLED) return null;
+  if (!settings().enableConversationAffinity) return null;
   const explicit = req.headers['x-conversation-id'];
   if (explicit && typeof explicit === 'string' && explicit.trim()) return explicit.trim();
   if (Array.isArray(messages) && messages.length) return 'auto:' + hashMessages(messages);
@@ -77,7 +76,8 @@ export function getConversationId(req, messages) {
 //   promptMode 'latest'  -> caller sends only the latest user turn
 //   promptMode 'full'    -> caller sends the full history (fallback / non-affinity)
 export async function resolveConversation({ conversationId, modelType, token }) {
-  if (!ENABLED || !conversationId) {
+  const current = settings();
+  if (!current.enableConversationAffinity || !conversationId) {
     return { affinity: false, sessionId: null, parentMessageId: null, promptMode: 'full' };
   }
 
@@ -88,7 +88,7 @@ export async function resolveConversation({ conversationId, modelType, token }) 
   const existing = store.get(conversationId);
   const fresh = !existing
     || existing.tokenPrefix !== tokenPrefix   // landed on a different token -> new session
-    || existing.turns >= MAX_TURNS_PER_SESSION; // rotate to avoid degradation
+    || existing.turns >= current.maxTurnsPerSession; // rotate to avoid degradation
 
   if (fresh) {
     // Lazily create a DeepSeek session bound to this token. Failure bubbles up
@@ -114,7 +114,7 @@ export async function resolveConversation({ conversationId, modelType, token }) 
 // Record the response_message_id emitted by the upstream stream so the NEXT
 // turn can chain off it. Called from the SSE loop in openai.js.
 export function recordResponseMessageId(conversationId, responseMessageId) {
-  if (!ENABLED || !conversationId || responseMessageId == null) return;
+  if (!settings().enableConversationAffinity || !conversationId || responseMessageId == null) return;
   const entry = store.get(conversationId);
   if (!entry) return;
   entry.parentMessageId = responseMessageId;
@@ -136,14 +136,15 @@ export function invalidateByTokenPrefix(tokenPrefix) {
 }
 
 export function getConversationInfo() {
-  if (!ENABLED) return { enabled: false };
+  const current = settings();
+  if (!current.enableConversationAffinity) return { enabled: false };
   let oldest = Infinity;
   for (const e of store.values()) oldest = Math.min(oldest, e.lastSeen);
   return {
     enabled: true,
     active: store.size,
-    maxConversations: MAX_CONVERSATIONS,
-    ttlMs: TTL_MS,
-    maxTurnsPerSession: MAX_TURNS_PER_SESSION,
+    maxConversations: current.maxConversations,
+    ttlMs: current.conversationTtlMs,
+    maxTurnsPerSession: current.maxTurnsPerSession,
   };
 }
