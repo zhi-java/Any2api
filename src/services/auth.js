@@ -1,15 +1,19 @@
-import { readFileSync, writeFileSync } from 'fs';
-import { getEnvironmentPath, loadEnvironment } from '../utils/env.js';
+import { loadEnvironment } from '../utils/env.js';
+import { getConfig, updateChannelConfig } from './config-store.js';
 import { invalidateByTokenPrefix } from './conversation.js';
 import { invalidateTokenSessions as invalidateSessionCache } from './session.js';
 
 loadEnvironment();
-const ENV_PATH = getEnvironmentPath();
 
 const BASE_URL = 'https://chat.deepseek.com';
 
-const MAX_CONCURRENT_PER_TOKEN = parseInt(process.env.MAX_CONCURRENT_PER_TOKEN || '2', 10);
-const TOKEN_DEAD_THRESHOLD = parseInt(process.env.TOKEN_DEAD_THRESHOLD || '5', 10);
+function maxConcurrentPerToken() {
+  return getConfig().deepseek.maxConcurrentPerToken;
+}
+
+function tokenDeadThreshold() {
+  return getConfig().deepseek.tokenDeadThreshold;
+}
 
 // Multi-token support: DS_TOKENS=
 // Fallback: DS_TOKEN=
@@ -100,6 +104,37 @@ for (const acct of accounts) {
   }
 }
 
+function createTokenEntry({ token = null, email = null, password = null, visionCapable = null } = {}) {
+  return {
+    token,
+    email,
+    password,
+    visionCapable,
+    lastUsed: 0,
+    errorCount: 0,
+    activeRequests: 0,
+    dead: false,
+  };
+}
+
+export function syncTokenPoolFromConfig() {
+  const { deepseek } = getConfig();
+  const previous = new Map(tokenPool.filter(entry => entry.token).map(entry => [entry.token, entry]));
+  tokenPool.splice(0, tokenPool.length);
+
+  for (const token of deepseek.tokens) {
+    const prior = previous.get(token);
+    tokenPool.push(prior ? { ...prior, activeRequests: 0 } : createTokenEntry({ token }));
+  }
+
+  for (const account of deepseek.accounts) {
+    const alreadyLinked = tokenPool.some(entry => entry.email === account.email);
+    if (!alreadyLinked) {
+      tokenPool.push(createTokenEntry({ email: account.email, password: account.password }));
+    }
+  }
+}
+
 import { loginHeaders, getHeaders, getDeviceId, proxiedFetch, getDeviceIdForToken } from '../utils/headers.js';
 
 async function login(email, password) {
@@ -184,16 +219,23 @@ async function refreshToken(entry) {
     // If account is banned, mark dead permanently
     if (err.message.includes('banned')) {
       entry.dead = true;
-      entry.errorCount = TOKEN_DEAD_THRESHOLD;
+      entry.errorCount = tokenDeadThreshold();
     }
     return false;
   }
 }
 
 export async function initTokenPool() {
-  console.log(`Token pool: ${tokenPool.length} entries (${tokens.length} tokens + ${accounts.length} accounts), max ${MAX_CONCURRENT_PER_TOKEN} concurrent each`);
-  if (tokens.length === 0 && accounts.length === 0) {
-    console.warn('No DS_TOKEN/DS_TOKENS or DS_ACCOUNTS configured; DeepSeek requests will fail until a token or account is added.');
+  syncTokenPoolFromConfig();
+  const config = getConfig().deepseek;
+  console.log(`Token pool: ${tokenPool.length} entries (${config.tokens.length} tokens + ${config.accounts.length} accounts), max ${maxConcurrentPerToken()} concurrent each`);
+  if (config.tokens.length === 0 && config.accounts.length === 0) {
+    console.warn('No DeepSeek credentials configured; requests will fail until configured from the admin UI or config file.');
+  }
+
+  if (!config.validateOnStartup) {
+    console.log('DeepSeek startup validation skipped. Use the admin test button to validate credentials.');
+    return;
   }
 
   // Validate existing tokens, mark dead ones (auto-refresh if account linked)
@@ -205,7 +247,6 @@ export async function initTokenPool() {
         if (entry.password) {
           const ok = await refreshToken(entry);
           if (ok) {
-            // Remove duplicate account-only entries that now have same email
             const dupIdx = tokenPool.findIndex(t => t !== entry && t.email === entry.email && !t.token);
             if (dupIdx !== -1) {
               console.log(`  Removing duplicate account entry for ${entry.email}`);
@@ -214,26 +255,23 @@ export async function initTokenPool() {
           }
         } else {
           entry.dead = true;
-          entry.errorCount = TOKEN_DEAD_THRESHOLD;
+          entry.errorCount = tokenDeadThreshold();
         }
       }
     }
   }
 
-  // Login account-only entries (no token yet) — remove if banned/WAF-blocked
   for (let i = tokenPool.length - 1; i >= 0; i--) {
     const entry = tokenPool[i];
     if (!entry.token && entry.password) {
       const ok = await refreshToken(entry);
       if (!ok && entry.dead) {
-        // Banned or permanently failed — remove from pool
         console.log(`  Removing banned/failed account entry for ${entry.email}`);
         tokenPool.splice(i, 1);
       }
     }
   }
 
-  // Also remove account entries with no token and no password (stale NONE entries)
   for (let i = tokenPool.length - 1; i >= 0; i--) {
     if (!tokenPool[i].token && !tokenPool[i].password) {
       console.log(`  Removing stale NONE entry at index ${i}`);
@@ -241,7 +279,6 @@ export async function initTokenPool() {
     }
   }
 
-  // Check vision capability for valid tokens
   for (const entry of tokenPool) {
     if (entry.token && !entry.dead) {
       const vision = await checkVisionCapability(entry.token);
@@ -253,11 +290,11 @@ export async function initTokenPool() {
 
   const alive = tokenPool.filter(t => !t.dead).length;
   console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive`);
-  persistTokensToEnv();
+  persistTokensToConfig();
 }
 
 export function acquireToken(preferVision = false) {
-  const liveCandidates = tokenPool.filter(t => !t.dead && t.activeRequests < MAX_CONCURRENT_PER_TOKEN && t.token);
+  const liveCandidates = tokenPool.filter(t => !t.dead && t.activeRequests < maxConcurrentPerToken() && t.token);
   if (liveCandidates.length === 0) return null;
 
   let candidates = liveCandidates;
@@ -291,7 +328,7 @@ export function reportTokenError(token) {
   if (!entry) return;
   entry.errorCount++;
 
-  if (entry.errorCount >= TOKEN_DEAD_THRESHOLD) {
+  if (entry.errorCount >= tokenDeadThreshold()) {
     markTokenDead(entry);
   }
 }
@@ -303,7 +340,7 @@ export function markTokenDead(tokenOrEntry) {
     ? tokenPool.find(t => t.token === tokenOrEntry)
     : tokenOrEntry;
   if (!entry || entry.dead) return;
-  entry.errorCount = TOKEN_DEAD_THRESHOLD;
+  entry.errorCount = tokenDeadThreshold();
   entry.dead = true;
   console.warn(`Token ${entry.token.slice(0, 12)}... marked DEAD (forced)`);
 
@@ -386,7 +423,7 @@ export async function loginAndAddToken(email, password) {
   if (!existing) {
     const vision = await checkVisionCapability(token);
     tokenPool.push({ token, email, password, visionCapable: vision, lastUsed: 0, errorCount: 0, activeRequests: 0, dead: false });
-    persistTokensToEnv();
+    persistTokensToConfig();
   }
   return token;
 }
@@ -438,33 +475,24 @@ export function upsertEnvValues(content, updates) {
   return lines.join('\n');
 }
 
-function persistTokensToEnv() {
-  try {
-    let content = readFileSync(ENV_PATH, 'utf-8');
-    const { dsTokens, dsAccountsExtended } = buildPersistedTokenEnv(tokenPool);
-    if (dsTokens.length === 0) return;
-
-    content = upsertEnvValues(content, {
-      DS_TOKENS: dsTokens.join(','),
-      // Keep account-issued tokens linked on next boot; otherwise DS_ACCOUNTS
-      // logs in again and appends another token for the same account.
-      DS_ACCOUNTS_EXTENDED: dsAccountsExtended.join(','),
-    });
-
-    writeFileSync(ENV_PATH, content);
-  } catch (err) {
-    console.warn('Failed to persist tokens to .env:', err.message);
-  }
+function persistTokensToConfig() {
+  const { dsTokens } = buildPersistedTokenEnv(tokenPool);
+  updateChannelConfig('deepseek', {
+    ...getConfig().deepseek,
+    tokens: dsTokens,
+    accounts: tokenPool
+      .filter(entry => entry.email && entry.password)
+      .map(entry => ({ email: entry.email, password: entry.password })),
+  });
 }
 
 export async function addTokenToPool(tokenStr) {
   const trimmed = tokenStr.trim();
   const existing = tokenPool.find(t => t.token === trimmed);
   if (existing) return existing;
-  const vision = await checkVisionCapability(trimmed);
-  const entry = { token: trimmed, email: null, password: null, visionCapable: vision, lastUsed: 0, errorCount: 0, activeRequests: 0, dead: false };
+  const entry = createTokenEntry({ token: trimmed });
   tokenPool.push(entry);
-  persistTokensToEnv();
+  persistTokensToConfig();
   return entry;
 }
 
@@ -477,7 +505,7 @@ export function removeTokenFromPool(tokenPrefix) {
 
   const [removed] = tokenPool.splice(index, 1);
   invalidateTokenSessions(removed.token);
-  persistTokensToEnv();
+  persistTokensToConfig();
   return true;
 }
 
@@ -507,7 +535,7 @@ async function healthCheck() {
         }
       } else {
         entry.dead = true;
-        entry.errorCount = TOKEN_DEAD_THRESHOLD;
+        entry.errorCount = tokenDeadThreshold();
       }
     } else {
       entry.lastUsed = now; // reset idle timer on successful check
@@ -538,7 +566,7 @@ export function getPoolInfo() {
     errorCount: t.errorCount,
     activeRequests: t.activeRequests,
     dead: t.dead,
-    maxConcurrent: MAX_CONCURRENT_PER_TOKEN,
+    maxConcurrent: maxConcurrentPerToken(),
   }));
 }
 
@@ -547,5 +575,11 @@ export function getAliveTokens() {
 }
 
 export function getTotalCapacity() {
-  return tokenPool.filter(t => !t.dead && t.token).length * MAX_CONCURRENT_PER_TOKEN;
+  return tokenPool.filter(t => !t.dead && t.token).length * maxConcurrentPerToken();
+}
+
+export async function testDeepSeekToken(token) {
+  const valid = await validateToken(token);
+  const visionCapable = valid ? await checkVisionCapability(token) : null;
+  return { valid, visionCapable };
 }

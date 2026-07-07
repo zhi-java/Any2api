@@ -1,3 +1,5 @@
+import { getConfig, updateChannelConfig } from '../../services/config-store.js';
+
 function decodeJWT(token) {
   try {
     const payload = token.split('.')[1];
@@ -37,8 +39,16 @@ export class KimiTokenManager {
   }
 
   _loadTokens() {
-    const raw = process.env.KIMI_AUTH_TOKENS || process.env.KIMI_AUTH_TOKEN || '';
-    return raw.split(',').map(t => t.trim()).filter(Boolean).map(createEntry);
+    return (getConfig().kimi.authTokens || []).map(createEntry);
+  }
+
+  configure(config = getConfig().kimi) {
+    this.tokens = (config.authTokens || []).map(createEntry);
+  }
+
+  saveConfig(config) {
+    updateChannelConfig('kimi', { ...getConfig().kimi, ...config });
+    this.configure();
   }
 
   acquireToken() {

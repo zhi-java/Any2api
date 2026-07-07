@@ -1,3 +1,4 @@
+import { getConfig } from '../../services/config-store.js';
 import { textFromContent } from '../../utils/response-utils.js';
 import { resolveUploadableBytes } from '../../utils/message-files.js';
 
@@ -8,7 +9,7 @@ const SCENARIO_K2_6 = 'SCENARIO_K2D5';
 const DEFAULT_TEXT_ATTACHMENT_THRESHOLD_BYTES = 450000;
 
 function getTextAttachmentThresholdBytes() {
-  const configured = Number.parseInt(process.env.KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES || '', 10);
+  const configured = Number.parseInt(getConfig().kimi.textAttachmentThresholdBytes || process.env.KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES || '', 10);
   return Number.isFinite(configured) && configured > 0
     ? configured
     : DEFAULT_TEXT_ATTACHMENT_THRESHOLD_BYTES;

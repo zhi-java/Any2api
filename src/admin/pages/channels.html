@@ -7,317 +7,78 @@
   <link rel="stylesheet" href="/admin/styles/design-system.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
   <style>
-    body {
-      background: var(--bg-primary);
-    }
-
-    .page-container {
-      padding: var(--space-8);
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: var(--space-4);
-      margin-bottom: var(--space-8);
-    }
-
-    .section {
-      margin-bottom: var(--space-8);
-    }
-
-    .table-wrap {
-      overflow-x: auto;
-    }
-
-    .model-name {
-      font-weight: 600;
-      color: var(--text-primary);
-      white-space: nowrap;
-    }
-
-    .muted {
-      color: var(--text-tertiary);
-      font-size: var(--text-xs);
-    }
-
-    .capability-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--space-2);
-      min-width: 360px;
-    }
-
-    .last-error {
-      max-width: 360px;
-      color: var(--text-secondary);
-      word-break: break-word;
-    }
-
-    @media (max-width: 1024px) {
-      .stats-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
-    }
-
-    @media (max-width: 640px) {
-      .stats-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .capability-list {
-        min-width: 0;
-      }
-    }
+    .stat-row { display: flex; gap: var(--space-2); flex-shrink: 0; }
+    .stat-row .stat-card { flex: 1; padding: var(--space-2) var(--space-3); }
+    .stat-row .stat-value { font-size: var(--text-lg); }
+    .tables-row { display: flex; gap: var(--space-2); flex: 1; min-height: 0; }
+    .tables-row .card { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: var(--space-2); }
+    .tables-row .table-wrap { flex: 1; min-height: 0; }
+    .tables-row table { font-size: 14px; }
+    .tables-row td, .tables-row th { padding: 2px 5px; }
+    .cap-line { display: flex; flex-wrap: wrap; gap: 2px; }
+    .cap-line .badge { font-size: 12px; padding: 1px 4px; border-radius: 3px; }
   </style>
 </head>
 <body>
   <div class="page-container">
-    <div class="page-header">
-      <h1>渠道管理</h1>
-      <p class="text-secondary">统一查看上游渠道、凭据池、容量、队列和模型能力</p>
-    </div>
-
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">健康渠道</div>
-        <div class="stat-value text-success" id="stat-healthy">-</div>
+    <div class="page-header"><h1>渠道管理</h1></div>
+    <div class="page-body">
+      <div class="stat-row">
+        <div class="stat-card"><div class="stat-label">健康</div><div class="stat-value text-success" id="statHealthy">-</div></div>
+        <div class="stat-card"><div class="stat-label">降级</div><div class="stat-value text-warning" id="statDegraded">-</div></div>
+        <div class="stat-card"><div class="stat-label">未配置</div><div class="stat-value" id="statUnconfigured">-</div></div>
+        <div class="stat-card"><div class="stat-label">模型</div><div class="stat-value" id="statModels">-</div></div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">降级渠道</div>
-        <div class="stat-value text-warning" id="stat-degraded">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">未配置渠道</div>
-        <div class="stat-value" id="stat-unconfigured">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">模型数量</div>
-        <div class="stat-value" id="stat-models">-</div>
-      </div>
-    </div>
-
-    <div class="card section">
-      <div class="card-header">
-        <h3 class="card-title">渠道状态</h3>
-      </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>渠道</th>
-              <th>状态</th>
-              <th>模式</th>
-              <th>凭据</th>
-              <th>可用</th>
-              <th>并发</th>
-              <th>队列</th>
-              <th>5分钟请求</th>
-              <th>错误</th>
-              <th>最近错误</th>
-            </tr>
-          </thead>
-          <tbody id="channels-body">
-            <tr>
-              <td colspan="10" class="empty-state">
-                <div class="loading"></div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card section">
-      <div class="card-header">
-        <h3 class="card-title">模型能力</h3>
-      </div>
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <select class="select" id="channelFilter">
-            <option value="all">全部渠道</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="glm">GLM</option>
-            <option value="qwen">Qwen</option>
-            <option value="kimi">Kimi</option>
-          </select>
-          <input class="input" id="modelSearch" type="text" placeholder="搜索模型..." style="max-width: 320px;">
+      <div class="tables-row">
+        <div class="card">
+          <div class="card-header" style="margin-bottom:var(--space-1)"><div class="card-title">渠道</div><select class="select" id="channelFilter" style="width:auto;font-size:13px;padding:1px 4px;"><option value="all">全部</option><option value="deepseek">DeepSeek</option><option value="glm">GLM</option><option value="qwen">Qwen</option><option value="kimi">Kimi</option></select></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>渠道</th><th>状态</th><th>凭据</th><th>错误</th></tr></thead><tbody id="channelsBody"><tr><td colspan="4" class="empty-state">…</td></tr></tbody></table></div>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>模型</th>
-              <th>渠道</th>
-              <th>能力</th>
-            </tr>
-          </thead>
-          <tbody id="models-body">
-            <tr>
-              <td colspan="3" class="empty-state">
-                <div class="loading"></div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="card">
+          <div class="card-header" style="margin-bottom:var(--space-1)"><div class="card-title">模型</div><input class="input" id="modelSearch" type="text" placeholder="搜索…" style="font-size:13px;padding:1px 4px;width:100px;"></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>模型</th><th>能力</th></tr></thead><tbody id="modelsBody"><tr><td colspan="2" class="empty-state">…</td></tr></tbody></table></div>
+        </div>
       </div>
     </div>
   </div>
-
   <script type="module">
-    import API from '/admin/scripts/api.js';
-    import PollingManager from '/admin/scripts/polling.js';
-
-    let models = [];
-
-    function formatNumber(num) {
-      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-      return String(num || 0);
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text == null ? '' : String(text);
-      return div.innerHTML;
-    }
-
-    function statusBadge(status) {
-      if (status === 'healthy') return { label: '健康', className: 'badge-success' };
-      if (status === 'degraded') return { label: '降级', className: 'badge-warning' };
-      return { label: '未配置', className: 'badge-default' };
-    }
-
-    function capabilityBadge(label, enabled) {
-      return `<span class="badge ${enabled ? 'badge-success' : 'badge-default'}">${label}</span>`;
-    }
-
-    let channelsSnapshot = [];
-
-    function selectedChannel() {
-      return document.getElementById('channelFilter').value;
-    }
-
-    function renderChannels(channels) {
-      const body = document.getElementById('channels-body');
-      const channel = selectedChannel();
-      const visibleChannels = channel === 'all'
-        ? channels
-        : channels.filter(item => item.id === channel);
-
-      if (!visibleChannels.length) {
-        body.innerHTML = '<tr><td colspan="10" class="empty-state">暂无渠道数据</td></tr>';
-        return;
-      }
-
-      body.innerHTML = visibleChannels.map(item => {
-        const status = statusBadge(item.status);
-        const usage = item.usage || {};
-        const queue = item.queue ? `${item.queue.queued || 0} / ${item.queue.maxSize || '-'}` : '-';
-        const lastError = item.lastError
-          ? `${item.lastError.status || '-'} ${item.lastError.model || '-'} ${item.lastError.duration || 0}ms`
-          : '-';
-
-        return `
-          <tr>
-            <td><strong>${escapeHtml(item.name || item.id)}</strong><div class="muted">${escapeHtml(item.id)}</div></td>
-            <td><span class="badge ${status.className}">${status.label}</span></td>
-            <td>${escapeHtml(item.mode || '-')}</td>
-            <td>${item.credentialCount || 0}</td>
-            <td>${item.availableCount || 0}</td>
-            <td>${item.activeRequests || 0} / ${item.capacity || 0}</td>
-            <td>${queue}</td>
-            <td>${formatNumber(usage.requests || 0)}</td>
-            <td><span class="${(item.recentErrors || 0) > 0 ? 'text-error' : 'text-success'}">${item.recentErrors || usage.errors || 0}</span></td>
-            <td class="last-error">${escapeHtml(lastError)}</td>
-          </tr>
-        `;
+    import API from '/admin/scripts/api.js'; import PollingManager from '/admin/scripts/polling.js';
+    let channels=[], models=[];
+    function escape(t){const d=document.createElement('div');d.textContent=t||'';return d.innerHTML}
+    function capBadge(l,e){return`<span class="badge ${e?'badge-success':'badge-default'}" style="font-size:12px;padding:1px 3px;border-radius:2px">${l}</span>`}
+    function render(){
+      const f=document.getElementById('channelFilter').value;
+      const tb=document.getElementById('channelsBody');
+      const vc=f==='all'?channels:channels.filter(c=>c.id===f);
+      if(!vc.length){tb.innerHTML='<tr><td colspan="4" class="empty-state">空</td></tr>';return}
+      tb.innerHTML=vc.map(c=>{
+        const st=c.status==='healthy'?'badge-success':c.status==='degraded'?'badge-warning':'badge-default';
+        const sl=c.status==='healthy'?'健康':c.status==='degraded'?'降级':'未配置';
+        const u=c.usage||{};
+        return `<tr><td><strong>${escape(c.name||c.id)}</strong></td><td><span class="badge ${st}" style="font-size:12px">${sl}</span></td><td>${c.availableCount||0}/${c.credentialCount||0}</td><td class="${(u.errors||0)>0?'text-error':''}">${u.errors||0}</td></tr>`;
+      }).join('');
+      const mb=document.getElementById('modelsBody');
+      const q=document.getElementById('modelSearch').value.trim().toLowerCase();
+      const fm=f==='all'?models:models.filter(m=>m.channel===f);
+      const filtered=q?fm.filter(m=>String(m.id).toLowerCase().includes(q)):fm;
+      if(!filtered.length){mb.innerHTML='<tr><td colspan="2" class="empty-state">无</td></tr>';return}
+      mb.innerHTML=filtered.slice(0,50).map(m=>{
+        const cap=m.capabilities||{}; const ch=[capBadge('文本',cap.text!==!1),capBadge('思考',!!cap.thinking),capBadge('搜索',!!cap.search),capBadge('文件',!!cap.document),capBadge('图像',!!(cap.vision||cap.image_gen)),capBadge('音频',!!cap.audio)];
+        return `<tr><td style="font-size:13px">${escape(m.id)}</td><td><div class="cap-line">${ch.join('')}</div></td></tr>`;
       }).join('');
     }
-
-    function renderModels() {
-      const body = document.getElementById('models-body');
-      const channel = selectedChannel();
-      const search = document.getElementById('modelSearch').value.trim().toLowerCase();
-      const filtered = models.filter(model => {
-        if (channel !== 'all' && model.channel !== channel) return false;
-        if (search && !String(model.id).toLowerCase().includes(search)) return false;
-        return true;
-      });
-
-      if (!filtered.length) {
-        body.innerHTML = '<tr><td colspan="3" class="empty-state">无匹配模型</td></tr>';
-        return;
-      }
-
-      body.innerHTML = filtered.map(model => {
-        const capabilities = model.capabilities || {};
-        const capHtml = [
-          capabilityBadge('文本', capabilities.text !== false),
-          capabilityBadge('思考', Boolean(capabilities.thinking)),
-          capabilityBadge('搜索', Boolean(capabilities.search)),
-          capabilityBadge('文件', Boolean(capabilities.document)),
-          capabilityBadge('图像', Boolean(capabilities.vision || capabilities.image_gen || capabilities.image_edit)),
-          capabilityBadge('音频', Boolean(capabilities.audio)),
-          capabilityBadge('视频', Boolean(capabilities.video || capabilities.video_gen)),
-        ].join('');
-
-        return `
-          <tr>
-            <td><div class="model-name">${escapeHtml(model.id)}</div><div class="muted">${escapeHtml(model.name || model.owned_by || '')}</div></td>
-            <td>${escapeHtml(model.channel || '-')}</td>
-            <td><div class="capability-list">${capHtml}</div></td>
-          </tr>
-        `;
-      }).join('');
-    }
-
-    async function updateChannels() {
-      try {
-        const [channelsResult, modelsResult] = await Promise.all([
-          API.getChannels(),
-          API.getModels(),
-        ]);
-        const channels = channelsResult.channels || [];
-        channelsSnapshot = channels;
-        models = modelsResult.models || [];
-
-        document.getElementById('stat-healthy').textContent = channels.filter(item => item.status === 'healthy').length;
-        document.getElementById('stat-degraded').textContent = channels.filter(item => item.status === 'degraded').length;
-        document.getElementById('stat-unconfigured').textContent = channels.filter(item => item.status === 'unconfigured').length;
-        document.getElementById('stat-models').textContent = models.length;
-
-        renderChannels(channels);
-        renderModels();
-      } catch (err) {
-        console.error('[Channels] Failed to update:', err);
-        document.getElementById('channels-body').innerHTML = '<tr><td colspan="10" class="empty-state">渠道状态加载失败</td></tr>';
-      }
-    }
-
-    document.getElementById('channelFilter').addEventListener('change', () => {
-      renderChannels(channelsSnapshot);
-      renderModels();
-    });
-    document.getElementById('modelSearch').addEventListener('input', renderModels);
-
-    const initialChannel = new URLSearchParams(window.location.search).get('channel');
-    if (initialChannel) {
-      const channelFilter = document.getElementById('channelFilter');
-      if ([...channelFilter.options].some(option => option.value === initialChannel)) {
-        channelFilter.value = initialChannel;
-      }
-    }
-
-    const poller = new PollingManager(5000);
-    poller.start(updateChannels);
-
-    window.addEventListener('beforeunload', () => {
-      poller.stop();
-    });
+    async function up(){try{
+      const[r,mr]=await Promise.all([API.getChannels(),API.getModels()]);
+      channels=r.channels||[]; models=mr.models||[];
+      document.getElementById('statHealthy').textContent=channels.filter(c=>c.status==='healthy').length;
+      document.getElementById('statDegraded').textContent=channels.filter(c=>c.status==='degraded').length;
+      document.getElementById('statUnconfigured').textContent=channels.filter(c=>c.status!=='healthy'&&c.status!=='degraded').length;
+      document.getElementById('statModels').textContent=models.length;
+      render();
+    }catch(e){console.error(e)}}
+    document.getElementById('channelFilter').addEventListener('change',render);
+    document.getElementById('modelSearch').addEventListener('input',render);
+    const p=new PollingManager(5000);p.start(up);window.addEventListener('beforeunload',()=>p.stop());
   </script>
 </body>
 </html>

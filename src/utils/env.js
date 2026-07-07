@@ -2,6 +2,7 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { config } from 'dotenv';
 import { appRootPath } from './runtime-paths.js';
+import { applyConfigToProcessEnv, loadConfig } from '../services/config-store.js';
 
 let loaded = false;
 let resolvedEnvPath = null;
@@ -29,11 +30,15 @@ export function loadEnvironment() {
     if (!existsSync(envPath)) continue;
     config({ path: envPath });
     resolvedEnvPath = envPath;
+    loadConfig({ force: true });
+    applyConfigToProcessEnv();
     return resolvedEnvPath;
   }
 
   resolvedEnvPath = appRootPath('.env');
   config({ path: resolvedEnvPath });
+  loadConfig({ force: true });
+  applyConfigToProcessEnv();
   return resolvedEnvPath;
 }
 
@@ -46,3 +51,5 @@ export function isPromptInjectionEnabled() {
   if (raw == null || raw === '') return true;
   return !['false', '0', 'no', 'off'].includes(String(raw).trim().toLowerCase());
 }
+
+loadEnvironment();

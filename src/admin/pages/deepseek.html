@@ -3,473 +3,76 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DeepSeek 渠道管理</title>
+  <title>DeepSeek</title>
   <link rel="stylesheet" href="/admin/styles/design-system.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
   <style>
-    body {
-      background: var(--bg-primary);
-    }
-
-    .page-container {
-      padding: var(--space-8);
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-
-    .overview-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: var(--space-4);
-      margin-bottom: var(--space-8);
-    }
-
-    .section {
-      margin-bottom: var(--space-8);
-    }
-
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: var(--space-4);
-    }
-
-    .token-actions {
-      display: flex;
-      gap: var(--space-2);
-    }
-
-    .token-prefix {
-      font-family: 'Courier New', monospace;
-      font-size: var(--text-xs);
-      color: var(--text-secondary);
-    }
-
-    .modal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 1000;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .modal.active {
-      display: flex;
-    }
-
-    .modal-content {
-      background: var(--bg-surface);
-      border-radius: var(--radius-lg);
-      padding: var(--space-8);
-      max-width: 500px;
-      width: 90%;
-      box-shadow: var(--shadow-lg);
-    }
-
-    .modal-header {
-      margin-bottom: var(--space-6);
-    }
-
-    .modal-body {
-      margin-bottom: var(--space-6);
-    }
-
-    .modal-footer {
-      display: flex;
-      gap: var(--space-3);
-      justify-content: flex-end;
-    }
-
-    .form-group {
-      margin-bottom: var(--space-4);
-    }
-
-    .form-label {
-      display: block;
-      font-size: var(--text-sm);
-      font-weight: 500;
-      color: var(--text-secondary);
-      margin-bottom: var(--space-2);
-    }
-
-    @media (max-width: 1024px) {
-      .overview-grid {
-        grid-template-columns: 1fr;
-      }
-    }
+    .top-bar { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
+    .top-bar .stat-card { flex: 1; max-width: 220px; margin-bottom: 0; }
+    .table-box { flex: 1; min-height: 0; }
+    .table-box table { font-size: var(--text-xs); }
+    .table-box td, .table-box th { padding: 3px 7px; }
+    .table-box tbody tr:last-child td { border-bottom: 1px solid var(--border-subtle); }
+    .token-prefix { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
   </style>
 </head>
 <body>
   <div class="page-container">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <h1>DeepSeek 渠道管理</h1>
-      <p class="text-secondary">管理 DeepSeek Token 池、会话和对话状态</p>
-    </div>
-
-    <!-- 概览卡片 -->
-    <div class="overview-grid">
-      <div class="stat-card">
-        <div class="stat-label">Token 总数</div>
-        <div class="stat-value" id="overview-tokens">-</div>
-        <div class="stat-change" id="overview-tokens-status"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">活跃会话</div>
-        <div class="stat-value" id="overview-sessions">-</div>
-        <div class="stat-change" id="overview-sessions-status"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">对话数</div>
-        <div class="stat-value" id="overview-conversations">-</div>
-        <div class="stat-change" id="overview-conversations-status"></div>
-      </div>
-    </div>
-
-    <!-- Token 池管理 -->
-    <div class="section">
-      <div class="section-header">
-        <h2>Token 池</h2>
-        <div class="token-actions">
-          <button class="btn btn-primary" onclick="openAddTokenModal()">
-            <span>➕</span>
-            添加 Token
-          </button>
-          <button class="btn btn-secondary" onclick="openAddAccountModal()">
-            <span>👤</span>
-            添加账号
-          </button>
+    <div class="page-header"><h1>DeepSeek</h1></div>
+    <div class="page-body">
+      <div class="top-bar">
+        <div class="stat-card"><div class="stat-label">Token</div><div class="stat-value" id="overviewTokens">-</div><div class="stat-change" id="overviewTokensStatus"></div></div>
+        <div style="display:flex;gap:var(--space-2);align-self:flex-end;">
+          <button class="btn btn-sm btn-primary" onclick="openAddTokenModal()">+ Token</button>
+          <button class="btn btn-sm btn-secondary" onclick="openAddAccountModal()">+ 账号</button>
         </div>
       </div>
-
-      <div class="card">
+      <div class="card table-box"><div class="table-wrap">
         <table class="table">
-          <thead>
-            <tr>
-              <th>Token</th>
-              <th>状态</th>
-              <th>邮箱</th>
-              <th>并发</th>
-              <th>错误数</th>
-              <th>视觉能力</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="token-table-body">
-            <tr>
-              <td colspan="7" class="empty-state">
-                <div class="loading"></div>
-              </td>
-            </tr>
-          </tbody>
+          <thead><tr><th>Token</th><th>状态</th><th>邮箱</th><th>并发</th><th>错误</th><th>视觉</th><th></th></tr></thead>
+          <tbody id="tokenBody"><tr><td colspan="7" class="empty-state">…</td></tr></tbody>
         </table>
-      </div>
-    </div>
-
-    <!-- 会话池状态 -->
-    <div class="section">
-      <div class="section-header">
-        <h2>会话池状态</h2>
-      </div>
-
-      <div class="grid grid-cols-2">
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">会话统计</h3>
-          </div>
-          <div class="card-body">
-            <div style="display: grid; gap: var(--space-4);">
-              <div class="flex justify-between">
-                <span class="text-secondary">活跃会话</span>
-                <strong id="session-active">-</strong>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-secondary">预热会话</span>
-                <strong id="session-prewarm">-</strong>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-secondary">总会话数</span>
-                <strong id="session-total">-</strong>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">对话统计</h3>
-          </div>
-          <div class="card-body">
-            <div style="display: grid; gap: var(--space-4);">
-              <div class="flex justify-between">
-                <span class="text-secondary">活跃对话</span>
-                <strong id="conversation-active">-</strong>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-secondary">总对话数</span>
-                <strong id="conversation-total">-</strong>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-secondary">对话亲和模式</span>
-                <span id="conversation-affinity" class="badge">-</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      </div></div>
     </div>
   </div>
-
-  <!-- 添加 Token Modal -->
-  <div id="addTokenModal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>添加 Token</h3>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label class="form-label" for="tokenInput">Token</label>
-          <input
-            type="text"
-            id="tokenInput"
-            class="input"
-            placeholder="请输入完整的 DeepSeek Token"
-          />
-        </div>
-        <div class="alert alert-info">
-          Token 将自动验证并添加到池中
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('addTokenModal')">取消</button>
-        <button class="btn btn-primary" onclick="addToken()">添加</button>
-      </div>
+  <div id="addTokenModal" class="modal"><div class="modal-content">
+    <div class="modal-header"><h3>添加 Token</h3></div>
+    <div class="modal-body"><input type="text" id="tokenInput" class="input" style="width:100%" placeholder="DeepSeek Token" /></div>
+    <div class="modal-footer"><button class="btn btn-sm btn-secondary" onclick="closeModal('addTokenModal')">取消</button><button class="btn btn-sm btn-primary" onclick="addToken()">保存</button></div>
+  </div></div>
+  <div id="addAccountModal" class="modal"><div class="modal-content">
+    <div class="modal-header"><h3>添加账号</h3></div>
+    <div class="modal-body">
+      <div class="form-group"><input type="email" id="emailInput" class="input" style="width:100%" placeholder="邮箱" /></div>
+      <div class="form-group"><input type="password" id="passwordInput" class="input" style="width:100%" placeholder="密码" /></div>
     </div>
-  </div>
-
-  <!-- 添加账号 Modal -->
-  <div id="addAccountModal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>添加账号</h3>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label class="form-label" for="emailInput">邮箱</label>
-          <input
-            type="email"
-            id="emailInput"
-            class="input"
-            placeholder="example@outlook.com"
-          />
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="passwordInput">密码</label>
-          <input
-            type="password"
-            id="passwordInput"
-            class="input"
-            placeholder="请输入密码"
-          />
-        </div>
-        <div class="alert alert-info">
-          系统将自动登录并获取 Token
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeModal('addAccountModal')">取消</button>
-        <button class="btn btn-primary" onclick="addAccount()">登录并添加</button>
-      </div>
-    </div>
-  </div>
-
+    <div class="modal-footer"><button class="btn btn-sm btn-secondary" onclick="closeModal('addAccountModal')">取消</button><button class="btn btn-sm btn-primary" onclick="addAccount()">保存</button></div>
+  </div></div>
   <script type="module">
-    import API from '/admin/scripts/api.js';
-    import PollingManager from '/admin/scripts/polling.js';
-
-    // Modal 管理
-    window.openAddTokenModal = () => {
-      document.getElementById('addTokenModal').classList.add('active');
-    };
-
-    window.openAddAccountModal = () => {
-      document.getElementById('addAccountModal').classList.add('active');
-    };
-
-    window.closeModal = (modalId) => {
-      document.getElementById(modalId).classList.remove('active');
-    };
-
-    // 添加 Token
-    window.addToken = async () => {
-      const token = document.getElementById('tokenInput').value.trim();
-      if (!token) {
-        alert('请输入 Token');
-        return;
-      }
-
-      try {
-        const result = await API.addToken(token);
-        alert('Token 添加成功');
-        closeModal('addTokenModal');
-        document.getElementById('tokenInput').value = '';
-        updateDeepSeek();
-      } catch (err) {
-        alert(`添加失败: ${err.message}`);
-      }
-    };
-
-    // 添加账号
-    window.addAccount = async () => {
-      const email = document.getElementById('emailInput').value.trim();
-      const password = document.getElementById('passwordInput').value.trim();
-
-      if (!email || !password) {
-        alert('请输入邮箱和密码');
-        return;
-      }
-
-      try {
-        const result = await API.loginAndAddToken(email, password);
-        alert('账号登录并添加成功');
-        closeModal('addAccountModal');
-        document.getElementById('emailInput').value = '';
-        document.getElementById('passwordInput').value = '';
-        updateDeepSeek();
-      } catch (err) {
-        alert(`添加失败: ${err.message}`);
-      }
-    };
-
-    // 删除 Token
-    window.removeToken = async (tokenPrefix) => {
-      if (!confirm(`确定要删除 Token ${tokenPrefix}... 吗？`)) return;
-
-      try {
-        await API.removeToken(tokenPrefix);
-        alert('Token 已删除');
-        updateDeepSeek();
-      } catch (err) {
-        alert(`删除失败: ${err.message}`);
-      }
-    };
-
-    // 更新页面数据
-    async function updateDeepSeek() {
-      try {
-        const stats = await API.getStats();
-
-        // 更新概览卡片
-        const totalTokens = stats.pool?.length || 0;
-        const aliveTokens = stats.pool?.filter(t => !t.dead).length || 0;
-        const activeSessions = stats.sessions?.active || 0;
-        const activeConversations = stats.conversations?.active || 0;
-
-        document.getElementById('overview-tokens').textContent = aliveTokens;
-        document.getElementById('overview-tokens-status').textContent =
-          `总数 ${totalTokens} / 活跃 ${aliveTokens}`;
-
-        document.getElementById('overview-sessions').textContent = activeSessions;
-        document.getElementById('overview-sessions-status').textContent =
-          `预热 ${stats.sessions?.prewarm || 0}`;
-
-        document.getElementById('overview-conversations').textContent = activeConversations;
-        document.getElementById('overview-conversations-status').textContent =
-          `总数 ${stats.conversations?.total || 0}`;
-
-        // 更新 Token 表格
-        updateTokenTable(stats.pool || []);
-
-        // 更新会话统计
-        document.getElementById('session-active').textContent = stats.sessions?.active || 0;
-        document.getElementById('session-prewarm').textContent = stats.sessions?.prewarm || 0;
-        document.getElementById('session-total').textContent = stats.sessions?.total || 0;
-
-        // 更新对话统计
-        document.getElementById('conversation-active').textContent = stats.conversations?.active || 0;
-        document.getElementById('conversation-total').textContent = stats.conversations?.total || 0;
-
-        const affinityBadge = document.getElementById('conversation-affinity');
-        const affinityEnabled = stats.conversations?.affinityEnabled === true;
-        affinityBadge.textContent = affinityEnabled ? '已启用' : '未启用';
-        affinityBadge.className = affinityEnabled ? 'badge badge-success' : 'badge badge-default';
-
-      } catch (err) {
-        console.error('[DeepSeek] Failed to update:', err);
-      }
-    }
-
-    // 更新 Token 表格
-    function updateTokenTable(pool) {
-      const tbody = document.getElementById('token-table-body');
-
-      if (pool.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="7" class="empty-state">
-              <div class="empty-state-text">暂无 Token</div>
-              <div class="empty-state-hint">点击上方按钮添加 Token 或账号</div>
-            </td>
-          </tr>
-        `;
-        return;
-      }
-
-      tbody.innerHTML = pool.map(token => {
-        const statusBadge = token.dead
-          ? '<span class="badge badge-error">死亡</span>'
-          : token.activeRequests > 0
-            ? '<span class="badge badge-success">活跃</span>'
-            : '<span class="badge badge-default">空闲</span>';
-
-        const tokenPrefix = token.token !== 'NONE'
-          ? token.token.substring(0, 12) + '...'
-          : 'NONE';
-
-        const visionBadge = token.visionCapable === true
-          ? '<span class="badge badge-success">✓</span>'
-          : token.visionCapable === false
-            ? '<span class="badge badge-error">✗</span>'
-            : '<span class="badge badge-default">?</span>';
-
-        return `
-          <tr>
-            <td><code class="token-prefix">${tokenPrefix}</code></td>
-            <td>${statusBadge}</td>
-            <td>${token.email || '-'}</td>
-            <td>${token.activeRequests} / ${token.maxConcurrent}</td>
-            <td><span class="${token.errorCount > 0 ? 'text-error' : ''}">${token.errorCount}</span></td>
-            <td>${visionBadge}</td>
-            <td>
-              <button class="btn btn-sm btn-ghost" onclick="removeToken('${tokenPrefix}')">
-                删除
-              </button>
-            </td>
-          </tr>
-        `;
+    import API from '/admin/scripts/api.js'; import PollingManager from '/admin/scripts/polling.js';
+    window.openAddTokenModal=()=>document.getElementById('addTokenModal').classList.add('active');
+    window.openAddAccountModal=()=>document.getElementById('addAccountModal').classList.add('active');
+    window.closeModal=id=>document.getElementById(id).classList.remove('active');
+    window.addToken=async()=>{const t=document.getElementById('tokenInput').value.trim(); if(!t)return; try{await API.addCredential('deepseek',{type:'token',token:t});document.getElementById('tokenInput').value='';closeModal('addTokenModal');up()}catch(e){alert(e.message)}};
+    window.addAccount=async()=>{const e=document.getElementById('emailInput').value.trim(),p=document.getElementById('passwordInput').value.trim(); if(!e||!p)return; try{await API.addCredential('deepseek',{type:'account',email:e,password:p});document.getElementById('emailInput').value='';document.getElementById('passwordInput').value='';closeModal('addAccountModal');up()}catch(e){alert(e.message)}};
+    window.removeToken=async p=>{if(!confirm('确定删除？'))return; try{await API.removeToken(p);up()}catch(e){alert(e.message)}};
+    async function up(){try{
+      const s=await API.getStats(); const pool=s.pool||[];
+      document.getElementById('overviewTokens').textContent=pool.filter(t=>!t.dead).length;
+      document.getElementById('overviewTokensStatus').textContent='共 '+pool.length+' 个';
+      const tb=document.getElementById('tokenBody');
+      if(!pool.length){tb.innerHTML='<tr><td colspan="7" class="empty-state">空</td></tr>';return}
+      tb.innerHTML=pool.map(t=>{
+        const sc=t.dead?'badge-error':t.activeRequests>0?'badge-success':'badge-default';
+        const sl=t.dead?'失效':t.activeRequests>0?'活跃':'空闲';
+        const pre=t.token!=='NONE'?t.token.substring(0,12)+'…':'NONE';
+        const vc=t.visionCapable===true?'badge-success':t.visionCapable===false?'badge-error':'badge-default';
+        const vl=t.visionCapable===true?'✓':t.visionCapable===false?'✗':'?';
+        return `<tr><td><code class="token-prefix">${pre}</code></td><td><span class="badge ${sc}">${sl}</span></td><td>${t.email||'-'}</td><td>${t.activeRequests||0}/${t.maxConcurrent||1}</td><td class="${t.errorCount>0?'text-error':''}">${t.errorCount}</td><td><span class="badge ${vc}">${vl}</span></td><td>${t.token==='NONE'?'':`<button class="btn btn-sm btn-ghost" onclick="removeToken('${pre}')">删</button>`}</td></tr>`;
       }).join('');
-    }
-
-    // 启动轮询（每 5 秒更新一次）
-    const poller = new PollingManager(5000);
-    poller.start(updateDeepSeek);
-
-    // 页面卸载时停止轮询
-    window.addEventListener('beforeunload', () => {
-      poller.stop();
-    });
-
-    // 点击 modal 背景关闭
-    document.querySelectorAll('.modal').forEach(modal => {
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-          modal.classList.remove('active');
-        }
-      });
-    });
+    }catch(e){console.error(e)}}
+    const p=new PollingManager(5000);p.start(up);window.addEventListener('beforeunload',()=>p.stop());
+    document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('active')}));
   </script>
 </body>
 </html>

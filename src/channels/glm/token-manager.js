@@ -5,6 +5,7 @@
  * 支持多个 refresh token 的轮询和缓存
  */
 
+import { getConfig, updateChannelConfig } from '../../services/config-store.js';
 import { makeTimestamp, makeNonce, makeSign, makeAuthHeaders } from './utils.js';
 
 const GUEST_ACCESS_URL = 'https://chatglm.cn/chatglm/user-api/guest/access';
@@ -30,30 +31,40 @@ export class GlmTokenManager {
     this._pending = null; // 并发去重
   }
 
-  /** 从环境变量加载 token 池 */
+  /** 从配置服务加载 token 池 */
   _loadTokens() {
-    // 优先级 1: GLM_REFRESH_TOKENS (多个 tokens, 逗号分隔)
-    if (process.env.GLM_REFRESH_TOKENS) {
-      const tokens = parseTokenList(process.env.GLM_REFRESH_TOKENS);
-
-      if (tokens.length > 0) {
-        console.log(`[GLM] Loaded ${tokens.length} tokens from GLM_REFRESH_TOKENS`);
-        return tokens;
-      }
+    const tokens = getConfig().glm.refreshTokens || [];
+    if (tokens.length > 0) {
+      console.log(`[GLM] Loaded ${tokens.length} refresh token(s)`);
+      return [...tokens];
     }
 
-    // 优先级 2: GLM_REFRESH_TOKEN (支持逗号分隔，向后兼容单个 token)
-    if (process.env.GLM_REFRESH_TOKEN) {
-      const tokens = parseTokenList(process.env.GLM_REFRESH_TOKEN);
-      if (tokens.length > 0) {
-        console.log(`[GLM] Loaded ${tokens.length} token(s) from GLM_REFRESH_TOKEN`);
-        return tokens;
-      }
-    }
-
-    // 优先级 3: 空数组（访客模式）
     console.log('[GLM] No tokens configured, will use guest mode');
     return [];
+  }
+
+  configure(config = getConfig().glm) {
+    this.tokens = [...(config.refreshTokens || [])];
+    this.currentIndex = 0;
+    this.tokenCache.clear();
+    this._pending = null;
+  }
+
+  addRefreshToken(token) {
+    const value = String(token || '').trim();
+    if (!value) throw new Error('refresh token required');
+    const next = [...new Set([...getConfig().glm.refreshTokens, value])];
+    updateChannelConfig('glm', { ...getConfig().glm, refreshTokens: next, guestMode: next.length === 0 });
+    this.configure();
+  }
+
+  removeRefreshToken(id) {
+    const { refreshTokens } = getConfig().glm;
+    const next = refreshTokens.filter(token => token !== id);
+    if (next.length === refreshTokens.length) return false;
+    updateChannelConfig('glm', { ...getConfig().glm, refreshTokens: next, guestMode: next.length === 0 });
+    this.configure();
+    return true;
   }
 
   /** 轮询选择下一个 refresh token */
@@ -122,6 +133,7 @@ export class GlmTokenManager {
       const index = this.tokens.indexOf(refreshToken);
       if (index !== -1) {
         this.tokens[index] = result.refresh_token;
+        updateChannelConfig('glm', { ...getConfig().glm, refreshTokens: this.tokens, guestMode: false });
         // 将缓存迁移到新 token
         this.tokenCache.set(result.refresh_token, this.tokenCache.get(refreshToken));
         this.tokenCache.delete(refreshToken);

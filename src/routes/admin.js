@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { srcPath } from '../utils/runtime-paths.js';
-import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool } from '../services/auth.js';
+import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken } from '../services/auth.js';
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
 import { getQueueInfo } from '../services/queue.js';
@@ -24,6 +24,11 @@ import { KIMI_MODEL_MAP, listKimiModels } from '../channels/kimi/models.js';
 import { getQwenStatus } from '../channels/qwen/index.js';
 import { getKimiStatus } from '../channels/kimi/index.js';
 import { getGLMStatus } from '../channels/glm/index.js';
+import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig } from '../services/config-store.js';
+import { authStatus, clearAdminSessionCookie, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
+import { glmTokenManager } from '../channels/glm/runner.js';
+import { qwenTokenManager } from '../channels/qwen/runner.js';
+import { kimiTokenManager } from '../channels/kimi/runner.js';
 
 const router = express.Router();
 
@@ -105,8 +110,9 @@ function summarizeModelMetrics() {
 }
 
 function buildChannels() {
+  const config = getConfig();
   const deepseekPool = getPoolInfo();
-  const deepseekAlive = deepseekPool.filter(item => !item.dead).length;
+  const deepseekAlive = deepseekPool.filter(item => !item.dead && item.token !== 'NONE').length;
   const qwenStatus = getQwenStatus();
   const kimiStatus = getKimiStatus();
   const glmStatus = getGLMStatus();
@@ -117,7 +123,7 @@ function buildChannels() {
     {
       id: 'deepseek',
       name: 'DeepSeek',
-      configured: envListCount('DS_TOKEN') + envListCount('DS_TOKENS') + envListCount('DS_ACCOUNTS') > 0,
+      configured: config.deepseek.tokens.length + config.deepseek.accounts.length > 0,
       credentialCount: deepseekPool.length,
       availableCount: deepseekAlive,
       activeRequests: deepseekPool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
@@ -145,7 +151,7 @@ function buildChannels() {
       availableCount: qwenStatus.pool.filter(item => item.errorCount < qwenSettings.maxTokenErrors && item.cooldownRemainingMs === 0).length,
       activeRequests: qwenStatus.pool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
       capacity: qwenStatus.pool.reduce((sum, item) => sum + (item.maxConcurrent || 0), 0),
-      mode: envListCount('QWEN_ACCOUNTS') > 0 ? 'account-pool' : 'token-pool',
+      mode: config.qwen.accounts.length > 0 ? 'account-pool' : 'token-pool',
       queue: qwenStatus.queue,
       detail: qwenStatus.pool,
     },
@@ -202,6 +208,27 @@ function logFiltersFromQuery(query) {
   };
 }
 
+const CHANNEL_IDS = new Set(['deepseek', 'glm', 'qwen', 'kimi']);
+
+function ensureChannel(channel) {
+  if (!CHANNEL_IDS.has(channel)) {
+    const error = new Error(`Unsupported channel: ${channel}`);
+    error.statusCode = 404;
+    throw error;
+  }
+}
+
+function applyChannelRuntime(channel) {
+  if (channel === 'deepseek') syncTokenPoolFromConfig();
+  if (channel === 'glm') glmTokenManager.configure();
+  if (channel === 'qwen') qwenTokenManager.configure();
+  if (channel === 'kimi') kimiTokenManager.configure();
+}
+
+function jsonError(res, error, fallbackStatus = 500) {
+  res.status(error.statusCode || fallbackStatus).json({ error: { message: error.message } });
+}
+
 // ============= 静态资源服务 =============
 
 // 静态资源（CSS, JS, 页面等）
@@ -209,6 +236,7 @@ router.use('/styles', express.static(srcPath('admin', 'styles')));
 router.use('/scripts', express.static(srcPath('admin', 'scripts')));
 router.use('/pages', express.static(srcPath('admin', 'pages')));
 router.use('/assets', express.static(srcPath('admin', 'assets')));
+router.use('/vendor', express.static(srcPath('admin', 'vendor')));
 
 // ============= Admin 面板 UI =============
 
@@ -216,15 +244,143 @@ router.get('/', (req, res) => {
   res.sendFile(srcPath('admin', 'index.html'));
 });
 
+// ============= 鉴权与配置 API =============
+
+router.get('/api/auth/status', (req, res) => {
+  res.json(authStatus(req));
+});
+
+router.post('/api/auth/login', (req, res) => {
+  const { apiKey } = req.body || {};
+  if (!getConfig().server.apiKey) {
+    return res.json({ success: true, ...authStatus(req) });
+  }
+  if (!apiKey || !verifyAdminPassword(String(apiKey))) {
+    return res.status(401).json({ error: { message: 'Invalid API key' } });
+  }
+  setAdminSessionCookie(res);
+  res.json({ success: true, authenticated: true });
+});
+
+router.post('/api/auth/logout', (_req, res) => {
+  clearAdminSessionCookie(res);
+  res.json({ success: true });
+});
+
+router.get('/api/config', (_req, res) => {
+  res.json({ config: getPublicConfig() });
+});
+
+router.patch('/api/config', (req, res) => {
+  try {
+    const saved = updateConfig(req.body || {});
+    syncTokenPoolFromConfig();
+    glmTokenManager.configure();
+    qwenTokenManager.configure();
+    kimiTokenManager.configure();
+    res.json({ success: true, config: getPublicConfig(), saved: Boolean(saved) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
+router.get('/api/channels/:channel/config', (req, res) => {
+  try {
+    const { channel } = req.params;
+    ensureChannel(channel);
+    res.json({ channel, config: getPublicChannelConfig(channel) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
+router.put('/api/channels/:channel/config', (req, res) => {
+  try {
+    const { channel } = req.params;
+    ensureChannel(channel);
+    updateChannelConfig(channel, { ...getConfig()[channel], ...(req.body || {}) });
+    applyChannelRuntime(channel);
+    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
+router.post('/api/channels/:channel/credentials', (req, res) => {
+  try {
+    const { channel } = req.params;
+    ensureChannel(channel);
+    addChannelCredential(channel, req.body || {});
+    applyChannelRuntime(channel);
+    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+  } catch (error) {
+    jsonError(res, error, 400);
+  }
+});
+
+router.delete('/api/channels/:channel/credentials/:id', (req, res) => {
+  try {
+    const { channel, id } = req.params;
+    ensureChannel(channel);
+    const removed = removeChannelCredential(channel, id);
+    if (!removed) return res.status(404).json({ error: { message: 'credential not found' } });
+    applyChannelRuntime(channel);
+    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
+router.post('/api/channels/:channel/test', async (req, res) => {
+  try {
+    const { channel } = req.params;
+    ensureChannel(channel);
+    const config = getConfig();
+
+    if (channel === 'deepseek') {
+      const token = config.deepseek.tokens[0];
+      if (!token) return res.status(400).json({ error: { message: '请先保存 DeepSeek Token 后再测试' } });
+      const result = await testDeepSeekToken(token);
+      return res.json({ success: result.valid, channel, message: result.valid ? 'DeepSeek Token 验证通过' : 'DeepSeek Token 验证失败', result });
+    }
+
+    if (channel === 'glm') {
+      const accessToken = await glmTokenManager.getAccessToken();
+      return res.json({ success: true, channel, message: 'GLM 访问令牌获取成功', result: { hasAccessToken: Boolean(accessToken) } });
+    }
+
+    if (channel === 'qwen') {
+      const slot = await qwenTokenManager.acquireToken();
+      if (!slot) return res.status(400).json({ error: { message: qwenTokenManager.getUnavailableReason() } });
+      slot.release();
+      return res.json({ success: true, channel, message: 'Qwen 凭据可用，已成功获取运行时 Token' });
+    }
+
+    if (channel === 'kimi') {
+      const slot = kimiTokenManager.acquireToken();
+      if (!slot) return res.status(400).json({ error: { message: kimiTokenManager.getUnavailableReason() } });
+      slot.release();
+      return res.json({ success: true, channel, message: 'Kimi Token 已加载且未过期' });
+    }
+
+    res.json({ success: true, channel });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
 // ============= 统计信息 API =============
 
 router.get('/api/stats', (req, res) => {
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
   const channels = buildChannels();
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || null;
   res.json({
     status: 'ok',
     version: '1.0.0',
     uptimeSeconds,
+    serverUrl: `${req.protocol}://${req.headers.host}`,
+    proxyUrl,
     pool: getPoolInfo(),
     totalCapacity: getTotalCapacity(),
     queue: getQueueInfo(),
@@ -236,6 +392,10 @@ router.get('/api/stats', (req, res) => {
     logStats: getLogStats(),
     channels,
     metrics: getMetrics(),
+    config: {
+      paths: getPublicConfig().paths,
+      logDir: getLogDir(),
+    },
   });
 });
 
@@ -297,7 +457,7 @@ router.post('/api/token/add', async (req, res) => {
   }
   try {
     const added = await addTokenToPool(token);
-    res.json({ success: true, visionCapable: added.visionCapable });
+    res.json({ success: true, visionCapable: added.visionCapable, validated: false, message: 'Token 已保存，尚未验证。' });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }

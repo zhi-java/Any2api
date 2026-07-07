@@ -15,6 +15,8 @@ import { getQueueInfo } from './services/queue.js';
 import { requestLogger } from './middleware/logger.js';
 import { getDispatcher } from './utils/headers.js';
 import { setupUnhandledRejectionHandler } from './utils/response-utils.js';
+import { getConfig } from './services/config-store.js';
+import { getAdminApiKey, hasValidAdminAuth } from './services/admin-auth.js';
 import routes from './routes/index.js';
 
 setupUnhandledRejectionHandler();
@@ -41,7 +43,7 @@ export function createApp() {
   });
 
   app.use((req, res, next) => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getAdminApiKey();
     if (!apiKey) return next();
 
     if (req.path.startsWith('/admin') && !req.path.startsWith('/admin/api')) {
@@ -52,9 +54,12 @@ export function createApp() {
       return next();
     }
 
+    if (req.path === '/admin/api/auth/status' || req.path === '/admin/api/auth/login' || req.path === '/admin/api/auth/logout') {
+      return next();
+    }
+
     if (req.path.startsWith('/admin/api') || req.path.startsWith('/performance/api')) {
-      const auth = req.headers['authorization'];
-      if (auth === `Bearer ${apiKey}`) return next();
+      if (hasValidAdminAuth(req)) return next();
       return res.status(401).json({ error: { message: 'Invalid API key' } });
     }
 
@@ -67,11 +72,16 @@ export function createApp() {
 }
 
 async function initializeRuntime() {
+  const config = getConfig();
   await getDispatcher();
   await initTokenPool();
 
-  const aliveTokens = getAliveTokens();
-  await prewarmSessions(aliveTokens);
+  if (config.deepseek.prewarmSessions) {
+    const aliveTokens = getAliveTokens();
+    await prewarmSessions(aliveTokens);
+  } else {
+    console.log('Session prewarm skipped (enable from admin settings if needed).');
+  }
 
   startHealthCheck();
 }
@@ -87,7 +97,7 @@ function logStartup(port) {
   console.log(`\nAdmin Panel:    http://localhost:${port}/admin`);
   console.log(`Performance:    http://localhost:${port}/performance`);
 
-  if (!process.env.API_KEY) {
+  if (!getAdminApiKey()) {
     console.warn('\nWARNING: API_KEY is not set - admin endpoints (/admin/api/*, /performance/api/*) are UNAUTHENTICATED.\n' +
       '   Set API_KEY in .env before exposing this service on a public network.\n');
   }
@@ -103,28 +113,27 @@ export async function startServer(options = {}) {
   const app = createApp();
 
   return await new Promise((resolve, reject) => {
-    const onListening = async () => {
+    const onListening = () => {
       const address = server.address();
       const actualPort = typeof address === 'object' && address ? address.port : port;
+      const actualHost = host || '0.0.0.0';
 
-      try {
-        if (startupLogs) logStartup(actualPort);
-        await initializeRuntime();
+      if (startupLogs) logStartup(actualPort);
 
-        resolve({
-          app,
-          server,
-          port: actualPort,
-          host: host || 'localhost',
-          close: () => new Promise((closeResolve, closeReject) => {
-            stopHealthCheck();
-            server.close(err => (err ? closeReject(err) : closeResolve()));
-          }),
-        });
-      } catch (error) {
-        stopHealthCheck();
-        server.close(() => reject(error));
-      }
+      resolve({
+        app,
+        server,
+        port: actualPort,
+        host: host || 'localhost',
+        close: () => new Promise((closeResolve, closeReject) => {
+          stopHealthCheck();
+          server.close(err => (err ? closeReject(err) : closeResolve()));
+        }),
+      });
+
+      initializeRuntime().catch(error => {
+        console.error('Runtime initialization failed:', error);
+      });
     };
 
     const onError = error => {

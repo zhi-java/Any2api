@@ -6,7 +6,7 @@ import express from 'express';
 
 import apiRoutes from '../../src/routes/api.js';
 
-const apiRoute = readFileSync('D:/tools/Any2api/src/routes/api.js', 'utf8');
+const apiRoute = readFileSync(new URL('../../src/routes/api.js', import.meta.url), 'utf8');
 
 function responsesRouteBlock() {
   const start = apiRoute.indexOf("router.post('/responses'");
