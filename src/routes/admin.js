@@ -384,17 +384,15 @@ router.post('/api/channels/:channel/test', async (req, res) => {
             await loginAndAddToken(String(account.email), String(account.password));
             results.push({ label: account.email, success: true, message: '账号登录成功，Token 已获取' });
           } catch (err) {
-            const id = secretId(String(account.email) + ':' + String(account.password));
-            removeChannelCredential('deepseek', id);
-            removedIds.push(id);
-            results.push({ label: account.email, success: false, message: `登录失败，凭据已删除: ${err.message}` });
+            // 不删除账号 — 登录失败通常是上游 API 格式变更导致，不是账号无效
+            results.push({ label: account.email, success: false, message: `登录失败: ${err.message}（账号已保留）` });
           }
         }
         pool = getDeepSeekPoolEntries();
       }
       for (const entry of pool) {
         if (!entry.token) {
-          results.push({ label: entry.email || 'unknown', success: false, message: '无可用 Token' });
+          results.push({ label: entry.email || 'unknown', success: false, message: '无可用 Token（等待自动登录）' });
           continue;
         }
         try {
