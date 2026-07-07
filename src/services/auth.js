@@ -169,12 +169,53 @@ async function login(email, password) {
     throw new Error(`Account requires verification: ${email}`);
   }
 
+  // DeepSeek 的 token 可能是多种格式：JWT（eyJ...）、sk-、纯 hex 等。
+  // 优先从已知路径提取，如果都不命中则遍历整个 JSON 搜索 token-like 字符串。
   const token =
     json.data?.biz_data?.user?.token
     || json.data?.biz_data?.token
     || json.data?.token
     || json.data?.user?.token;
-  if (!token) throw new Error(`Login succeeded but no token returned for ${email}`);
+
+  if (!token) {
+    // Fallback: deep-scan the entire parsed response for a plausible bearer token.
+    // This handles upstream API response-format changes without code changes.
+    const jsonStr = JSON.stringify(json);
+    // Try common alternative field names
+    const tokenCandidates = [
+      json.data?.biz_data?.user,
+      json.data?.biz_data?.access_token,
+      json.data?.biz_data?.session_token,
+      json.data?.biz_data?.jwt,
+      json.data?.user_id,
+      json.data?.biz_data?.token,
+      // Some responses put user/token at root level
+      typeof json.data === 'string' ? json.data : null,
+      typeof json.data?.user === 'string' ? json.data.user : null,
+    ];
+    const found = tokenCandidates.find(c => c && typeof c === 'string' && c.length > 20);
+    if (found) {
+      console.log(`[DeepSeek] Login token extracted via alternate field for ${email}`);
+      return found;
+    }
+    // Last resort: try multiple regex patterns to find any token-like value in the response.
+    // Patterns cover: JWT (with dots), sk- prefixed tokens, base64, hex strings.
+    const regexes = [
+      /"(?:sk-|)[A-Za-z0-9_.-]{36,}"/,        // JWT and sk- tokens (quoted)
+      /"(?:(?:sk-)?[A-Za-z0-9+/]{40,}(?:=|))"/, // base64 with possible padding
+      /"(?:sk-|)[A-Za-z0-9_-]{36,}"/,           // alphanumeric only (no dots)
+    ];
+    for (const re of regexes) {
+      const m2 = jsonStr.match(re);
+      if (m2) {
+        console.log(`[DeepSeek] Login token extracted via regex (${re.source}) for ${email}`);
+        return m2[0].replace(/"/g, '');
+      }
+    }
+    const responseSample = jsonStr.slice(0, 600);
+    console.warn(`[DeepSeek] Login response for ${email}: sample=${responseSample}`);
+    throw new Error(`Login succeeded but no token found in response. Check server logs for response structure.`);
+  }
   return token;
 }
 
