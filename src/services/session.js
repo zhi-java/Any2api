@@ -1,4 +1,5 @@
 import { getPoolInfo, reportTokenError, reportTokenSuccess } from './auth.js';
+import { getConfig } from './config-store.js';
 import { apiHeaders, proxiedFetch } from '../utils/headers.js';
 import { recordSessionHit } from '../middleware/metrics.js';
 
@@ -8,7 +9,14 @@ const BASE_URL = 'https://chat.deepseek.com';
 //   expert (pro): 3 times, flash (default): 6 times
 // To avoid hitting these limits, we rotate sessions frequently.
 // SESSION_TTL controls how long a cached session is reused before creating a new one.
-const SESSION_TTL = parseInt(process.env.SESSION_TTL || '1800', 10); // 5 minutes default (was 3 days)
+function sessionTtlSeconds() {
+  return getConfig().runtime.sessionTtlSeconds;
+}
+
+function maxRequestsPerSession() {
+  return getConfig().runtime.maxRequestsPerSession;
+}
+
 const SESSIONS_PER_TOKEN_PER_MODEL = 2; // match MAX_CONCURRENT_PER_TOKEN
 
 const sessionPool = new Map(); // key: token:model_type:slot, value: { id, model_type, createdAt, token, requestCount }
@@ -41,15 +49,15 @@ export async function getSession(token, modelType) {
   const tokenPrefix = token.slice(0, 12);
   const now = Date.now() / 1000;
 
-  // Max requests per session before rotating — prevents hitting DeepSeek's edit/regenerate limits
-  const MAX_REQUESTS_PER_SESSION = parseInt(process.env.MAX_REQUESTS_PER_SESSION || '8', 10);
+  const ttl = sessionTtlSeconds();
+  const maxRequests = maxRequestsPerSession();
 
   // Find an available session slot for this token+modelType
   for (let slot = 0; slot < SESSIONS_PER_TOKEN_PER_MODEL; slot++) {
     const cacheKey = `${tokenPrefix}:${modelType}:${slot}`;
     const cached = sessionPool.get(cacheKey);
 
-    if (cached && (now - cached.createdAt) < SESSION_TTL && (cached.requestCount || 0) < MAX_REQUESTS_PER_SESSION) {
+    if (cached && (now - cached.createdAt) < ttl && (cached.requestCount || 0) < maxRequests) {
       cached.requestCount = (cached.requestCount || 0) + 1;
       recordSessionHit(true);
       return cached;
@@ -68,7 +76,7 @@ export async function getSession(token, modelType) {
   for (let slot = 0; slot < SESSIONS_PER_TOKEN_PER_MODEL; slot++) {
     const cacheKey = `${tokenPrefix}:${modelType}:${slot}`;
     const cached = sessionPool.get(cacheKey);
-    if (!cached || (now - cached.createdAt) >= SESSION_TTL || (cached.requestCount || 0) >= MAX_REQUESTS_PER_SESSION) {
+    if (!cached || (now - cached.createdAt) >= ttl || (cached.requestCount || 0) >= maxRequests) {
       sessionPool.set(cacheKey, session);
       placed = true;
       break;
@@ -93,6 +101,7 @@ export function invalidateTokenSessions(tokenPrefix) {
 
 export function getSessionInfo() {
   const now = Date.now() / 1000;
+  const ttl = sessionTtlSeconds();
   const entries = [];
   for (const [key, val] of sessionPool) {
     const age = now - val.createdAt;
@@ -100,11 +109,11 @@ export function getSessionInfo() {
       key,
       modelType: val.model_type,
       ageSeconds: Math.floor(age),
-      ttlRemainingSeconds: Math.max(0, Math.floor(SESSION_TTL - age)),
+      ttlRemainingSeconds: Math.max(0, Math.floor(ttl - age)),
       requestCount: val.requestCount || 0,
     });
   }
-  return { count: sessionPool.size, ttl: SESSION_TTL, maxRequestsPerSession: parseInt(process.env.MAX_REQUESTS_PER_SESSION || '8', 10), sessions: entries };
+  return { count: sessionPool.size, ttl, maxRequestsPerSession: maxRequestsPerSession(), sessions: entries };
 }
 
 export async function prewarmSessions(tokens, modelTypes = ['default', 'expert']) {

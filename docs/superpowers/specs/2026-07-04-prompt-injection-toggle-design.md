@@ -4,10 +4,10 @@ Date: 2026-07-04
 
 ## Summary
 
-Add `ENABLE_PROMPT_INJECTION` to control only Any2api-authored prompt injection while keeping the existing upstream channel mode unchanged.
+Add `ENABLE_PROMPT_INJECTION` to control only OmniAPI-authored prompt injection while keeping the existing upstream channel mode unchanged.
 
-- `true` or unset: keep current behavior. Any2api may rewrite OpenAI/Anthropic requests into Web-channel prompts and inject tool-use instructions, role labels, and tool-result follow-up instructions.
-- `false`/`0`/`no`/`off`: keep using the existing DeepSeek, GLM, Kimi, and Qwen Web upstream APIs, authentication, upload flows, queues, and stream parsers, but do not add Any2api-authored prompt text. The prompt sent to the Web upstream is the full JSON request body text captured from the client request.
+- `true` or unset: keep current behavior. OmniAPI may rewrite OpenAI/Anthropic requests into Web-channel prompts and inject tool-use instructions, role labels, and tool-result follow-up instructions.
+- `false`/`0`/`no`/`off`: keep using the existing DeepSeek, GLM, Kimi, and Qwen Web upstream APIs, authentication, upload flows, queues, and stream parsers, but do not add OmniAPI-authored prompt text. The prompt sent to the Web upstream is the full JSON request body text captured from the client request.
 
 This mode is **not** a switch to OpenAI-compatible or Anthropic-compatible upstream endpoints.
 
@@ -15,7 +15,7 @@ This mode is **not** a switch to OpenAI-compatible or Anthropic-compatible upstr
 
 1. Preserve existing behavior by default.
 2. Keep all existing Web upstream integrations in both modes.
-3. Disable Any2api-authored prompt injection when configured false.
+3. Disable OmniAPI-authored prompt injection when configured false.
 4. In disabled mode, send the full raw client request JSON text as the Web prompt.
 5. Avoid pseudo tool-call prompting and parsing in disabled mode.
 6. Continue returning OpenAI-compatible responses on `/v1/chat/completions` and Anthropic-compatible responses on `/v1/messages` using existing Web stream parsers.
@@ -34,7 +34,7 @@ This mode is **not** a switch to OpenAI-compatible or Anthropic-compatible upstr
 
 ```text
 Client OpenAI/Anthropic request
-  -> Any2api route/model selection
+  -> OmniAPI route/model selection
   -> existing channel handler
   -> existing prompt builder/injection logic
   -> existing Web upstream API
@@ -47,7 +47,7 @@ Client OpenAI/Anthropic request
 ```text
 Client OpenAI/Anthropic request
   -> capture full raw JSON request text
-  -> Any2api route/model selection
+  -> OmniAPI route/model selection
   -> existing channel handler
   -> use raw JSON text as the Web prompt
   -> existing Web upstream API
@@ -55,7 +55,7 @@ Client OpenAI/Anthropic request
   -> OpenAI/Anthropic-compatible response
 ```
 
-In disabled mode, Any2api sets tools/tool choice handling to disabled so it does not ask the model to emit Any2api pseudo tool-call JSON/XML and does not parse model text into protocol-level tool calls.
+In disabled mode, OmniAPI sets tools/tool choice handling to disabled so it does not ask the model to emit OmniAPI pseudo tool-call JSON/XML and does not parse model text into protocol-level tool calls.
 
 ## Channel notes
 
@@ -69,7 +69,7 @@ In disabled mode, Any2api sets tools/tool choice handling to disabled so it does
 ```env
 # Prompt injection switch (optional, default true)
 # true/unset: current Web-channel compatibility prompts.
-# false/0/no/off: keep current Web upstreams, but send the full JSON request body text as the Web prompt without Any2api-authored prompt injection.
+# false/0/no/off: keep current Web upstreams, but send the full JSON request body text as the Web prompt without OmniAPI-authored prompt injection.
 ENABLE_PROMPT_INJECTION=true
 ```
 

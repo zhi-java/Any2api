@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 
 import { createChatCompletionsRequestAdapter } from '../../src/protocols/chat-completions/request-adapter.js';
 import { createClaudeMessagesRequestAdapter } from '../../src/protocols/claude-messages/request-adapter.js';
+import { collectUploadableParts } from '../../src/utils/message-files.js';
 
 function req(path, body) {
   return {
     body,
     headers: {},
     originalUrl: path,
-    any2api: { promptInjectionEnabled: true, rawRequestJsonText: JSON.stringify(body) },
+    omni: { promptInjectionEnabled: true, rawRequestJsonText: JSON.stringify(body) },
   };
 }
 
@@ -54,4 +55,25 @@ test('Claude adapter maps system, messages, tools, and thinking directly to Inte
   assert.equal(internal.toolChoice.name, 'Read');
   assert.equal(internal.generation.reasoning.enabled, true);
   assert.equal(internal.generation.reasoning.effort, 1024);
+});
+
+test('Claude image content is preserved as uploadable attachment for upstream channels', () => {
+  const internal = createClaudeMessagesRequestAdapter(req('/v1/messages', {
+    model: 'glm-4.5',
+    stream: true,
+    max_tokens: 100,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'describe this' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      ],
+    }],
+  }));
+
+  const uploads = collectUploadableParts(internal.messages);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].kind, 'image');
+  assert.equal(uploads[0].mimeType, 'image/png');
+  assert.equal(uploads[0].data, 'aGVsbG8=');
 });

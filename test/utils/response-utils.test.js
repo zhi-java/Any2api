@@ -59,7 +59,7 @@ test('buildDisabledPrompt returns captured raw JSON metadata', () => {
     tools: [{ type: 'function', function: { name: 'Read', parameters: { type: 'object', properties: {} } } }],
   };
   const raw = JSON.stringify(body);
-  const prompt = buildDisabledPrompt({ body, any2api: { rawRequestJsonText: raw } });
+  const prompt = buildDisabledPrompt({ body, omni: { rawRequestJsonText: raw } });
   assert.equal(prompt, raw);
   assert.match(prompt, /"tools"/);
   assert.match(prompt, /"system"/);

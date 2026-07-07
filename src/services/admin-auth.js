@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'crypto';
 import { getConfig } from './config-store.js';
 
-export const ADMIN_SESSION_COOKIE = 'zhi2api_admin';
+export const ADMIN_SESSION_COOKIE = 'omni_admin';
 
 export function getAdminApiKey() {
   return getConfig().server.apiKey || process.env.API_KEY || '';
@@ -9,7 +9,7 @@ export function getAdminApiKey() {
 
 function sessionValue(apiKey = getAdminApiKey()) {
   if (!apiKey) return '';
-  return createHash('sha256').update(`zhi2api-admin-session:${apiKey}`).digest('hex');
+  return createHash('sha256').update(`omni-admin-session:${apiKey}`).digest('hex');
 }
 
 function safeEqual(a, b) {

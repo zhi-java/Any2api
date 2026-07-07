@@ -2,24 +2,26 @@ import { loadEnvironment } from './utils/env.js';
 loadEnvironment();
 
 import express from 'express';
+import { srcPath } from './utils/runtime-paths.js';
 import {
   initTokenPool,
-  getPoolInfo,
-  getTotalCapacity,
   getAliveTokens,
   startHealthCheck,
   stopHealthCheck,
 } from './services/auth.js';
 import { prewarmSessions } from './services/session.js';
-import { getQueueInfo } from './services/queue.js';
 import { requestLogger } from './middleware/logger.js';
 import { getDispatcher } from './utils/headers.js';
 import { setupUnhandledRejectionHandler } from './utils/response-utils.js';
-import { getConfig } from './services/config-store.js';
+import { getConfig, getAcceptedApiKeys, isAcceptedApiKey } from './services/config-store.js';
 import { getAdminApiKey, hasValidAdminAuth } from './services/admin-auth.js';
 import routes from './routes/index.js';
 
 setupUnhandledRejectionHandler();
+
+function wantsHtml(req) {
+  return String(req.headers.accept || '').includes('text/html') || !String(req.headers.accept || '').includes('application/json');
+}
 
 export function createApp() {
   const app = express();
@@ -30,29 +32,22 @@ export function createApp() {
       req.rawBody = Buffer.from(buf);
     },
   }));
-  app.use(requestLogger('zhi2api'));
+  app.use(requestLogger('omni'));
 
-  app.get('/', (req, res) => {
+  app.get('/healthz', (_req, res) => {
     res.json({
       status: 'ok',
       version: '1.0.0',
-      pool: getPoolInfo(),
-      totalCapacity: getTotalCapacity(),
-      queue: getQueueInfo(),
     });
+  });
+
+  app.get('/', (_req, res) => {
+    res.sendFile(srcPath('public', 'index.html'));
   });
 
   app.use((req, res, next) => {
     const apiKey = getAdminApiKey();
     if (!apiKey) return next();
-
-    if (req.path.startsWith('/admin') && !req.path.startsWith('/admin/api')) {
-      return next();
-    }
-
-    if (req.path.startsWith('/performance') && !req.path.startsWith('/performance/api')) {
-      return next();
-    }
 
     if (req.path === '/admin/api/auth/status' || req.path === '/admin/api/auth/login' || req.path === '/admin/api/auth/logout') {
       return next();
@@ -66,7 +61,32 @@ export function createApp() {
     next();
   });
 
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/v1')) return next();
+    if (getAcceptedApiKeys().length === 0) return next();
+
+    const auth = req.headers?.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (token && isAcceptedApiKey(token)) return next();
+
+    return res.status(401).json({
+      error: {
+        message: 'Invalid API key',
+        type: 'invalid_request_error',
+        code: 'invalid_api_key',
+      },
+    });
+  });
+
   app.use(routes);
+
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/v1') || req.path.startsWith('/admin/api') || req.path.startsWith('/performance/api')) {
+      return res.status(404).json({ error: { message: 'Not found' } });
+    }
+    if (wantsHtml(req)) return res.sendFile(srcPath('public', 'index.html'));
+    return res.status(404).json({ error: { message: 'Not found' } });
+  });
 
   return app;
 }
@@ -87,9 +107,9 @@ async function initializeRuntime() {
 }
 
 function logStartup(port) {
-  console.log(`zhi2Api running on http://localhost:${port}`);
+  console.log(`OmniAPI running on http://localhost:${port}`);
   console.log('\nAPI Endpoints:');
-  console.log('  Health:       GET  /');
+  console.log('  Health:       GET  /healthz');
   console.log('  OpenAI:       POST /v1/chat/completions');
   console.log('  Claude:       POST /v1/messages');
   console.log('  Responses:    POST /v1/responses');

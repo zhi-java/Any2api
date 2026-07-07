@@ -102,7 +102,7 @@ export function createClaudeMessagesRequestAdapter(req) {
     metadata: {
       path: req?.originalUrl || req?.path || '/v1/messages',
       headers: req?.headers || {},
-      promptInjectionEnabled: req?.any2api?.promptInjectionEnabled,
+      promptInjectionEnabled: req?.omni?.promptInjectionEnabled,
     },
   });
 }

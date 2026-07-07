@@ -92,7 +92,7 @@ async function uploadKimiTextFile({ token, prompt, signal, tokenManager }) {
   return uploadKimiFile({
     token,
     bytes: Buffer.from(String(prompt || ''), 'utf8'),
-    filename: 'any2api-long-input.txt',
+    filename: 'omni-long-input.txt',
     mimeType: 'text/plain;charset=utf-8',
     signal,
     tokenManager,

@@ -156,7 +156,10 @@ async function login(email, password) {
   if (!text) throw new Error('Empty response from login endpoint');
 
   const json = JSON.parse(text);
-  if (json.code !== 0) throw new Error(`Login failed for ${email}: ${json.msg || JSON.stringify(json)}`);
+  if (json.code !== 0) {
+    console.warn(`[DeepSeek] Login failed for ${email}: code=${json.code} msg=${json.msg || 'no msg'} body=${text.slice(0, 400)}`);
+    throw new Error(`Login failed for ${email}: ${json.msg || JSON.stringify(json)}`);
+  }
 
   const bizCode = json.data?.biz_code;
   if (bizCode === 10) {
@@ -166,7 +169,11 @@ async function login(email, password) {
     throw new Error(`Account requires verification: ${email}`);
   }
 
-  const token = json.data?.biz_data?.user?.token;
+  const token =
+    json.data?.biz_data?.user?.token
+    || json.data?.biz_data?.token
+    || json.data?.token
+    || json.data?.user?.token;
   if (!token) throw new Error(`Login succeeded but no token returned for ${email}`);
   return token;
 }
@@ -233,8 +240,37 @@ export async function initTokenPool() {
     console.warn('No DeepSeek credentials configured; requests will fail until configured from the admin UI or config file.');
   }
 
+  // Always log in accounts that have no token yet — startup must produce usable tokens.
+  for (let i = tokenPool.length - 1; i >= 0; i--) {
+    const entry = tokenPool[i];
+    if (!entry.token && entry.password) {
+      console.log(`  Logging in ${entry.email}...`);
+      const ok = await refreshToken(entry);
+      if (!ok && entry.dead) {
+        console.log(`  Removing banned/failed account entry for ${entry.email}`);
+        tokenPool.splice(i, 1);
+      }
+    }
+  }
+
+  // Remove stale entries that have neither token nor password (shouldn't happen but guard).
+  for (let i = tokenPool.length - 1; i >= 0; i--) {
+    if (!tokenPool[i].token && !tokenPool[i].password) {
+      console.log(`  Removing stale NONE entry at index ${i}`);
+      tokenPool.splice(i, 1);
+    }
+  }
+
   if (!config.validateOnStartup) {
-    console.log('DeepSeek startup validation skipped. Use the admin test button to validate credentials.');
+    console.log('DeepSeek startup validation skipped; accounts already logged in above. Use the admin test button to validate individual tokens.');
+    for (const entry of tokenPool) {
+      if (entry.token && !entry.dead) {
+        const vision = await checkVisionCapability(entry.token);
+        entry.visionCapable = vision;
+      }
+    }
+    const alive = tokenPool.filter(t => !t.dead).length;
+    console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive`);
     return;
   }
 
@@ -258,24 +294,6 @@ export async function initTokenPool() {
           entry.errorCount = tokenDeadThreshold();
         }
       }
-    }
-  }
-
-  for (let i = tokenPool.length - 1; i >= 0; i--) {
-    const entry = tokenPool[i];
-    if (!entry.token && entry.password) {
-      const ok = await refreshToken(entry);
-      if (!ok && entry.dead) {
-        console.log(`  Removing banned/failed account entry for ${entry.email}`);
-        tokenPool.splice(i, 1);
-      }
-    }
-  }
-
-  for (let i = tokenPool.length - 1; i >= 0; i--) {
-    if (!tokenPool[i].token && !tokenPool[i].password) {
-      console.log(`  Removing stale NONE entry at index ${i}`);
-      tokenPool.splice(i, 1);
     }
   }
 
@@ -511,13 +529,19 @@ export function removeTokenFromPool(tokenPrefix) {
 
 // Periodic health check — validate alive tokens and detect banned accounts early
 // Only checks tokens that haven't been used recently (idle tokens) to reduce request volume
-const HEALTH_CHECK_INTERVAL = parseInt(process.env.HEALTH_CHECK_INTERVAL || '600', 10) * 1000; // seconds, default 10 min
-const IDLE_THRESHOLD = parseInt(process.env.IDLE_THRESHOLD || '1800', 10) * 1000; // seconds, default 30 min
+function healthCheckIntervalMs() {
+  return getConfig().deepseek.healthCheckIntervalSeconds * 1000;
+}
+
+function idleThresholdMs() {
+  return getConfig().deepseek.idleThresholdSeconds * 1000;
+}
 
 async function healthCheck() {
   const now = Date.now();
+  const idleThreshold = idleThresholdMs();
   // Only check idle tokens — recently used ones are assumed valid
-  const idle = tokenPool.filter(t => !t.dead && t.token && (now - t.lastUsed) > IDLE_THRESHOLD);
+  const idle = tokenPool.filter(t => !t.dead && t.token && (now - t.lastUsed) > idleThreshold);
   if (idle.length === 0) return;
 
   console.log(`Health check: ${idle.length} idle tokens (of ${tokenPool.filter(t => !t.dead).length} alive)`);
@@ -547,8 +571,9 @@ let healthCheckTimer = null;
 
 export function startHealthCheck() {
   if (healthCheckTimer) return;
-  healthCheckTimer = setInterval(healthCheck, HEALTH_CHECK_INTERVAL);
-  console.log(`Health check enabled: every ${HEALTH_CHECK_INTERVAL / 1000}s`);
+  const interval = healthCheckIntervalMs();
+  healthCheckTimer = setInterval(healthCheck, interval);
+  console.log(`Health check enabled: every ${interval / 1000}s`);
 }
 
 export function stopHealthCheck() {
@@ -582,4 +607,18 @@ export async function testDeepSeekToken(token) {
   const valid = await validateToken(token);
   const visionCapable = valid ? await checkVisionCapability(token) : null;
   return { valid, visionCapable };
+}
+
+export function getDeepSeekTestToken() {
+  const entry = tokenPool.find(t => !t.dead && t.token);
+  return entry?.token || null;
+}
+
+export function getDeepSeekPoolEntries() {
+  return tokenPool.filter(t => !t.dead).map(t => ({
+    token: t.token,
+    email: t.email || null,
+    visionCapable: t.visionCapable,
+    dead: t.dead,
+  }));
 }

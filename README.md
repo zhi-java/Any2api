@@ -1,4 +1,4 @@
-# zhi2Api
+# OmniAPI
 
 Multi-channel Web-to-API proxy with OpenAI and Claude-compatible endpoints.
 
@@ -13,14 +13,55 @@ Version: 1.0.0
 
 ## Run
 
+### 本地运行
+
 ```bash
 npm install
 npm start
 ```
 
+### Docker 部署
+
+使用 Docker Compose（推荐）：
+
+```bash
+# 复制环境配置
+cp .env.docker .env
+
+# 编辑 .env 文件，配置必要的认证信息
+# 至少需要配置 DS_ACCOUNTS 或 DS_TOKENS
+
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+或使用 Docker 命令：
+
+```bash
+# 构建镜像
+docker build -t omni:latest .
+
+# 运行容器
+docker run -d \
+  --name omni \
+  -p 3000:3000 \
+  -e DS_ACCOUNTS=
+  -e API_KEY="sk-your-key" \
+  -v $(pwd)/logs:/app/logs \
+  omni:latest
+```
+
+详细的 Docker 部署说明请参考 [Docker 部署指南](docs/Docker部署指南.md)。
+
 ## Responses API
 
-`POST /v1/responses` is implemented as a peer protocol over Any2api's Internal Event layer. It does not bridge through `/v1/chat/completions`.
+`POST /v1/responses` is implemented as a peer protocol over OmniAPI's Internal Event layer. It does not bridge through `/v1/chat/completions`.
 
 Supported first-stage inputs include:
 
@@ -63,10 +104,10 @@ If no Kimi token is configured, Kimi requests are unavailable and return an upst
 
 ## Prompt injection
 
-`ENABLE_PROMPT_INJECTION` controls whether Any2api adds its own compatibility prompt text before sending requests to the existing Web upstream channels.
+`ENABLE_PROMPT_INJECTION` controls whether OmniAPI adds its own compatibility prompt text before sending requests to the existing Web upstream channels.
 
-- `true` or unset: keep the existing DeepSeek/GLM/Kimi/Qwen Web upstreams. Any2api may convert `messages`, `tools`, `tool_choice`, and tool results into upstream-specific prompts. Tool use is requested with a per-request dynamic trigger plus strict `<function_calls>` XML. Plain answers should be normal text.
-- `false`/`0`/`no`/`off`: keep using the same Web upstreams, authentication, uploads, queues, and stream parsers, but do not add Any2api-authored role labels, tool instructions, or tool-result follow-up instructions. The Web upstream prompt is the full JSON request body text captured from the client request, and model output is not parsed into protocol-level tool calls.
+- `true` or unset: keep the existing DeepSeek/GLM/Kimi/Qwen Web upstreams. OmniAPI may convert `messages`, `tools`, `tool_choice`, and tool results into upstream-specific prompts. Tool use is requested with a per-request dynamic trigger plus strict `<function_calls>` XML. Plain answers should be normal text.
+- `false`/`0`/`no`/`off`: keep using the same Web upstreams, authentication, uploads, queues, and stream parsers, but do not add OmniAPI-authored role labels, tool instructions, or tool-result follow-up instructions. The Web upstream prompt is the full JSON request body text captured from the client request, and model output is not parsed into protocol-level tool calls.
 
 Old JSON pseudo-tool output such as `{"assistant_response": ..., "tool_calls": [...]}` is no longer converted into protocol tool calls in strict XML mode.
 

@@ -123,7 +123,7 @@ export function createResponsesRequestAdapter(req) {
     metadata: {
       path: req?.originalUrl || req?.path || '/v1/responses',
       headers: req?.headers || {},
-      promptInjectionEnabled: req?.any2api?.promptInjectionEnabled,
+      promptInjectionEnabled: req?.omni?.promptInjectionEnabled,
       unsupportedFields: Object.keys(body).filter(key => [
         'background', 'include', 'metadata', 'parallel_tool_calls', 'store', 'truncation', 'user'
       ].includes(key)),

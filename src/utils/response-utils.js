@@ -69,14 +69,14 @@ export function setTCPNoDelay(req) {
 }
 
 export function isPromptInjectionDisabledForRequest(req) {
-  if (typeof req?.any2api?.promptInjectionEnabled === 'boolean') {
-    return !req.any2api.promptInjectionEnabled;
+  if (typeof req?.omni?.promptInjectionEnabled === 'boolean') {
+    return !req.omni.promptInjectionEnabled;
   }
   return !isPromptInjectionEnabled();
 }
 
 export function getRawJsonPromptForRequest(req) {
-  if (typeof req?.any2api?.rawRequestJsonText === 'string') return req.any2api.rawRequestJsonText;
+  if (typeof req?.omni?.rawRequestJsonText === 'string') return req.omni.rawRequestJsonText;
   if (Buffer.isBuffer(req?.rawBody)) return req.rawBody.toString('utf8');
   if (req?.rawBody != null) return String(req.rawBody);
   return JSON.stringify(req?.body ?? {}, null, 2);
@@ -91,12 +91,12 @@ export function buildDisabledPrompt(req) {
 }
 
 export function captureRawJsonPromptMetadata(req) {
-  req.any2api = {
-    ...(req.any2api || {}),
+  req.omni = {
+    ...(req.omni || {}),
     promptInjectionEnabled: isPromptInjectionEnabled(),
     rawRequestJsonText: getRawJsonPromptForRequest(req),
   };
-  return req.any2api;
+  return req.omni;
 }
 
 // ============================================================

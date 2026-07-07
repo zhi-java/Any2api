@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createPromptPlan } from '../../src/core/prompt-strategy.js';
 import {
@@ -29,7 +32,7 @@ function rawReq(body = {}) {
   return {
     body,
     headers: {},
-    any2api: {
+    omni: {
       promptInjectionEnabled: true,
       rawRequestJsonText: JSON.stringify(body),
     },
@@ -44,27 +47,28 @@ function validXml(trigger, path = 'README.md') {
   return `${trigger}\n<function_calls><function_call><tool>Read</tool><args_json>{"file_path":"${path}"}</args_json></function_call></function_calls>`;
 }
 
-test('retry configuration defaults and clamps env values', () => {
-  const oldEnabled = process.env.ENABLE_FC_ERROR_RETRY;
-  const oldAttempts = process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
+test('retry configuration reads runtime config and clamps values', async () => {
+  const oldPath = process.env.ZHI2API_CONFIG_PATH;
+  const dir = mkdtempSync(join(tmpdir(), 'omni-tool-retry-'));
+  process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');
   try {
-    delete process.env.ENABLE_FC_ERROR_RETRY;
-    delete process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
+    const { loadConfig, updateConfig } = await import('../../src/services/config-store.js');
+    loadConfig({ force: true });
     assert.equal(isFcErrorRetryEnabled(), true);
     assert.equal(getFcErrorRetryMaxAttempts(), 3);
 
-    process.env.ENABLE_FC_ERROR_RETRY = 'off';
-    process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = '100';
+    updateConfig({ runtime: { enableFcErrorRetry: false, fcErrorRetryMaxAttempts: 100 } });
     assert.equal(isFcErrorRetryEnabled(), false);
     assert.equal(getFcErrorRetryMaxAttempts(), 10);
 
-    process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = '0';
+    updateConfig({ runtime: { fcErrorRetryMaxAttempts: 0 } });
     assert.equal(getFcErrorRetryMaxAttempts(), 1);
   } finally {
-    if (oldEnabled == null) delete process.env.ENABLE_FC_ERROR_RETRY;
-    else process.env.ENABLE_FC_ERROR_RETRY = oldEnabled;
-    if (oldAttempts == null) delete process.env.FC_ERROR_RETRY_MAX_ATTEMPTS;
-    else process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = oldAttempts;
+    const { updateConfig } = await import('../../src/services/config-store.js');
+    updateConfig({ runtime: { enableFcErrorRetry: true, fcErrorRetryMaxAttempts: 3 } });
+    if (oldPath == null) delete process.env.ZHI2API_CONFIG_PATH;
+    else process.env.ZHI2API_CONFIG_PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

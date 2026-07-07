@@ -1,6 +1,6 @@
 // Request logger — writes all requests + full conversations to disk
 // Usage: import { requestLogger, getRecentLogs, getLogStats, readHistoricalLogs, listLogDates } from './logger.js';
-//        app.use(requestLogger('zhi2api'));
+//        app.use(requestLogger('omni'));
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
@@ -9,14 +9,18 @@ import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { GLM_MODEL_MAP } from '../channels/glm/models.js';
 import { QWEN_MODEL_MAP } from '../channels/qwen/models.js';
 import { KIMI_MODEL_MAP } from '../channels/kimi/models.js';
+import { getConfig, getDataDir } from '../services/config-store.js';
 
 const MEMORY_LIMIT = 1000;
 const recentLogs = [];
 let totalLogged = 0;
 let successLogged = 0;
 let errorLogged = 0;
-let logDir = process.env.LOG_DIR || 'logs';
 let serviceName = 'default';
+
+function currentLogDir() {
+  return getConfig().runtime.logDir || resolve(getDataDir(), 'logs');
+}
 
 // Strict YYYY-MM-DD only. Anything else (e.g. "../../etc/passwd") falls back to
 // today, closing the path-traversal vector that flowed from req.query.date.
@@ -28,7 +32,7 @@ function sanitizeDate(date) {
 // Defence in depth: reject any resolved path that escapes logDir (e.g. via a
 // symlink or a future change to the join logic).
 function assertWithinLogDir(targetPath) {
-  const root = resolve(logDir);
+  const root = resolve(currentLogDir());
   const rel = relative(root, resolve(targetPath));
   if (rel.startsWith('..') || resolve(targetPath) === root) {
     throw new Error('path escapes log directory');
@@ -70,7 +74,7 @@ function channelForEntry(entry) {
 
 function getLogPath(date) {
   const safeDate = sanitizeDate(date);
-  const dir = join(logDir, serviceName);
+  const dir = join(currentLogDir(), serviceName);
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${safeDate}.jsonl`);
   assertWithinLogDir(p);
@@ -138,7 +142,7 @@ function redactHeaders(headers = {}) {
 
 function getClientDebugLogPath(date) {
   const safeDate = sanitizeDate(date);
-  const root = process.env.CLIENT_DEBUG_LOG_DIR || logDir;
+  const root = getConfig().server.clientDebugLogDir || currentLogDir();
   const dir = join(root, serviceName, 'client-debug');
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${safeDate}.jsonl`);
@@ -191,7 +195,6 @@ function sseStats(rawBody) {
 
 export function requestLogger(name) {
   serviceName = name || serviceName;
-  if (process.env.LOG_DIR) logDir = process.env.LOG_DIR;
 
   return (req, res, next) => {
     const start = Date.now();
@@ -242,7 +245,7 @@ export function requestLogger(name) {
 
       // Add prompt injection flag for chat endpoints
       if (isChat) {
-        entry.promptInjectionEnabled = req.any2api?.promptInjectionEnabled;
+        entry.promptInjectionEnabled = req.omni?.promptInjectionEnabled;
       }
 
       console.log(`[${entry.time}] ${entry.method} ${entry.path} model=${entry.model} ${entry.status} ${entry.duration}ms${entry.error?.message ? ' error=' + entry.error.message.slice(0,120) : ''}`);
@@ -469,7 +472,7 @@ export function readChatLogs(date, count = 50) {
 
 export function listLogDates() {
   try {
-    const dir = join(logDir, serviceName);
+    const dir = join(currentLogDir(), serviceName);
     return readdirSync(dir)
       .filter(f => f.endsWith('.jsonl'))
       .map(f => f.replace('.jsonl', ''))

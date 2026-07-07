@@ -3,422 +3,175 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin - zhi2Api</title>
-  <link rel="stylesheet" href="/admin/styles/design-system.css">
-  <link rel="stylesheet" href="/admin/styles/layout.css">
-  <link rel="stylesheet" href="/admin/styles/components.css">
+  <title>OmniAPI 控制台</title>
   <style>
-    .test-modal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      z-index: 3000;
-      background: rgba(0, 0, 0, 0.4);
-      align-items: center;
-      justify-content: center;
-      padding: var(--space-4);
+    :root {
+      color-scheme: light;
+      --bg-canvas: #f5f5f7;
+      --bg-panel: rgba(255, 255, 255, .78);
+      --border-strong: rgba(60, 60, 67, .22);
+      --text-primary: #1d1d1f;
+      --text-secondary: rgba(29, 29, 31, .68);
+      --text-muted: rgba(60, 60, 67, .52);
+      --accent: #007aff;
+      --accent-strong: #0057d9;
+      --danger: #d92d20;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --shadow-soft: 0 22px 70px rgba(22, 35, 52, .14);
+      --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Inter, sans-serif;
     }
-    .test-modal.active { display: flex; }
-
-    .test-dialog {
-      width: min(800px, 100%);
-      max-height: min(700px, 90vh);
-      overflow: hidden;
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      background: var(--bg-surface);
-      border-radius: var(--radius-xl);
-      box-shadow: var(--shadow-lg);
-    }
-
-    .test-config {
-      padding: var(--space-4);
-      border-right: 1px solid var(--border-default);
-      background: var(--bg-primary);
-      overflow-y: auto;
-    }
-
-    .test-output {
-      padding: var(--space-4);
-      display: flex;
-      flex-direction: column;
-      min-height: 400px;
-    }
-
-    .test-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-3);
-      margin-bottom: var(--space-3);
-    }
-
-    .test-head h2 { margin-bottom: 0; font-size: var(--text-lg); }
-
-    .field { margin-bottom: var(--space-3); }
-    .field label {
-      display: block;
-      margin-bottom: var(--space-1);
-      color: var(--text-secondary);
-      font-size: var(--text-sm);
-      font-weight: 500;
-    }
-
-    #testPrompt {
-      min-height: 120px;
-      resize: vertical;
-    }
-
-    .test-stream {
-      flex: 1;
-      overflow-y: auto;
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-md);
-      padding: var(--space-3);
-      background: var(--bg-primary);
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: var(--text-sm);
-      font-family: var(--font-mono);
-    }
-
-    .test-reasoning {
-      display: none;
-      margin-top: var(--space-3);
-      border-left: 3px solid var(--info);
-      padding: var(--space-2) var(--space-3);
-      background: var(--info-light);
-      font-size: var(--text-sm);
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .test-status {
-      min-height: 20px;
-      margin-top: var(--space-2);
-      color: var(--text-secondary);
-      font-size: var(--text-sm);
-    }
-
-    @media (max-width: 800px) {
-      .test-dialog { grid-template-columns: 1fr; }
-      .test-config { border-right: none; border-bottom: 1px solid var(--border-default); }
-    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg-canvas); color: var(--text-primary); font-family: var(--font-sans); }
+    [hidden] { display: none !important; }
+    .login-view { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 28% 14%, rgba(0, 122, 255, .14), transparent 30%), radial-gradient(circle at 78% 10%, rgba(255, 45, 85, .10), transparent 26%), var(--bg-canvas); }
+    .login-card { width: min(420px, 100%); display: grid; gap: 14px; padding: 28px; background: var(--bg-panel); border: 1px solid rgba(255,255,255,.78); border-bottom-color: rgba(60,60,67,.14); border-radius: 18px; box-shadow: var(--shadow-soft); backdrop-filter: blur(16px) saturate(1.35); }
+    .login-card::before { content: ''; width: 54px; height: 14px; background: radial-gradient(circle at 7px 7px, #ff5f57 0 6px, transparent 6.5px), radial-gradient(circle at 27px 7px, #ffbd2e 0 6px, transparent 6.5px), radial-gradient(circle at 47px 7px, #28c840 0 6px, transparent 6.5px); }
+    .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(180deg, rgba(255,255,255,.42), transparent 46%), linear-gradient(135deg, #007aff, #32ade6 52%, #af52de); color: white; font-weight: 800; letter-spacing: 0; }
+    .login-card h1 { margin: 0; font-size: 26px; letter-spacing: 0; }
+    .login-card p { margin: 0 0 8px; color: var(--text-secondary); line-height: 1.6; }
+    .field-label { color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+    .input { width: 100%; min-height: 42px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: rgba(255, 255, 255, .82); color: var(--text-primary); padding: 10px 12px; font: inherit; }
+    .input:focus { outline: 3px solid rgba(0, 122, 255, .18); border-color: var(--accent); }
+    .btn { min-height: 42px; border: 1px solid transparent; border-radius: var(--radius-md); padding: 10px 14px; font: inherit; font-weight: 700; cursor: pointer; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-strong); color: white; }
+    .form-error { padding: 10px 12px; border-radius: var(--radius-md); color: #912018; background: rgba(217, 45, 32, .10); border: 1px solid rgba(217, 45, 32, .28); }
+    .boot-message { color: var(--text-secondary); text-align: center; }
   </style>
 </head>
 <body>
-  <div class="app-container">
-    <!-- 侧边栏 -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo">zhi2Api</div>
-        <div class="version">v1.0.0</div>
-      </div>
+  <div id="loginView" class="login-view" hidden>
+    <form id="loginForm" class="login-card">
+      <div class="brand-mark">A2</div>
+      <h1>OmniAPI 控制台</h1>
+      <p>输入 API Key 后访问运行状态、凭据、日志和性能数据。</p>
+      <label class="field-label" for="apiKeyInput">API Key</label>
+      <input id="apiKeyInput" class="input" type="password" autocomplete="current-password" placeholder="sk-...">
+      <div id="authError" class="form-error" role="alert" hidden></div>
+      <button id="loginButton" class="btn btn-primary" type="submit">登录</button>
+    </form>
+  </div>
 
-      <nav class="sidebar-nav">
-        <a href="#" class="nav-item active" data-page="dashboard">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>
-          <span class="nav-label">Dashboard</span>
-        </a>
-        <a href="#" class="nav-item" data-page="deepseek">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
-          <span class="nav-label">DeepSeek</span>
-        </a>
-        <a href="#" class="nav-item" data-page="glm">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span>
-          <span class="nav-label">GLM</span>
-        </a>
-        <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=qwen">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg></span>
-          <span class="nav-label">Qwen</span>
-        </a>
-        <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=kimi">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg></span>
-          <span class="nav-label">Kimi</span>
-        </a>
-        <a href="#" class="nav-item" data-page="channels">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg></span>
-          <span class="nav-label">渠道</span>
-        </a>
-        <a href="#" class="nav-item" data-page="logs">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
-          <span class="nav-label">日志</span>
-        </a>
-        <a href="#" class="nav-item" data-page="performance">
-          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
-          <span class="nav-label">性能</span>
-        </a>
-      </nav>
-
-      <div class="sidebar-footer">
-        <button class="btn" id="channelTestBtn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-          测试
-        </button>
-      </div>
+  <div id="appShell" class="app-shell" hidden>
+    <aside class="sidebar" aria-label="主导航">
+      <div class="sidebar-brand"><div class="brand-mark">A2</div><div><strong>OmniAPI</strong><span>Multi-channel proxy</span></div></div>
+      <nav id="nav" class="sidebar-nav"></nav>
     </aside>
-
-    <!-- 主内容区 -->
-    <main class="content">
-      <iframe id="content-frame" src="/admin/pages/dashboard.html"></iframe>
+    <main class="main-shell">
+      <header class="topbar">
+        <div><p id="sectionEyebrow" class="eyebrow">Overview</p><h1 id="sectionTitle">Dashboard</h1></div>
+        <div id="topbarStatus" class="topbar-status">
+          <button id="logoutBtn" class="icon-btn" type="button" aria-label="退出登录" title="退出登录">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V6H6v12h3v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5Zm6.3 4.3 3 3a1 1 0 0 1 0 1.4l-3 3a1 1 0 1 1-1.4-1.4l1.29-1.3H10a1 1 0 1 1 0-2h6.19L14.9 9.7a1 1 0 0 1 1.4-1.4Z" fill="currentColor"/></svg>
+          </button>
+        </div>
+      </header>
+      <section id="viewRoot" class="view-root" aria-live="polite"><p class="boot-message">加载中...</p></section>
     </main>
   </div>
 
-  <!-- 登录弹窗 -->
-  <div id="authOverlay" class="auth-overlay active">
-    <div class="auth-dialog">
-      <h2>Admin 登录</h2>
-      <p>请输入 API Key 以访问管理面板</p>
-      <div class="auth-form">
-        <div class="auth-error" id="authError">API Key 无效，请重试</div>
-        <input type="password" id="apiKeyInput" class="input" placeholder="输入 API Key (sk-...)" autocomplete="off" />
-        <button class="btn btn-primary" onclick="handleLogin()">登录</button>
-      </div>
-    </div>
-  </div>
+  <div id="toastRoot" class="toast-root"></div>
 
-  <!-- 渠道测试弹窗 -->
-  <div class="test-modal" id="channelTestModal" role="dialog" aria-modal="true" aria-labelledby="channelTestTitle">
-    <div class="test-dialog">
-      <div class="test-config">
-        <div class="field">
-          <label for="testChannel">选择渠道</label>
-          <select class="select" id="testChannel" style="width:100%">
-            <option value="deepseek">DeepSeek</option>
-            <option value="glm">GLM</option>
-            <option value="qwen">Qwen</option>
-            <option value="kimi">Kimi</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="testModel">模型</label>
-          <select class="select" id="testModel" style="width:100%">
-            <option value="deepseek-chat">deepseek-chat</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="testPrompt">Prompt</label>
-          <textarea id="testPrompt" class="input" style="width:100%">Hello, what can you do? 请简要回答。</textarea>
-        </div>
-        <button class="btn btn-primary" id="sendTestRequest" style="width:100%">发送测试请求</button>
-        <div class="test-status" id="channelTestStatus"></div>
-      </div>
-      <div class="test-output">
-        <div class="test-head">
-          <h2 id="channelTestTitle">输出</h2>
-          <button class="btn btn-sm btn-ghost" onclick="closeChannelTest()">✕</button>
-        </div>
-        <div class="test-stream" id="channelTestOutput">等待发送测试请求</div>
-        <div class="test-reasoning" id="channelTestReasoning"></div>
-      </div>
-    </div>
-  </div>
+  <script>
+    const loginView = document.getElementById('loginView');
+    const appShell = document.getElementById('appShell');
+    const authError = document.getElementById('authError');
+    const loginButton = document.getElementById('loginButton');
+    let appLoaded = false;
 
-  <script type="module">
-    // ============= 导航 =============
-    const navItems = document.querySelectorAll('.nav-item');
-    const contentFrame = document.getElementById('content-frame');
+    function setAuthenticated(authenticated) {
+      loginView.hidden = authenticated;
+      appShell.hidden = !authenticated;
+    }
 
-    navItems.forEach(item => {
-      item.addEventListener('click', event => {
-        event.preventDefault();
-        navItems.forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-        const page = item.dataset.page;
-        contentFrame.src = item.dataset.src || `/admin/pages/${page}.html`;
+    async function jsonRequest(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       });
-    });
-
-    document.getElementById('channelTestBtn').addEventListener('click', () => {
-      openChannelTest();
-    });
-
-    contentFrame.addEventListener('load', () => {
-      console.log('[Admin] Page loaded');
-    });
-
-    // ============= API Key 注入 =============
-    let apiKey = localStorage.getItem('admin_api_key');
-
-    window.addEventListener('message', event => {
-      if (event.data.type === 'getApiKey') {
-        event.source.postMessage({ type: 'apiKey', key: apiKey }, event.origin);
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+          const body = await response.json();
+          message = body?.error?.message || message;
+        } catch {}
+        throw new Error(message);
       }
-    });
+      return response.json();
+    }
 
-    // ============= 认证 =============
+    function loadStylesheet(href) {
+      return new Promise((resolve, reject) => {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = href;
+        link.onload = resolve;
+        link.onerror = reject;
+        document.head.appendChild(link);
+      });
+    }
+
+    function loadScript(src, type) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        if (type) script.type = type;
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.appendChild(script);
+      });
+    }
+
+    async function loadApp() {
+      if (appLoaded) return;
+      appLoaded = true;
+      await Promise.all([
+        loadStylesheet('/admin/styles/design-system.css'),
+        loadStylesheet('/admin/styles/layout.css'),
+        loadStylesheet('/admin/styles/components.css'),
+      ]);
+      await loadScript('/admin/vendor/chart.umd.min.js');
+      await loadScript('/admin/scripts/app.js', 'module');
+    }
+
     async function checkAuth() {
       try {
-        const response = await fetch('/admin/api/auth/status', { credentials: 'same-origin' });
-        const status = await response.json();
+        const status = await jsonRequest('/admin/api/auth/status');
         if (!status.authRequired || status.authenticated) {
-          document.getElementById('authOverlay').classList.remove('active');
-          return true;
-        }
-        document.getElementById('authOverlay').classList.add('active');
-        return false;
-      } catch (err) {
-        console.error('Auth check failed:', err);
-        document.getElementById('authOverlay').classList.add('active');
-        return false;
-      }
-    }
-
-    window.handleLogin = async function() {
-      const apiKeyInput = document.getElementById('apiKeyInput');
-      const authError = document.getElementById('authError');
-      const key = apiKeyInput.value.trim();
-
-      if (!key) {
-        authError.textContent = '请输入 API Key';
-        authError.classList.add('active');
-        return;
-      }
-
-      try {
-        const result = await fetch('/admin/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKey: key }),
-        });
-        const data = await result.json();
-
-        if (data.success || data.authenticated) {
-          apiKey = key;
-          localStorage.setItem('admin_api_key', key);
-          document.getElementById('authOverlay').classList.remove('active');
-          authError.classList.remove('active');
-        } else {
-          authError.textContent = 'API Key 无效';
-          authError.classList.add('active');
-        }
-      } catch (err) {
-        authError.textContent = `验证失败: ${err.message}`;
-        authError.classList.add('active');
-      }
-    };
-
-    document.getElementById('apiKeyInput').addEventListener('keydown', event => {
-      if (event.key === 'Enter') handleLogin();
-    });
-
-    checkAuth();
-
-    // ============= 渠道测试 =============
-    window.openChannelTest = function() {
-      document.getElementById('channelTestModal').classList.add('active');
-      loadTestModels();
-    };
-
-    window.closeChannelTest = function() {
-      document.getElementById('channelTestModal').classList.remove('active');
-    };
-
-    async function loadTestModels() {
-      try {
-        const result = await fetch('/admin/api/channels/deepseek/config');
-        // 加载成功后默认保留
-      } catch (err) {
-        console.warn('Failed to load models:', err);
-      }
-    }
-
-    document.getElementById('testChannel').addEventListener('change', () => {
-      document.getElementById('channelTestStatus').textContent = '';
-    });
-
-    document.getElementById('sendTestRequest').addEventListener('click', sendTestRequest);
-
-    async function sendTestRequest() {
-      const channel = document.getElementById('testChannel').value;
-      const model = document.getElementById('testModel').value;
-      const prompt = document.getElementById('testPrompt').value.trim();
-      const output = document.getElementById('channelTestOutput');
-      const reasoning = document.getElementById('channelTestReasoning');
-      const status = document.getElementById('channelTestStatus');
-
-      if (!prompt) { status.textContent = '请输入 Prompt'; return; }
-
-      output.textContent = '等待响应...';
-      reasoning.style.display = 'none';
-      status.textContent = '请求中...';
-
-      try {
-        const response = await fetch('/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            stream: true,
-          }),
-        });
-
-        if (!response.ok) {
-          const error = await response.text();
-          output.textContent = `HTTP ${response.status}: ${error}`;
-          status.textContent = '请求失败';
+          setAuthenticated(true);
+          await loadApp();
           return;
         }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullOutput = '';
-        let fullReasoning = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const text = decoder.decode(value, { stream: true });
-          const lines = text.split('\n');
-
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === '[DONE]') continue;
-
-            try {
-              const json = JSON.parse(data);
-              const choices = json.choices || [];
-              for (const choice of choices) {
-                const delta = choice.delta || {};
-                if (delta.reasoning_content) {
-                  fullReasoning += delta.reasoning_content;
-                  reasoning.style.display = 'block';
-                  reasoning.textContent = fullReasoning;
-                }
-                if (delta.content) {
-                  fullOutput += delta.content;
-                  output.textContent = fullOutput;
-                }
-              }
-            } catch (e) {
-              // skip parse errors
-            }
-          }
-        }
-
-        status.textContent = '响应完成';
-      } catch (err) {
-        output.textContent = `错误: ${err.message}`;
-        status.textContent = '请求失败';
-      }
+      } catch {}
+      setAuthenticated(false);
     }
 
-    // 关闭弹窗（点击背景）
-    document.getElementById('channelTestModal').addEventListener('click', event => {
-      if (event.target.id === 'channelTestModal') closeChannelTest();
-    });
-
-    // 每次打开测试弹窗时清空状态
-    document.getElementById('channelTestModal').addEventListener('transitionend', () => {
-      if (!document.getElementById('channelTestModal').classList.contains('active')) {
-        document.getElementById('channelTestOutput').textContent = '等待发送测试请求';
-        document.getElementById('channelTestReasoning').style.display = 'none';
-        document.getElementById('channelTestStatus').textContent = '';
+    document.getElementById('loginForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const apiKey = document.getElementById('apiKeyInput').value.trim();
+      authError.hidden = true;
+      loginButton.disabled = true;
+      try {
+        await jsonRequest('/admin/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ apiKey }),
+        });
+        document.getElementById('apiKeyInput').value = '';
+        setAuthenticated(true);
+        await loadApp();
+        window.dispatchEvent(new CustomEvent('admin:authenticated'));
+      } catch (error) {
+        authError.textContent = error.message === 'Invalid API key' ? 'API Key 无效' : error.message;
+        authError.hidden = false;
+      } finally {
+        loginButton.disabled = false;
       }
     });
+
+    window.addEventListener('auth:expired', () => setAuthenticated(false));
+    checkAuth();
   </script>
 </body>
 </html>

@@ -1,8 +1,11 @@
 import { aggregateInternalEvents, collectInternalEvents, INTERNAL_EVENT_TYPES, nowSeconds } from '../../core/internal-events.js';
 import { errorToResponseError } from '../../core/errors.js';
+import { getConfig } from '../../services/config-store.js';
 import { flushSSE, safeEnd, writeSSE } from '../../utils/response-utils.js';
 
-const SYSTEM_FINGERPRINT = process.env.SYSTEM_FINGERPRINT || 'fp_any2api_v1';
+function systemFingerprint() {
+  return getConfig().server.systemFingerprint;
+}
 
 function chatId(id) {
   if (!id) return `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -69,7 +72,7 @@ export async function renderChatCompletionsJSON(res, events, { model } = {}) {
     object: 'chat.completion',
     created: aggregated.created || nowSeconds(),
     model: aggregated.model || model,
-    system_fingerprint: SYSTEM_FINGERPRINT,
+    system_fingerprint: systemFingerprint(),
     choices: [{
       index: 0,
       message,
@@ -94,7 +97,7 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
   let roleSent = false;
   const toolCallIndexes = new Map();
 
-  const base = () => ({ id, object: 'chat.completion.chunk', created, model: currentModel, system_fingerprint: SYSTEM_FINGERPRINT });
+  const base = () => ({ id, object: 'chat.completion.chunk', created, model: currentModel, system_fingerprint: systemFingerprint() });
   const ensureStarted = (event = {}) => {
     if (!id) id = chatId(event.responseId);
     currentModel = event.model || currentModel;

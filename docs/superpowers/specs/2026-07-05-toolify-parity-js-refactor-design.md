@@ -4,7 +4,7 @@ Date: 2026-07-05
 
 ## Summary
 
-Extend Any2api's current dynamic-trigger XML tool-calling implementation toward full Toolify-style behavior. The current implementation already supports request-local trigger signals, strict `<function_calls>` XML prompts, raw JSON disabled mode, and strict XML parsing. This refactor adds the Toolify features that most improve tool-call success rate:
+Extend OmniAPI's current dynamic-trigger XML tool-calling implementation toward full Toolify-style behavior. The current implementation already supports request-local trigger signals, strict `<function_calls>` XML prompts, raw JSON disabled mode, and strict XML parsing. This refactor adds the Toolify features that most improve tool-call success rate:
 
 1. Toolify-style history formatting for assistant tool calls and tool results.
 2. JSON Schema subset validation for parsed tool arguments.
@@ -17,7 +17,7 @@ Extend Any2api's current dynamic-trigger XML tool-calling implementation toward 
 ## Goals
 
 1. Improve tool-call success rate to be closer to the Toolify reference implementation.
-2. Keep the existing Any2api Internal Request / Internal Events architecture.
+2. Keep the existing OmniAPI Internal Request / Internal Events architecture.
 3. Keep existing DeepSeek, GLM, Kimi, and Qwen Web authentication, upload, queue, and stream parser behavior.
 4. Format assistant historical tool calls as the same dynamic-trigger XML protocol used for new calls.
 5. Format tool results as Toolify-style `Tool execution result` blocks with `<tool_result>`.
@@ -51,7 +51,7 @@ Remaining gaps compared with the Toolify reference:
 - no JSON Schema subset validation;
 - no retry on malformed XML;
 - no continuation retry on truncated XML;
-- historical `assistant.tool_calls` and `tool` results still use mixed Any2api labels in some channel prompt builders;
+- historical `assistant.tool_calls` and `tool` results still use mixed OmniAPI labels in some channel prompt builders;
 - no retry abstraction for channel runners.
 
 ## Architecture

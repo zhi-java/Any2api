@@ -4,9 +4,9 @@ Date: 2026-07-04
 
 ## Summary
 
-Introduce a long-term protocol-neutral architecture for Any2api before rebuilding prompt injection and adding `/v1/responses` support.
+Introduce a long-term protocol-neutral architecture for OmniAPI before rebuilding prompt injection and adding `/v1/responses` support.
 
-The central change is to stop treating OpenAI Chat Completions as the internal canonical protocol. Instead, every external protocol is adapted into an Any2api-owned **Internal Request** representation, every channel emits an Any2api-owned **Internal Event** stream, and every client protocol is rendered from that event stream.
+The central change is to stop treating OpenAI Chat Completions as the internal canonical protocol. Instead, every external protocol is adapted into an OmniAPI-owned **Internal Request** representation, every channel emits an OmniAPI-owned **Internal Event** stream, and every client protocol is rendered from that event stream.
 
 ```text
 Client protocol
@@ -99,7 +99,7 @@ They must not:
 
 ### 2. Internal Request
 
-Internal Request is Any2api's canonical input representation. It must not mirror any single external API.
+Internal Request is OmniAPI's canonical input representation. It must not mirror any single external API.
 
 Initial shape:
 
@@ -385,7 +385,7 @@ Reasoning exposure is renderer-specific. A renderer may expose, suppress, or agg
   toolCallId: "call_xxx",
   index: 0,
   name: "Read",
-  arguments: "{\"file_path\":\"D:\\\\tools\\\\Any2api\\\\README.md\"}"
+  arguments: "{\"file_path\":\"D:\\\\tools\\\\OmniAPI\\\\README.md\"}"
 }
 ```
 

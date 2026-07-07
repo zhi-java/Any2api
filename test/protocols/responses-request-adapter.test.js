@@ -8,7 +8,7 @@ function req(body) {
     body,
     headers: {},
     originalUrl: '/v1/responses',
-    any2api: { promptInjectionEnabled: true, rawRequestJsonText: JSON.stringify(body) },
+    omni: { promptInjectionEnabled: true, rawRequestJsonText: JSON.stringify(body) },
   };
 }
 

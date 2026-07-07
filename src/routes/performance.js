@@ -8,7 +8,6 @@
  */
 
 import express from 'express';
-import { srcPath } from '../utils/runtime-paths.js';
 import { getMetrics, getTimeseries } from '../middleware/metrics.js';
 import { getPoolInfo, getTotalCapacity } from '../services/auth.js';
 import { getQueueInfo } from '../services/queue.js';
@@ -17,8 +16,8 @@ const router = express.Router();
 
 // ============= Performance 面板 UI =============
 
-router.get('/', (req, res) => {
-  res.sendFile(srcPath('performance', 'index.html'));
+router.get('/', (_req, res) => {
+  res.redirect(302, '/admin#performance');
 });
 
 // ============= Performance API =============
