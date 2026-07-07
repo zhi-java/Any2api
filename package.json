@@ -7,14 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test",
-    "desktop": "tauri dev",
-    "desktop:dev": "tauri dev",
-    "build:sidecar": "pkg src/desktop-sidecar.js --targets node22-win-x64 --fallback-to-source --compress Zstd --output src-tauri/binaries/zhi2api-sidecar-x86_64-pc-windows-msvc.exe",
-    "dist:win": "tauri build --bundles nsis"
+    "test": "node --test"
   },
   "dependencies": {
-    "@tauri-apps/plugin-shell": "^2.3.5",
     "ali-oss": "^6.23.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
@@ -29,7 +24,14 @@
       ".env.example"
     ],
     "scripts": [
-      "src/**/*.js"
+      "src/*.js",
+      "src/channels/**/*.js",
+      "src/core/**/*.js",
+      "src/middleware/**/*.js",
+      "src/protocols/**/*.js",
+      "src/routes/**/*.js",
+      "src/services/**/*.js",
+      "src/utils/**/*.js"
     ]
   },
   "files": [
@@ -38,7 +40,6 @@
     ".env.example"
   ],
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4",
     "@yao-pkg/pkg": "^6.21.0"
   }
 }

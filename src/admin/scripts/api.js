@@ -4,9 +4,26 @@
  * 封装所有 API 调用
  */
 
-// 获取 API Key
+// 获取旧版本地 API Key（兼容手动 Bearer 调用）
 function getApiKey() {
   return localStorage.getItem('admin_api_key') || '';
+}
+
+async function errorFromResponse(response) {
+  try {
+    const body = await response.json();
+    return body?.error?.message || body?.message || `HTTP ${response.status}: ${response.statusText}`;
+  } catch {
+    return `HTTP ${response.status}: ${response.statusText}`;
+  }
+}
+
+function notifyAuthExpired() {
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'auth:expired' }, window.location.origin);
+  } else {
+    window.dispatchEvent(new CustomEvent('auth:expired'));
+  }
 }
 
 // 通用请求方法
@@ -18,24 +35,24 @@ async function request(url, options = {}) {
     ...options.headers,
   };
 
-  // 如果有 API Key，添加到请求头
+  // 如果有旧版 API Key，继续添加到请求头；桌面端优先使用 HttpOnly Cookie 会话。
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
   const response = await fetch(url, {
+    credentials: 'same-origin',
     ...options,
     headers,
   });
 
   if (!response.ok) {
     if (response.status === 401) {
-      // API Key 无效，清除并重新登录
       localStorage.removeItem('admin_api_key');
-      window.location.reload();
+      notifyAuthExpired();
       throw new Error('Unauthorized');
     }
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    throw new Error(await errorFromResponse(response));
   }
 
   return response.json();
@@ -44,6 +61,63 @@ async function request(url, options = {}) {
 const API = {
   base: '/admin/api',
   performanceBase: '/performance/api',
+
+  async getAuthStatus() {
+    return request(`${this.base}/auth/status`);
+  },
+
+  async login(apiKey) {
+    return request(`${this.base}/auth/login`, {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+    });
+  },
+
+  async logout() {
+    return request(`${this.base}/auth/logout`, { method: 'POST' });
+  },
+
+  async getConfig() {
+    return request(`${this.base}/config`);
+  },
+
+  async updateConfig(patch) {
+    return request(`${this.base}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  async getChannelConfig(channel) {
+    return request(`${this.base}/channels/${channel}/config`);
+  },
+
+  async updateChannelConfig(channel, config) {
+    return request(`${this.base}/channels/${channel}/config`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  },
+
+  async addCredential(channel, payload) {
+    return request(`${this.base}/channels/${channel}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async removeCredential(channel, id) {
+    return request(`${this.base}/channels/${channel}/credentials/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async testChannel(channel, payload = {}) {
+    return request(`${this.base}/channels/${channel}/test`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
 
   /**
    * 获取统计信息

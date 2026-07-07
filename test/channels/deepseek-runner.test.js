@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const runnerSource = readFileSync('D:/tools/Any2api/src/channels/deepseek/runner.js', 'utf8');
-const apiRouteSource = readFileSync('D:/tools/Any2api/src/routes/api.js', 'utf8');
+const runnerSource = readFileSync(new URL('../../src/channels/deepseek/runner.js', import.meta.url), 'utf8');
+const apiRouteSource = readFileSync(new URL('../../src/routes/api.js', import.meta.url), 'utf8');
 
 test('DeepSeek runner listens to response close, not request close, for SSE cancellation', () => {
   assert.match(apiRouteSource, /generateInternalEvents\(internalRequest, \{ req, res \}\)/);

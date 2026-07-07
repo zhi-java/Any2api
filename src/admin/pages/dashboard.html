@@ -6,350 +6,77 @@
   <title>Dashboard</title>
   <link rel="stylesheet" href="/admin/styles/design-system.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="/admin/vendor/chart.umd.min.js"></script>
   <style>
-    body {
-      background: var(--bg-primary);
-    }
-
-    .page-container {
-      padding: var(--space-8);
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-
-    .page-header {
-      margin-bottom: var(--space-8);
-    }
-
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: var(--space-4);
-      margin-bottom: var(--space-8);
-    }
-
-    .chart-grid {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: var(--space-4);
-      margin-bottom: var(--space-8);
-    }
-
-    .chart-container {
-      position: relative;
-      height: 300px;
-      margin-top: var(--space-4);
-    }
-
-    .channel-table {
-      margin-bottom: var(--space-8);
-    }
-
-    .last-updated {
-      font-size: var(--text-xs);
-      color: var(--text-tertiary);
-      text-align: right;
-      margin-top: var(--space-2);
-    }
-
-    @media (max-width: 1024px) {
-      .stat-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
-      .chart-grid {
-        grid-template-columns: 1fr;
-      }
-    }
+    .stat-row { display: flex; gap: var(--space-3); flex-shrink: 0; }
+    .stat-row .stat-card { flex: 1; min-width: 0; }
+    .bottom-row { display: flex; gap: var(--space-3); flex: 1; min-height: 0; }
+    .bottom-row .card { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .chart-box { flex: 1; min-height: 0; position: relative; }
+    .chart-box canvas { max-height: 100%; width: 100% !important; }
+    .table-box { flex: 1; min-height: 0; overflow: hidden; }
+    .table-box table { font-size: var(--text-xs); }
+    .table-box td, .table-box th { padding: 3px 8px; }
+    .table-box tbody tr:last-child td { border-bottom: 1px solid var(--border-subtle); }
+    .listen-box { flex-shrink: 0; display: flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-secondary); background: var(--bg-surface); border-radius: var(--radius-lg); padding: var(--space-2) var(--space-3); }
+    .listen-box .badge { flex-shrink: 0; }
+    @media (max-width: 700px) { .bottom-row { flex-direction: column; } }
   </style>
 </head>
 <body>
   <div class="page-container">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <h1>Dashboard</h1>
-      <p class="text-secondary">系统总览 - 实时监控所有渠道状态</p>
-    </div>
-
-    <!-- 统计卡片网格 -->
-    <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-label">请求总数</div>
-        <div class="stat-value" id="stat-requests">-</div>
-        <div class="stat-change" id="stat-requests-change"></div>
+    <div class="page-header"><h1>Dashboard</h1></div>
+    <div class="page-body">
+      <div class="stat-row">
+        <div class="stat-card"><div class="stat-label">请求总数</div><div class="stat-value" id="stat-requests">-</div><div class="stat-change" id="stat-requests-change"></div></div>
+        <div class="stat-card"><div class="stat-label">成功率</div><div class="stat-value" id="stat-success-rate">-</div><div class="stat-change" id="stat-success-change"></div></div>
+        <div class="stat-card"><div class="stat-label">可用凭据</div><div class="stat-value" id="stat-tokens">-</div><div class="stat-change" id="stat-tokens-change"></div></div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">成功率</div>
-        <div class="stat-value" id="stat-success-rate">-</div>
-        <div class="stat-change positive" id="stat-success-change"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">可用凭据</div>
-        <div class="stat-value" id="stat-tokens">-</div>
-        <div class="stat-change" id="stat-tokens-change"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">队列</div>
-        <div class="stat-value" id="stat-queue">0</div>
-        <div class="stat-change" id="stat-queue-status"></div>
-      </div>
-    </div>
-
-    <!-- 图表网格 -->
-    <div class="chart-grid">
-      <!-- 请求趋势 -->
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">请求趋势</h3>
+      <div class="bottom-row">
+        <div class="card">
+          <div class="card-header"><div class="card-title">请求趋势</div></div>
+          <div class="chart-box"><canvas id="chart"></canvas></div>
         </div>
-        <div class="chart-container">
-          <canvas id="requestChart"></canvas>
-        </div>
-        <div class="last-updated" id="chart-updated">-</div>
-      </div>
-
-      <!-- 渠道分布 -->
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">渠道健康分布</h3>
-        </div>
-        <div class="chart-container">
-          <canvas id="tokenChart"></canvas>
-        </div>
-        <div class="last-updated" id="token-updated">-</div>
-      </div>
-    </div>
-
-    <!-- 渠道状态表格 -->
-    <div class="card channel-table">
-      <div class="card-header">
-        <h3 class="card-title">渠道状态</h3>
-      </div>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>渠道</th>
-            <th>状态</th>
-            <th>模式</th>
-            <th>可用/凭据</th>
-            <th>并发/容量</th>
-            <th>5分钟请求</th>
-            <th>错误</th>
-          </tr>
-        </thead>
-        <tbody id="channel-table-body">
-          <tr>
-            <td colspan="7" class="empty-state">
-              <div class="loading"></div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- 系统信息 -->
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">系统信息</h3>
-      </div>
-      <div class="card-body">
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-6);">
-          <div>
-            <div class="text-secondary text-sm">版本</div>
-            <div class="text-primary" id="system-version">-</div>
-          </div>
-          <div>
-            <div class="text-secondary text-sm">运行时间</div>
-            <div class="text-primary" id="system-uptime">-</div>
-          </div>
-          <div>
-            <div class="text-secondary text-sm">总容量</div>
-            <div class="text-primary" id="system-capacity">-</div>
-          </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">渠道状态</div></div>
+          <div class="table-box"><div class="table-wrap">
+            <table class="table" id="channelTable"><thead><tr><th>渠道</th><th>状态</th><th>凭据</th><th>错误</th></tr></thead><tbody id="channelBody"><tr><td colspan="4" class="empty-state">…</td></tr></tbody></table>
+          </div></div>
         </div>
       </div>
+      <div class="listen-box"><span class="badge badge-info">地址</span><span id="systemAddr">加载中...</span></div>
     </div>
   </div>
-
   <script type="module">
-    import API from '/admin/scripts/api.js';
-    import PollingManager from '/admin/scripts/polling.js';
-    import { CHART_THEME, initChartDefaults, createLineChartConfig, createDoughnutChartConfig } from '/admin/scripts/charts.js';
-
-    // 初始化 Chart.js
-    initChartDefaults();
-
-    // 历史数据（用于趋势图）
-    const requestHistory = {
-      labels: [],
-      data: [],
-      maxPoints: 12, // 保留最近 12 个数据点（1 小时，每 5 秒一个点）
-    };
-
-    // 初始化请求趋势图
-    const requestChart = new Chart(
-      document.getElementById('requestChart'),
-      createLineChartConfig(
-        requestHistory.labels,
-        [{
-          label: '请求数',
-          data: requestHistory.data,
-        }]
-      )
-    );
-
-    // 初始化 Token 分布图
-    const tokenChart = new Chart(
-      document.getElementById('tokenChart'),
-      createDoughnutChartConfig(
-        ['健康', '降级', '未配置'],
-        [0, 0, 0],
-        [CHART_THEME.colors.success, CHART_THEME.colors.warning, CHART_THEME.colors.error]
-      )
-    );
-
-    // 格式化数字
-    function formatNumber(num) {
-      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-      return num.toString();
-    }
-
-    // 格式化运行时间
-    function formatUptime(seconds) {
-      const days = Math.floor(seconds / 86400);
-      const hours = Math.floor((seconds % 86400) / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-
-      if (days > 0) return `${days}天 ${hours}小时`;
-      if (hours > 0) return `${hours}小时 ${minutes}分钟`;
-      return `${minutes}分钟`;
-    }
-
-    // 更新 Dashboard
-    async function updateDashboard() {
-      try {
-        const stats = await API.getStats();
-        const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-        // 更新统计卡片
-        const totalRequests = stats.logStats?.totalRequests || 0;
-        const successCount = stats.logStats?.successCount || 0;
-        const successRate = totalRequests > 0 ? (successCount / totalRequests * 100) : 0;
-        const channels = stats.channels || [];
-        const aliveTokens = channels.reduce((sum, channel) => sum + (channel.availableCount || 0), 0);
-        const queuedCount = channels.reduce((sum, channel) => sum + (channel.queue?.queued || 0), 0);
-        const healthyChannels = channels.filter(channel => channel.status === 'healthy').length;
-        const degradedChannels = channels.filter(channel => channel.status === 'degraded').length;
-        const unconfiguredChannels = channels.filter(channel => channel.status === 'unconfigured').length;
-
-        document.getElementById('stat-requests').textContent = formatNumber(totalRequests);
-        document.getElementById('stat-success-rate').textContent = successRate.toFixed(1) + '%';
-        document.getElementById('stat-tokens').textContent = aliveTokens;
-        document.getElementById('stat-queue').textContent = queuedCount;
-        document.getElementById('stat-requests-change').textContent = `${stats.logStats?.last5min || 0} / 5分钟`;
-        document.getElementById('stat-success-change').textContent = `${successCount} 成功 / ${stats.logStats?.errorCount || 0} 错误`;
-        document.getElementById('stat-tokens-change').textContent = `${healthyChannels} 健康 · ${degradedChannels} 降级`;
-
-        // 队列状态提示
-        const queueStatus = document.getElementById('stat-queue-status');
-        if (queuedCount > 0) {
-          queueStatus.textContent = `${queuedCount} 个等待中`;
-          queueStatus.className = 'stat-change negative';
-        } else {
-          queueStatus.textContent = '无等待';
-          queueStatus.className = 'stat-change positive';
-        }
-
-        // 更新请求趋势图
-        requestHistory.labels.push(now);
-        requestHistory.data.push(totalRequests);
-
-        // 保持最近 N 个点
-        if (requestHistory.labels.length > requestHistory.maxPoints) {
-          requestHistory.labels.shift();
-          requestHistory.data.shift();
-        }
-
-        requestChart.data.labels = requestHistory.labels;
-        requestChart.data.datasets[0].data = requestHistory.data;
-        requestChart.update('none'); // 无动画更新，性能更好
-
-        // 更新渠道健康分布图
-        tokenChart.data.datasets[0].data = [healthyChannels, degradedChannels, unconfiguredChannels];
-        tokenChart.update('none');
-
-        // 更新渠道状态表格
-        updateChannelTable(stats);
-
-        // 更新系统信息
-        document.getElementById('system-version').textContent = stats.version || '1.0.0';
-        document.getElementById('system-uptime').textContent = formatUptime(stats.uptimeSeconds || 0);
-        const totalCapacity = channels.reduce((sum, channel) => sum + (channel.capacity || 0), 0) || stats.totalCapacity || 0;
-        document.getElementById('system-capacity').textContent = totalCapacity || '-';
-
-        // 更新时间戳
-        document.getElementById('chart-updated').textContent = `更新于 ${now}`;
-        document.getElementById('token-updated').textContent = `更新于 ${now}`;
-
-      } catch (err) {
-        console.error('[Dashboard] Failed to update:', err);
-        // 显示错误提示
-        document.getElementById('stat-requests').textContent = 'Error';
-      }
-    }
-
-    // 更新渠道状态表格
-    function updateChannelTable(stats) {
-      const tbody = document.getElementById('channel-table-body');
-
-      const channels = stats.channels || [];
-      if (channels.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="7" class="empty-state">暂无渠道状态</td>
-          </tr>
-        `;
-        return;
-      }
-
-      tbody.innerHTML = channels.map(channel => {
-        const statusMeta = statusBadge(channel.status);
-        const usage = channel.usage || {};
-        return `
-          <tr>
-            <td><strong>${escapeHtml(channel.name || channel.id)}</strong></td>
-            <td><span class="badge ${statusMeta.className}">${statusMeta.label}</span></td>
-            <td>${escapeHtml(channel.mode || '-')}</td>
-            <td>${channel.availableCount || 0} / ${channel.credentialCount || 0}</td>
-            <td>${channel.activeRequests || 0} / ${channel.capacity || 0}</td>
-            <td>${formatNumber(usage.requests || 0)}</td>
-            <td><span class="${(usage.errors || 0) > 0 ? 'text-error' : 'text-success'}">${usage.errors || 0}</span></td>
-          </tr>
-        `;
+    import API from '/admin/scripts/api.js'; import PollingManager from '/admin/scripts/polling.js';
+    import { initChartDefaults } from '/admin/scripts/charts.js'; initChartDefaults();
+    const h={l:[],d:[],max:20}; const c=new Chart(document.getElementById('chart'),{type:'line',data:{labels:h.l,datasets:[{label:'请求',data:h.d,borderColor:'#0a84ff',fill:!1,tension:.2,pointRadius:0}]},options:{responsive:!0,maintainAspectRatio:!1,plugins:{legend:{display:!1}},scales:{x:{grid:{display:!1},ticks:{font:{size:9},maxTicksLimit:6}},y:{beginAtZero:!0,grid:{color:'rgba(0,0,0,0.04)'},ticks:{font:{size:9}}}}}});
+    function escape(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML}
+    async function up(){try{
+      const s=await API.getStats(); const ch=s.channels||[];
+      const n=new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+      const tr=s.logStats?.totalRequests||0; const sc=s.logStats?.successCount||0;
+      document.getElementById('stat-requests').textContent=tr>=1e6?(tr/1e6).toFixed(1)+'M':tr>=1e3?(tr/1e3).toFixed(1)+'K':String(tr);
+      document.getElementById('stat-requests-change').textContent=s.logStats?.last5min+' / 5分';
+      document.getElementById('stat-success-rate').textContent=(tr>0?(sc/tr*100).toFixed(1):'0')+'%';
+      document.getElementById('stat-success-change').textContent=sc+' 成功';
+      const ak=ch.reduce((s,c)=>s+(c.availableCount||0),0);
+      document.getElementById('stat-tokens').textContent=ak;
+      document.getElementById('stat-tokens-change').textContent=ch.filter(c=>c.status==='healthy').length+' 健康';
+      h.l.push(n);h.d.push(tr);if(h.l.length>h.max){h.l.shift();h.d.shift()}c.update();
+      const tb=document.getElementById('channelBody');
+      if(!ch.length) tb.innerHTML='<tr><td colspan="4" class="empty-state">无数据</td></tr>';
+      else tb.innerHTML=ch.map(c=>{
+        const st=c.status==='healthy'?'badge-success':c.status==='degraded'?'badge-warning':'badge-default';
+        const sl=c.status==='healthy'?'健康':c.status==='degraded'?'降级':'未配置';
+        const u=c.usage||{};
+        return `<tr><td>${escape(c.name||c.id)}</td><td><span class="badge ${st}">${sl}</span></td><td>${c.availableCount||0}/${c.credentialCount||0}</td><td class="${(u.errors||0)>0?'text-error':'text-success'}">${u.errors||0}</td></tr>`;
       }).join('');
-    }
-
-    function statusBadge(status) {
-      if (status === 'healthy') return { label: '健康', className: 'badge-success' };
-      if (status === 'degraded') return { label: '降级', className: 'badge-warning' };
-      return { label: '未配置', className: 'badge-default' };
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text == null ? '' : String(text);
-      return div.innerHTML;
-    }
-
-    // 启动轮询（每 5 秒更新一次）
-    const poller = new PollingManager(5000);
-    poller.start(updateDashboard);
-
-    // 页面卸载时停止轮询
-    window.addEventListener('beforeunload', () => {
-      poller.stop();
-    });
+      const a=document.getElementById('systemAddr');
+      if(s.serverUrl){a.textContent=s.serverUrl+`  ·  POST /v1/chat/completions`}
+      else a.textContent='信息获取中...';
+    }catch(e){console.error(e)}}
+    new PollingManager(5000).start(up); window.addEventListener('beforeunload',()=>poller.stop());
   </script>
 </body>
 </html>

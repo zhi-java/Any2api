@@ -6,13 +6,13 @@ import { collectInternalEvents } from '../../src/core/internal-events.js';
 import { createInternalRequest } from '../../src/core/internal-request.js';
 import { runParsedStreamChannel } from '../../src/channels/common-internal-runner.js';
 
-const commonRunnerSource = readFileSync('D:/tools/Any2api/src/channels/common-internal-runner.js', 'utf8');
-const glmRunnerSource = readFileSync('D:/tools/Any2api/src/channels/glm/runner.js', 'utf8');
-const kimiRunnerSource = readFileSync('D:/tools/Any2api/src/channels/kimi/runner.js', 'utf8');
-const qwenRunnerSource = readFileSync('D:/tools/Any2api/src/channels/qwen/runner.js', 'utf8');
-const glmClientSource = readFileSync('D:/tools/Any2api/src/channels/glm/client.js', 'utf8');
-const kimiClientSource = readFileSync('D:/tools/Any2api/src/channels/kimi/client.js', 'utf8');
-const qwenClientSource = readFileSync('D:/tools/Any2api/src/channels/qwen/client.js', 'utf8');
+const commonRunnerSource = readFileSync(new URL('../../src/channels/common-internal-runner.js', import.meta.url), 'utf8');
+const glmRunnerSource = readFileSync(new URL('../../src/channels/glm/runner.js', import.meta.url), 'utf8');
+const kimiRunnerSource = readFileSync(new URL('../../src/channels/kimi/runner.js', import.meta.url), 'utf8');
+const qwenRunnerSource = readFileSync(new URL('../../src/channels/qwen/runner.js', import.meta.url), 'utf8');
+const glmClientSource = readFileSync(new URL('../../src/channels/glm/client.js', import.meta.url), 'utf8');
+const kimiClientSource = readFileSync(new URL('../../src/channels/kimi/client.js', import.meta.url), 'utf8');
+const qwenClientSource = readFileSync(new URL('../../src/channels/qwen/client.js', import.meta.url), 'utf8');
 
 test('common runner routes active tool parsing and retry through Toolify strategy', () => {
   assert.match(commonRunnerSource, /createPromptPlan/);

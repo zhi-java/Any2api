@@ -8,125 +8,41 @@
   <link rel="stylesheet" href="/admin/styles/layout.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
   <style>
-    .mobile-bar {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 56px;
-      z-index: 120;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-3);
-      padding: 0 var(--space-4);
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-default);
-    }
-
-    .mobile-title {
-      font-weight: 700;
-      color: var(--text-primary);
-    }
-
-    /* 登录遮罩层 */
-    .auth-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(30, 34, 39, 0.95);
-      backdrop-filter: blur(10px);
-      z-index: 9999;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .auth-overlay.active {
-      display: flex;
-    }
-
-    .auth-dialog {
-      background: var(--bg-surface);
-      border-radius: var(--radius-xl);
-      padding: var(--space-12);
-      max-width: 450px;
-      width: 90%;
-      box-shadow: var(--shadow-lg);
-      text-align: center;
-    }
-
-    .auth-dialog h2 {
-      font-size: var(--text-2xl);
-      margin-bottom: var(--space-4);
-      color: var(--text-primary);
-    }
-
-    .auth-dialog p {
-      color: var(--text-secondary);
-      margin-bottom: var(--space-8);
-    }
-
-    .auth-form {
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-4);
-    }
-
-    .auth-error {
-      background: var(--error-light);
-      color: var(--error);
-      padding: var(--space-3);
-      border-radius: var(--radius-md);
-      font-size: var(--text-sm);
-      display: none;
-    }
-
-    .auth-error.active {
-      display: block;
-    }
-
     .test-modal {
       display: none;
       position: fixed;
       inset: 0;
       z-index: 3000;
-      background: rgba(30, 34, 39, 0.55);
+      background: rgba(0, 0, 0, 0.4);
       align-items: center;
       justify-content: center;
-      padding: var(--space-6);
+      padding: var(--space-4);
     }
-
-    .test-modal.active {
-      display: flex;
-    }
+    .test-modal.active { display: flex; }
 
     .test-dialog {
-      width: min(960px, 100%);
-      max-height: min(820px, 92vh);
+      width: min(800px, 100%);
+      max-height: min(700px, 90vh);
       overflow: hidden;
       display: grid;
-      grid-template-columns: 340px 1fr;
+      grid-template-columns: 280px 1fr;
       background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-lg);
+      border-radius: var(--radius-xl);
       box-shadow: var(--shadow-lg);
     }
 
-    .test-config,
-    .test-output {
-      padding: var(--space-6);
-      min-width: 0;
-    }
-
     .test-config {
-      border-right: 1px solid var(--border-subtle);
-      background: var(--bg-sidebar);
+      padding: var(--space-4);
+      border-right: 1px solid var(--border-default);
+      background: var(--bg-primary);
+      overflow-y: auto;
     }
 
     .test-output {
+      padding: var(--space-4);
       display: flex;
       flex-direction: column;
-      min-height: 560px;
+      min-height: 400px;
     }
 
     .test-head {
@@ -134,30 +50,23 @@
       align-items: center;
       justify-content: space-between;
       gap: var(--space-3);
-      margin-bottom: var(--space-4);
+      margin-bottom: var(--space-3);
     }
 
-    .test-head h2 {
-      margin-bottom: 0;
-      font-size: var(--text-xl);
-    }
+    .test-head h2 { margin-bottom: 0; font-size: var(--text-lg); }
 
-    .field {
-      margin-bottom: var(--space-4);
-    }
-
+    .field { margin-bottom: var(--space-3); }
     .field label {
       display: block;
-      margin-bottom: var(--space-2);
+      margin-bottom: var(--space-1);
       color: var(--text-secondary);
       font-size: var(--text-sm);
-      font-weight: 600;
+      font-weight: 500;
     }
 
     #testPrompt {
-      min-height: 160px;
+      min-height: 120px;
       resize: vertical;
-      line-height: var(--leading-normal);
     }
 
     .test-stream {
@@ -165,155 +74,87 @@
       overflow-y: auto;
       border: 1px solid var(--border-default);
       border-radius: var(--radius-md);
-      padding: var(--space-4);
+      padding: var(--space-3);
       background: var(--bg-primary);
       white-space: pre-wrap;
       word-break: break-word;
-      line-height: var(--leading-relaxed);
       font-size: var(--text-sm);
+      font-family: var(--font-mono);
     }
 
     .test-reasoning {
       display: none;
-      margin-top: var(--space-4);
+      margin-top: var(--space-3);
       border-left: 3px solid var(--info);
-      padding: var(--space-3);
+      padding: var(--space-2) var(--space-3);
       background: var(--info-light);
-      color: var(--text-secondary);
-      white-space: pre-wrap;
-      word-break: break-word;
       font-size: var(--text-sm);
-      max-height: 180px;
+      max-height: 150px;
       overflow-y: auto;
     }
 
     .test-status {
-      min-height: 22px;
-      margin-top: var(--space-3);
+      min-height: 20px;
+      margin-top: var(--space-2);
       color: var(--text-secondary);
       font-size: var(--text-sm);
     }
 
-    @media (max-width: 768px) {
-      .mobile-bar {
-        display: flex;
-      }
-
-      .app-container {
-        padding-top: 56px;
-      }
-
-      .sidebar {
-        width: min(280px, 86vw);
-        transform: translateX(-100%);
-        transition: transform var(--transition-base);
-        top: 56px;
-        height: calc(100dvh - 56px);
-        box-shadow: var(--shadow-lg);
-      }
-
-      body.sidebar-open .sidebar {
-        transform: translateX(0);
-      }
-
-      .nav-label {
-        display: block;
-      }
-
-      .sidebar-header .logo {
-        font-size: var(--text-xl);
-      }
-
-      .sidebar-header .version {
-        display: inline;
-      }
-
-      .content {
-        margin-left: 0;
-        width: 100%;
-      }
-
-      .content iframe {
-        height: calc(100dvh - 56px);
-      }
-
-      .test-modal {
-        align-items: stretch;
-        padding: var(--space-3);
-      }
-
-      .test-dialog {
-        grid-template-columns: 1fr;
-        max-height: calc(100dvh - var(--space-6));
-        overflow-y: auto;
-      }
-
-      .test-config {
-        border-right: none;
-        border-bottom: 1px solid var(--border-subtle);
-      }
-
-      .test-output {
-        min-height: 420px;
-      }
+    @media (max-width: 800px) {
+      .test-dialog { grid-template-columns: 1fr; }
+      .test-config { border-right: none; border-bottom: 1px solid var(--border-default); }
     }
   </style>
 </head>
 <body>
-  <div class="mobile-bar">
-    <button class="btn btn-secondary btn-sm" id="menuToggle" aria-label="打开菜单">菜单</button>
-    <span class="mobile-title">zhi2Api</span>
-    <button class="btn btn-secondary btn-sm" id="mobileTestBtn">渠道测试</button>
-  </div>
-
   <div class="app-container">
     <!-- 侧边栏 -->
     <aside class="sidebar">
-      <!-- 头部 -->
       <div class="sidebar-header">
-        <h1 class="logo">zhi2Api</h1>
-        <span class="version">v1.0.0</span>
+        <div class="logo">zhi2Api</div>
+        <div class="version">v1.0.0</div>
       </div>
 
-      <!-- 导航 -->
       <nav class="sidebar-nav">
         <a href="#" class="nav-item active" data-page="dashboard">
-          <span class="nav-icon">DB</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>
           <span class="nav-label">Dashboard</span>
         </a>
         <a href="#" class="nav-item" data-page="deepseek">
-          <span class="nav-icon">DS</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></span>
           <span class="nav-label">DeepSeek</span>
         </a>
         <a href="#" class="nav-item" data-page="glm">
-          <span class="nav-icon">GL</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span>
           <span class="nav-label">GLM</span>
         </a>
         <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=qwen">
-          <span class="nav-icon">QW</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg></span>
           <span class="nav-label">Qwen</span>
         </a>
         <a href="#" class="nav-item" data-page="channels" data-src="/admin/pages/channels.html?channel=kimi">
-          <span class="nav-icon">KM</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg></span>
           <span class="nav-label">Kimi</span>
         </a>
         <a href="#" class="nav-item" data-page="channels">
-          <span class="nav-icon">CH</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg></span>
           <span class="nav-label">渠道</span>
         </a>
         <a href="#" class="nav-item" data-page="logs">
-          <span class="nav-icon">LG</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
           <span class="nav-label">日志</span>
         </a>
         <a href="#" class="nav-item" data-page="performance">
-          <span class="nav-icon">PF</span>
+          <span class="nav-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
           <span class="nav-label">性能</span>
         </a>
       </nav>
 
-      <!-- 底部 -->
       <div class="sidebar-footer">
-        <button class="btn btn-secondary" id="channelTestBtn">渠道测试</button>
+        <button class="btn" id="channelTestBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          测试
+        </button>
       </div>
     </aside>
 
@@ -328,74 +169,44 @@
     <div class="auth-dialog">
       <h2>Admin 登录</h2>
       <p>请输入 API Key 以访问管理面板</p>
-
       <div class="auth-form">
         <div class="auth-error" id="authError">API Key 无效，请重试</div>
-
-        <input
-          type="password"
-          id="apiKeyInput"
-          class="input"
-          placeholder="输入 API Key (sk-...)"
-          autocomplete="off"
-        />
-
-        <button class="btn btn-primary" onclick="handleLogin()">
-          登录
-        </button>
+        <input type="password" id="apiKeyInput" class="input" placeholder="输入 API Key (sk-...)" autocomplete="off" />
+        <button class="btn btn-primary" onclick="handleLogin()">登录</button>
       </div>
     </div>
   </div>
 
+  <!-- 渠道测试弹窗 -->
   <div class="test-modal" id="channelTestModal" role="dialog" aria-modal="true" aria-labelledby="channelTestTitle">
     <div class="test-dialog">
       <div class="test-config">
-        <div class="test-head">
-          <h2 id="channelTestTitle">渠道测试</h2>
-          <button class="btn btn-ghost btn-sm" id="closeChannelTestBtn">关闭</button>
-        </div>
-
         <div class="field">
-          <label for="testChannel">渠道</label>
-          <select class="select" id="testChannel">
-            <option value="all">全部渠道</option>
+          <label for="testChannel">选择渠道</label>
+          <select class="select" id="testChannel" style="width:100%">
             <option value="deepseek">DeepSeek</option>
             <option value="glm">GLM</option>
             <option value="qwen">Qwen</option>
             <option value="kimi">Kimi</option>
           </select>
         </div>
-
-        <div class="field">
-          <label for="testProtocol">协议</label>
-          <select class="select" id="testProtocol">
-            <option value="openai">OpenAI /v1/chat/completions</option>
-            <option value="claude">Claude /v1/messages</option>
-          </select>
-        </div>
-
         <div class="field">
           <label for="testModel">模型</label>
-          <select class="select" id="testModel">
-            <option value="">加载中...</option>
+          <select class="select" id="testModel" style="width:100%">
+            <option value="deepseek-chat">deepseek-chat</option>
           </select>
         </div>
-
         <div class="field">
-          <label for="testPrompt">输入</label>
-          <textarea class="input" id="testPrompt">你好，请用一句话说明当前模型。</textarea>
+          <label for="testPrompt">Prompt</label>
+          <textarea id="testPrompt" class="input" style="width:100%">Hello, what can you do? 请简要回答。</textarea>
         </div>
-
-        <div class="flex gap-2">
-          <button class="btn btn-primary" id="sendChannelTestBtn">发送</button>
-          <button class="btn btn-secondary" id="clearChannelTestBtn">清空</button>
-        </div>
+        <button class="btn btn-primary" id="sendTestRequest" style="width:100%">发送测试请求</button>
         <div class="test-status" id="channelTestStatus"></div>
       </div>
-
       <div class="test-output">
-        <div class="card-header">
-          <h3 class="card-title">输出</h3>
+        <div class="test-head">
+          <h2 id="channelTestTitle">输出</h2>
+          <button class="btn btn-sm btn-ghost" onclick="closeChannelTest()">✕</button>
         </div>
         <div class="test-stream" id="channelTestOutput">等待发送测试请求</div>
         <div class="test-reasoning" id="channelTestReasoning"></div>
@@ -403,35 +214,49 @@
     </div>
   </div>
 
-  <script>
+  <script type="module">
+    // ============= 导航 =============
+    const navItems = document.querySelectorAll('.nav-item');
+    const contentFrame = document.getElementById('content-frame');
+
+    navItems.forEach(item => {
+      item.addEventListener('click', event => {
+        event.preventDefault();
+        navItems.forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        const page = item.dataset.page;
+        contentFrame.src = item.dataset.src || `/admin/pages/${page}.html`;
+      });
+    });
+
+    document.getElementById('channelTestBtn').addEventListener('click', () => {
+      openChannelTest();
+    });
+
+    contentFrame.addEventListener('load', () => {
+      console.log('[Admin] Page loaded');
+    });
+
+    // ============= API Key 注入 =============
     let apiKey = localStorage.getItem('admin_api_key');
-    let testModels = [];
 
-    // 检查 API Key
-    async function checkAuth() {
-      if (!apiKey) {
-        document.getElementById('authOverlay').classList.add('active');
-        return false;
+    window.addEventListener('message', event => {
+      if (event.data.type === 'getApiKey') {
+        event.source.postMessage({ type: 'apiKey', key: apiKey }, event.origin);
       }
+    });
 
-      // 验证 API Key（通过调用一个需要认证的 API）
+    // ============= 认证 =============
+    async function checkAuth() {
       try {
-        const response = await fetch('/admin/api/stats', {
-          headers: {
-            'Authorization': `Bearer ${apiKey}`
-          }
-        });
-
-        if (response.ok) {
+        const response = await fetch('/admin/api/auth/status', { credentials: 'same-origin' });
+        const status = await response.json();
+        if (!status.authRequired || status.authenticated) {
           document.getElementById('authOverlay').classList.remove('active');
           return true;
-        } else {
-          // API Key 无效
-          localStorage.removeItem('admin_api_key');
-          apiKey = null;
-          document.getElementById('authOverlay').classList.add('active');
-          return false;
         }
+        document.getElementById('authOverlay').classList.add('active');
+        return false;
       } catch (err) {
         console.error('Auth check failed:', err);
         document.getElementById('authOverlay').classList.add('active');
@@ -439,252 +264,161 @@
       }
     }
 
-    // 登录处理
-    window.handleLogin = async () => {
-      const input = document.getElementById('apiKeyInput');
-      const errorDiv = document.getElementById('authError');
-      const key = input.value.trim();
+    window.handleLogin = async function() {
+      const apiKeyInput = document.getElementById('apiKeyInput');
+      const authError = document.getElementById('authError');
+      const key = apiKeyInput.value.trim();
 
       if (!key) {
-        errorDiv.textContent = '请输入 API Key';
-        errorDiv.classList.add('active');
+        authError.textContent = '请输入 API Key';
+        authError.classList.add('active');
         return;
       }
 
-      // 验证 API Key
       try {
-        const response = await fetch('/admin/api/stats', {
-          headers: {
-            'Authorization': `Bearer ${key}`
-          }
+        const result = await fetch('/admin/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: key }),
         });
+        const data = await result.json();
 
-        if (response.ok) {
-          // 登录成功
-          localStorage.setItem('admin_api_key', key);
+        if (data.success || data.authenticated) {
           apiKey = key;
+          localStorage.setItem('admin_api_key', key);
           document.getElementById('authOverlay').classList.remove('active');
-          errorDiv.classList.remove('active');
-          input.value = '';
+          authError.classList.remove('active');
         } else {
-          // 登录失败
-          errorDiv.textContent = 'API Key 无效，请检查后重试';
-          errorDiv.classList.add('active');
+          authError.textContent = 'API Key 无效';
+          authError.classList.add('active');
         }
       } catch (err) {
-        errorDiv.textContent = '网络错误，请重试';
-        errorDiv.classList.add('active');
+        authError.textContent = `验证失败: ${err.message}`;
+        authError.classList.add('active');
       }
     };
 
-    // 按 Enter 键登录
-    document.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('apiKeyInput').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-          handleLogin();
-        }
-      });
-
-      // 检查认证状态
-      checkAuth();
-      bindChannelTest();
+    document.getElementById('apiKeyInput').addEventListener('keydown', event => {
+      if (event.key === 'Enter') handleLogin();
     });
 
-    // 导航切换
-    document.querySelectorAll('.nav-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        e.preventDefault();
+    checkAuth();
 
-        // 更新激活状态
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
+    // ============= 渠道测试 =============
+    window.openChannelTest = function() {
+      document.getElementById('channelTestModal').classList.add('active');
+      loadTestModels();
+    };
 
-        // 加载页面
-        const page = item.dataset.page;
-        const iframe = document.getElementById('content-frame');
-        iframe.src = item.dataset.src || `/admin/pages/${page}.html`;
-        document.body.classList.remove('sidebar-open');
-      });
-    });
-
-    document.getElementById('menuToggle').addEventListener('click', () => {
-      document.body.classList.toggle('sidebar-open');
-    });
-
-    document.getElementById('mobileTestBtn').addEventListener('click', () => {
-      openChannelTest();
-    });
-
-    // 监听 iframe 加载完成
-    document.getElementById('content-frame').addEventListener('load', () => {
-      console.log('[Admin] Page loaded');
-    });
-
-    // 注入 API Key 到 iframe
-    window.addEventListener('message', (event) => {
-      if (event.data.type === 'getApiKey') {
-        event.source.postMessage({
-          type: 'apiKey',
-          key: apiKey
-        }, event.origin);
-      }
-    });
-
-    function requestHeaders() {
-      const headers = { 'Content-Type': 'application/json' };
-      const key = localStorage.getItem('admin_api_key') || apiKey;
-      if (key) headers.Authorization = `Bearer ${key}`;
-      return headers;
-    }
-
-    function escapeHtml(value) {
-      const div = document.createElement('div');
-      div.textContent = value == null ? '' : String(value);
-      return div.innerHTML;
-    }
+    window.closeChannelTest = function() {
+      document.getElementById('channelTestModal').classList.remove('active');
+    };
 
     async function loadTestModels() {
-      const res = await fetch('/admin/api/models', { headers: requestHeaders() });
-      if (!res.ok) throw new Error(`模型加载失败: HTTP ${res.status}`);
-      const data = await res.json();
-      testModels = data.models || [];
-      renderTestModels();
+      try {
+        const result = await fetch('/admin/api/channels/deepseek/config');
+        // 加载成功后默认保留
+      } catch (err) {
+        console.warn('Failed to load models:', err);
+      }
     }
 
-    function renderTestModels() {
+    document.getElementById('testChannel').addEventListener('change', () => {
+      document.getElementById('channelTestStatus').textContent = '';
+    });
+
+    document.getElementById('sendTestRequest').addEventListener('click', sendTestRequest);
+
+    async function sendTestRequest() {
       const channel = document.getElementById('testChannel').value;
-      const modelSelect = document.getElementById('testModel');
-      const models = channel === 'all'
-        ? testModels
-        : testModels.filter(model => model.channel === channel);
-      modelSelect.innerHTML = models.map(model =>
-        `<option value="${escapeHtml(model.id)}">${escapeHtml(model.id)} (${escapeHtml(model.channel)})</option>`
-      ).join('');
-      if (!models.length) modelSelect.innerHTML = '<option value="">无可用模型</option>';
-    }
-
-    function openChannelTest() {
-      document.getElementById('channelTestModal').classList.add('active');
-      document.body.classList.remove('sidebar-open');
-      if (testModels.length === 0) {
-        loadTestModels().catch(err => {
-          document.getElementById('channelTestStatus').textContent = err.message;
-        });
-      }
-    }
-
-    function closeChannelTest() {
-      document.getElementById('channelTestModal').classList.remove('active');
-    }
-
-    async function readStream(res, onBlock) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-        for (const block of blocks) onBlock(block);
-      }
-      if (buffer.trim()) onBlock(buffer);
-    }
-
-    function parseSseBlock(block, protocol, state) {
-      for (const rawLine of block.split('\n')) {
-        const line = rawLine.trim();
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        let data;
-        try {
-          data = JSON.parse(payload);
-        } catch {
-          state.content += payload + '\n';
-          continue;
-        }
-
-        if (protocol === 'openai') {
-          const delta = data.choices?.[0]?.delta || {};
-          if (delta.content) state.content += delta.content;
-          if (delta.reasoning_content) state.reasoning += delta.reasoning_content;
-        } else if (data.type === 'content_block_delta') {
-          if (data.delta?.text) state.content += data.delta.text;
-          if (data.delta?.thinking) state.reasoning += data.delta.thinking;
-        } else if (data.type === 'error') {
-          state.content += data.error?.message || JSON.stringify(data.error || data);
-        }
-      }
-    }
-
-    async function sendChannelTest() {
       const model = document.getElementById('testModel').value;
-      const protocol = document.getElementById('testProtocol').value;
       const prompt = document.getElementById('testPrompt').value.trim();
       const output = document.getElementById('channelTestOutput');
       const reasoning = document.getElementById('channelTestReasoning');
       const status = document.getElementById('channelTestStatus');
-      const button = document.getElementById('sendChannelTestBtn');
-      if (!model || !prompt) {
-        status.textContent = '请选择模型并输入内容';
-        return;
-      }
 
-      const state = { content: '', reasoning: '' };
-      const start = Date.now();
-      output.textContent = '';
-      reasoning.textContent = '';
+      if (!prompt) { status.textContent = '请输入 Prompt'; return; }
+
+      output.textContent = '等待响应...';
       reasoning.style.display = 'none';
       status.textContent = '请求中...';
-      button.disabled = true;
 
       try {
-        const url = protocol === 'openai' ? '/v1/chat/completions' : '/v1/messages';
-        const body = protocol === 'openai'
-          ? { model, stream: true, messages: [{ role: 'user', content: prompt }] }
-          : { model, stream: true, max_tokens: 2048, messages: [{ role: 'user', content: prompt }] };
-        const res = await fetch(url, {
+        const response = await fetch('/v1/chat/completions', {
           method: 'POST',
-          headers: requestHeaders(),
-          body: JSON.stringify(body),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            stream: true,
+          }),
         });
-        if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
 
-        await readStream(res, block => {
-          parseSseBlock(block, protocol, state);
-          output.textContent = state.content || ' ';
-          reasoning.textContent = state.reasoning;
-          reasoning.style.display = state.reasoning ? 'block' : 'none';
-          output.scrollTop = output.scrollHeight;
-        });
-        status.textContent = `完成，耗时 ${Date.now() - start}ms`;
+        if (!response.ok) {
+          const error = await response.text();
+          output.textContent = `HTTP ${response.status}: ${error}`;
+          status.textContent = '请求失败';
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullOutput = '';
+        let fullReasoning = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const text = decoder.decode(value, { stream: true });
+          const lines = text.split('\n');
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6).trim();
+            if (!data || data === '[DONE]') continue;
+
+            try {
+              const json = JSON.parse(data);
+              const choices = json.choices || [];
+              for (const choice of choices) {
+                const delta = choice.delta || {};
+                if (delta.reasoning_content) {
+                  fullReasoning += delta.reasoning_content;
+                  reasoning.style.display = 'block';
+                  reasoning.textContent = fullReasoning;
+                }
+                if (delta.content) {
+                  fullOutput += delta.content;
+                  output.textContent = fullOutput;
+                }
+              }
+            } catch (e) {
+              // skip parse errors
+            }
+          }
+        }
+
+        status.textContent = '响应完成';
       } catch (err) {
-        output.textContent = `请求失败: ${err.message}`;
+        output.textContent = `错误: ${err.message}`;
         status.textContent = '请求失败';
-      } finally {
-        button.disabled = false;
       }
     }
 
-    function bindChannelTest() {
-      document.getElementById('channelTestBtn').addEventListener('click', openChannelTest);
-      document.getElementById('closeChannelTestBtn').addEventListener('click', closeChannelTest);
-      document.getElementById('channelTestModal').addEventListener('click', event => {
-        if (event.target.id === 'channelTestModal') closeChannelTest();
-      });
-      document.getElementById('testChannel').addEventListener('change', renderTestModels);
-      document.getElementById('sendChannelTestBtn').addEventListener('click', sendChannelTest);
-      document.getElementById('clearChannelTestBtn').addEventListener('click', () => {
+    // 关闭弹窗（点击背景）
+    document.getElementById('channelTestModal').addEventListener('click', event => {
+      if (event.target.id === 'channelTestModal') closeChannelTest();
+    });
+
+    // 每次打开测试弹窗时清空状态
+    document.getElementById('channelTestModal').addEventListener('transitionend', () => {
+      if (!document.getElementById('channelTestModal').classList.contains('active')) {
         document.getElementById('channelTestOutput').textContent = '等待发送测试请求';
         document.getElementById('channelTestReasoning').style.display = 'none';
         document.getElementById('channelTestStatus').textContent = '';
-      });
-      document.addEventListener('keydown', event => {
-        if (event.key === 'Escape') closeChannelTest();
-      });
-    }
+      }
+    });
   </script>
 </body>
 </html>

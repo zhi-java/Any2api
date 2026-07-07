@@ -15,3 +15,9 @@ export const qwenSettings = {
   rateLimitMaxCooldownMs: readInt('QWEN_RATE_LIMIT_MAX_COOLDOWN_MS', readInt('RATE_LIMIT_MAX_COOLDOWN_MS', 60 * 60 * 1000, 1000), 1000),
   maxTokenErrors: readInt('QWEN_MAX_TOKEN_ERRORS', readInt('MAX_TOKEN_ERRORS', 3, 1), 1),
 };
+
+export function updateQwenSettings(settings = {}) {
+  for (const key of Object.keys(qwenSettings)) {
+    if (settings[key] !== undefined) qwenSettings[key] = settings[key];
+  }
+}

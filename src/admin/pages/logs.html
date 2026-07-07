@@ -3,348 +3,67 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>日志查询</title>
+  <title>日志</title>
   <link rel="stylesheet" href="/admin/styles/design-system.css">
   <link rel="stylesheet" href="/admin/styles/components.css">
   <style>
-    body {
-      background: var(--bg-primary);
-    }
-
-    .page-container {
-      padding: var(--space-8);
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-
-    .log-line {
-      font-family: 'Courier New', monospace;
-      font-size: var(--text-xs);
-      padding: var(--space-2) var(--space-3);
-      border-bottom: 1px solid var(--border-subtle);
-      display: flex;
-      gap: var(--space-3);
-      align-items: flex-start;
-    }
-
-    .log-line:hover {
-      background: var(--accent-light);
-    }
-
-    .log-time {
-      color: var(--text-tertiary);
-      flex-shrink: 0;
-      min-width: 80px;
-    }
-
-    .log-level {
-      flex-shrink: 0;
-      min-width: 60px;
-      font-weight: 600;
-    }
-
+    .log-box { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-radius: var(--radius-xl); overflow: hidden; }
+    .log-list { flex: 1; min-height: 0; overflow: hidden; }
+    .log-line { font-family: var(--font-mono); font-size: 13px; padding: 2px 8px; border-bottom: 1px solid var(--border-subtle); display: flex; gap: var(--space-2); align-items: flex-start; }
+    .log-line:hover { background: var(--accent-light); }
+    .log-time { color: var(--text-tertiary); flex-shrink: 0; min-width: 62px; }
+    .log-level { flex-shrink: 0; min-width: 40px; font-weight: 600; font-size: 12px; }
     .log-level.INFO { color: var(--info); }
     .log-level.ERROR { color: var(--error); }
     .log-level.WARN { color: var(--warning); }
     .log-level.SUCCESS { color: var(--success); }
-
-    .log-message {
-      flex: 1;
-      color: var(--text-primary);
-      word-break: break-all;
-    }
-
-    .log-container {
-      max-height: 600px;
-      overflow-y: auto;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-lg);
-    }
-
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: var(--space-4);
-      margin-bottom: var(--space-6);
-    }
-
-    .toolbar-left {
-      flex-wrap: wrap;
-    }
-
-    @media (max-width: 1024px) {
-      .stats-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
-    }
-
-    @media (max-width: 640px) {
-      .stats-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .log-line {
-        flex-wrap: wrap;
-        gap: var(--space-2);
-      }
-
-      .log-message {
-        flex-basis: 100%;
-      }
-    }
+    .log-msg { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); }
+    .log-footer { flex-shrink: 0; padding: 3px 10px; text-align: center; color: var(--text-tertiary); font-size: 13px; border-top: 1px solid var(--border-subtle); }
+    .toolbar .select, .toolbar .input { font-size: 14px; padding: 3px 7px; }
   </style>
 </head>
 <body>
   <div class="page-container">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <h1>日志查询</h1>
-      <p class="text-secondary">查看系统请求日志和错误记录</p>
-    </div>
-
-    <!-- 统计信息 -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">总请求数</div>
-        <div class="stat-value" id="stat-total">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">成功数</div>
-        <div class="stat-value text-success" id="stat-success">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">错误数</div>
-        <div class="stat-value text-error" id="stat-error">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">成功率</div>
-        <div class="stat-value" id="stat-rate">-</div>
-      </div>
-    </div>
-
-    <!-- 工具栏 -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <select class="select" id="logCountSelect" onchange="changeLogCount()">
-          <option value="50">最近 50 条</option>
-          <option value="100">最近 100 条</option>
-          <option value="200">最近 200 条</option>
-        </select>
-
-        <select class="select" id="channelSelect" onchange="changeFilters()">
-          <option value="all">全部渠道</option>
-          <option value="deepseek">DeepSeek</option>
-          <option value="glm">GLM</option>
-          <option value="qwen">Qwen</option>
-          <option value="kimi">Kimi</option>
-          <option value="api">API</option>
-        </select>
-
-        <select class="select" id="modelSelect" onchange="changeFilters()">
-          <option value="all">全部模型</option>
-        </select>
-
-        <select class="select" id="statusSelect" onchange="changeFilters()">
-          <option value="all">全部状态</option>
-          <option value="success">成功</option>
-          <option value="error">错误</option>
-          <option value="400">400</option>
-          <option value="401">401</option>
-          <option value="403">403</option>
-          <option value="429">429</option>
-          <option value="500">500</option>
-          <option value="502">502</option>
-          <option value="503">503</option>
-        </select>
-
-        <input
-          type="text"
-          class="input"
-          placeholder="搜索日志..."
-          id="searchInput"
-          onkeyup="changeFilters()"
-          style="min-width: 300px;"
-        />
-      </div>
-
-      <div class="toolbar-right">
-        <span class="text-tertiary text-sm" id="refresh-status">自动刷新中</span>
-        <button class="btn btn-secondary" onclick="refreshLogs()">
-          刷新
-        </button>
-        <button class="btn btn-secondary" onclick="exportLogs()">
-          导出
-        </button>
-      </div>
-    </div>
-
-    <!-- 日志列表 -->
-    <div class="card">
-      <div class="log-container" id="log-container">
-        <div style="padding: var(--space-8); text-align: center;">
-          <div class="loading"></div>
+    <div class="page-header"><h1>日志</h1></div>
+    <div class="page-body">
+      <div class="toolbar" style="flex-shrink:0;padding:var(--space-2) var(--space-3);">
+        <div class="toolbar-left">
+          <select class="select" id="logCount" style="width:80px;"><option value="30">30</option><option value="60">60</option><option value="100">100</option></select>
+          <select class="select" id="channelFilter" style="width:100px;"><option value="all">全部</option><option value="deepseek">DeepSeek</option><option value="glm">GLM</option><option value="qwen">Qwen</option><option value="kimi">Kimi</option></select>
+          <input type="text" class="input" id="searchInput" placeholder="搜索…" style="flex:1;min-width:80px;" />
         </div>
+        <div class="toolbar-right"><span class="text-tertiary text-xs" id="refreshLabel">自动</span><button class="btn btn-sm btn-secondary" onclick="refresh()">刷新</button></div>
       </div>
-
-      <div style="padding: var(--space-4); text-align: center; color: var(--text-tertiary); font-size: var(--text-sm);">
-        <span id="log-count">-</span> 条日志
-        <span style="margin: 0 var(--space-2);">·</span>
-        <span id="log-updated">-</span>
+      <div class="log-box">
+        <div class="log-list" id="logList"><div style="padding:var(--space-4);text-align:center;color:var(--text-tertiary);font-size:var(--text-xs)">加载中…</div></div>
+        <div class="log-footer"><span id="logCountLabel">-</span> 条</div>
       </div>
     </div>
   </div>
-
   <script type="module">
-    import API from '/admin/scripts/api.js';
-    import PollingManager from '/admin/scripts/polling.js';
-
-    let allLogs = [];
-    let modelsLoaded = false;
-    let filterTimer = null;
-
-    function getFilters() {
-      return {
-        channel: document.getElementById('channelSelect').value,
-        model: document.getElementById('modelSelect').value,
-        status: document.getElementById('statusSelect').value,
-        search: document.getElementById('searchInput').value.trim(),
-      };
+    import API from '/admin/scripts/api.js'; import PollingManager from '/admin/scripts/polling.js';
+    let logs=[];
+    function escape(t){const d=document.createElement('div');d.textContent=t==null?'':String(t);return d.innerHTML}
+    function fmt(v){if(!v)return'-';const d=new Date(v);return isNaN(d.getTime())?v:d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+    function render(){
+      const el=document.getElementById('logList');
+      document.getElementById('logCountLabel').textContent=logs.length;
+      if(!logs.length){el.innerHTML='<div style="padding:var(--space-4);text-align:center;color:var(--text-tertiary);font-size:var(--text-xs)">无</div>';return}
+      el.innerHTML=logs.slice(0,60).map(l=>`<div class="log-line"><span class="log-time">${fmt(l.time)}</span><span class="log-level ${l.level}">${l.level||''}</span><span class="log-msg">${escape(l.message)}</span></div>`).join('');
     }
-
-    async function loadModels() {
-      if (modelsLoaded) return;
-      try {
-        const result = await API.getModels();
-        const modelSelect = document.getElementById('modelSelect');
-        const models = result.models || [];
-        modelSelect.innerHTML = '<option value="all">全部模型</option>' + models
-          .map(model => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.id)}</option>`)
-          .join('');
-        modelsLoaded = true;
-      } catch (err) {
-        console.error('[Logs] Failed to load models:', err);
-      }
-    }
-
-    // 更新日志
-    async function updateLogs() {
-      try {
-        await loadModels();
-        const count = parseInt(document.getElementById('logCountSelect').value);
-        const result = await API.getLogs(count, getFilters());
-
-        allLogs = result.logs || [];
-
-        // 更新统计（按当前筛选后的对外 API 调用计算）
-        const total = allLogs.length;
-        const success = allLogs.filter(log => Number(log.status) < 400).length;
-        const error = allLogs.filter(log => Number(log.status) >= 400).length;
-        document.getElementById('stat-total').textContent = total;
-        document.getElementById('stat-success').textContent = success;
-        document.getElementById('stat-error').textContent = error;
-
-        const successRate = total > 0
-          ? (success / total * 100).toFixed(1)
-          : 0;
-        document.getElementById('stat-rate').textContent = successRate + '%';
-
-        renderLogs();
-
-        // 更新时间戳
-        const now = new Date().toLocaleTimeString('zh-CN');
-        document.getElementById('log-updated').textContent = `更新于 ${now}`;
-
-      } catch (err) {
-        console.error('[Logs] Failed to update:', err);
-      }
-    }
-
-    // 过滤日志
-    window.changeFilters = () => {
-      clearTimeout(filterTimer);
-      filterTimer = setTimeout(updateLogs, 250);
-    };
-
-    // 渲染日志
-    function renderLogs() {
-      const container = document.getElementById('log-container');
-      document.getElementById('log-count').textContent = allLogs.length;
-
-      if (allLogs.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <div class="empty-state-text">无匹配日志</div>
-            <div class="empty-state-hint">尝试调整过滤条件</div>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = allLogs.map(log => `
-        <div class="log-line">
-          <span class="log-time">${escapeHtml(formatTime(log.time))}</span>
-          <span class="log-level ${log.level}">${log.level}</span>
-          <span class="badge badge-default">${escapeHtml(log.channel || '-')}</span>
-          <span class="badge badge-info">${escapeHtml(log.model || '-')}</span>
-          <span class="log-message">${escapeHtml(log.message)}</span>
-        </div>
-      `).join('');
-    }
-
-    // HTML 转义
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    function formatTime(value) {
-      if (!value) return '-';
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return value;
-      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-
-    // 改变日志数量
-    window.changeLogCount = () => {
-      updateLogs();
-    };
-
-    // 刷新日志
-    window.refreshLogs = () => {
-      updateLogs();
-    };
-
-    // 导出日志
-    window.exportLogs = () => {
-      if (allLogs.length === 0) {
-        alert('无日志可导出');
-        return;
-      }
-
-      const text = allLogs.map(log =>
-        `${log.time} [${log.level}] [${log.channel || '-'}] ${log.message}`
-      ).join('\n');
-
-      const blob = new Blob([text], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `logs-${new Date().toISOString()}.txt`;
-      a.click();
-      URL.revokeObjectURL(url);
-    };
-
-    // 启动轮询（每 2 秒更新一次，日志更新频率较高）
-    const poller = new PollingManager(2000);
-    poller.start(updateLogs);
-    document.getElementById('refresh-status').textContent = '自动刷新：2 秒';
-
-    // 页面卸载时停止轮询
-    window.addEventListener('beforeunload', () => {
-      poller.stop();
-    });
+    window.refresh=()=>update();
+    let ft=null;
+    window.changeFilters=()=>{clearTimeout(ft);ft=setTimeout(update,200)};
+    async function update(){try{
+      const cnt=parseInt(document.getElementById('logCount').value);
+      const f={channel:document.getElementById('channelFilter').value,model:'all',status:'all',search:document.getElementById('searchInput').value.trim()};
+      const r=await API.getLogs(cnt,f); logs=r.logs||[]; render();
+    }catch(e){console.error(e)}}
+    document.getElementById('logCount').addEventListener('change',update);
+    document.getElementById('channelFilter').addEventListener('change',update);
+    document.getElementById('searchInput').addEventListener('keyup',()=>{clearTimeout(ft);ft=setTimeout(update,200)});
+    update();
+    const p=new PollingManager(5000);p.start(update);window.addEventListener('beforeunload',()=>p.stop());
   </script>
 </body>
 </html>

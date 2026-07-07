@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
+import { getConfig, updateChannelConfig } from '../../services/config-store.js';
 import { requestHeaders } from './headers.js';
-import { qwenSettings } from './config.js';
+import { qwenSettings, updateQwenSettings } from './config.js';
 
 const BASE_URL = 'https://chat.qwen.ai';
 
@@ -51,29 +52,38 @@ export class QwenTokenManager {
 
   _loadAccounts() {
     const accounts = [];
-    const accountsStr = process.env.QWEN_ACCOUNTS?.trim();
-    const tokensStr = process.env.QWEN_TOKENS?.trim();
+    const config = getConfig().qwen;
+    updateQwenSettings(config);
 
-    if (accountsStr) {
-      for (const entry of accountsStr.split(',')) {
-        const [email, ...passParts] = entry.trim().split(':');
-        const password = passParts.join(':');
-        if (email && password) accounts.push(createEntry({ email, password }));
-      }
+    for (const account of config.accounts || []) {
+      if (account.email && account.password) accounts.push(createEntry({ email: account.email, password: account.password }));
     }
 
-    if (tokensStr) {
-      for (const token of tokensStr.split(',').map(t => t.trim()).filter(Boolean)) {
-        accounts.push(createEntry({ token }));
-      }
+    for (const token of config.tokens || []) {
+      accounts.push(createEntry({ token }));
     }
 
     if (accounts.length === 0) {
-      console.warn('[Qwen] No QWEN_TOKENS or QWEN_ACCOUNTS configured; qwen channel will return 503 until configured.');
+      console.warn('[Qwen] No credentials configured; qwen channel will return 503 until configured.');
     } else {
       console.log(`[Qwen] Loaded ${accounts.length} account(s)`);
     }
     return accounts;
+  }
+
+  configure(config = getConfig().qwen) {
+    updateQwenSettings(config);
+    this.accounts = [];
+    for (const account of config.accounts || []) {
+      if (account.email && account.password) this.accounts.push(createEntry({ email: account.email, password: account.password }));
+    }
+    for (const token of config.tokens || []) this.accounts.push(createEntry({ token }));
+    this._pendingLogin.clear();
+  }
+
+  saveConfig(config) {
+    updateChannelConfig('qwen', { ...getConfig().qwen, ...config });
+    this.configure();
   }
 
   _cooldownRemaining(entry) {
