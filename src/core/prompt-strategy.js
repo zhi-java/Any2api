@@ -112,22 +112,52 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
 
   const constraints = [];
   if (toolChoice === 'required') {
-    constraints.push('You MUST call at least one tool in this response.');
+    constraints.push('本轮对话中，如果尚未调用任何工具，则必须调用至少一个工具；如果已有工具结果返回，直接基于结果回复即可');
   }
   const forced = forcedToolName(toolChoice);
   if (forced) {
-    constraints.push(`You MUST use only the tool named \`${forced}\`. Do not call any other tool.`);
+    constraints.push(`只能调用 \`${forced}\` 这一个工具，不得调用其他工具`);
   }
 
   const firstTool = normalized[0]?.function?.name || 'tool_name';
-  const constraintText = constraints.length ? `\n\nTool choice constraints:\n${constraints.map(line => `- ${line}`).join('\n')}` : '';
+  const constraintText = constraints.length
+    ? `\n\n工具选择约束：\n${constraints.map(line => `- ${line}`).join('\n')}`
+    : '';
 
-  return `\n\nYou have access to the following available tools. Use them only when they are necessary to satisfy the user's request.
+  // 检测是否为编程类工具集，注入专用规则
+  const isCodingToolset = tools.some(tool => {
+    const fn = tool.function || tool;
+    const props = Object.keys(fn.parameters?.properties || {});
+    return props.includes('file_path') || props.includes('command')
+      || props.includes('old_string') || props.includes('pattern');
+  });
 
-Available tools:
+  const codingGuide = isCodingToolset ? `
+### 编程场景专用规则
+
+- 先读后改：修改文件前必须 Read 目标文件确认内容，再用 Edit 做精确替换
+- Read 大文件时分段读取：先用 limit 控制读取量，继续时用 offset 接续
+- 创建新文件用 Write，修改已有文件用 Edit；Notebook 文件用 NotebookEdit
+- Edit 的 old_string 必须与文件内容精确匹配，不确定时重新 Read 确认
+- 搜索文件名用 Glob，搜索内容用 Grep；不要用 Bash 替代这些专用工具
+- Bash 仅用于测试、构建、包管理、git 等需要命令行执行的场景
+- Windows 路径使用完整绝对路径和反斜杠` : '';
+
+  return `\n\n## 可用工具
+
 ${renderToolList(normalized)}
 
-When you need to call tools, you MUST output exactly this XML format:
+## 工具调用决策
+
+- 能直接回答的问题，用 Markdown 格式正常回复即可，不要调用工具
+- 确实需要工具才能完成的任务，才调用对应工具
+- 工具执行结果返回后（以"[系统通知]"开头的消息），直接基于结果回复用户，不要再重复调用相同的工具
+- 多个独立的工具调用应在一次响应中同时发出，不要分步串行
+- 一次响应中完成所有可预见的工作，避免"调用-等待-再调用"的低效循环
+${codingGuide}
+## 输出格式
+
+调用工具时严格按以下 XML 格式输出：
 
 ${triggerSignal}
 <function_calls>
@@ -137,17 +167,19 @@ ${triggerSignal}
   </function_call>
 </function_calls>
 
-Rules:
-- If no tool is needed, answer normally in plain text.
-- The trigger signal must be on its own line exactly as shown.
-- The trigger signal must appear only once.
-- The first non-whitespace content after the trigger must be <function_calls>.
-- Use one <function_calls> wrapper for all tool calls.
-- Use one <function_call> block per tool call.
-- The <tool> value must exactly match one declared tool name.
-- The <args_json> value must contain a single JSON object with all arguments for that tool.
-- You may wrap the JSON object in <![CDATA[...]]> to avoid XML escaping issues.
-- Do not add explanations or any other text after </function_calls>.${constraintText}`;
+注意：<args_json> 内的 JSON 务必用 <![CDATA[...]]> 包裹。参数值可能含引号、反斜杠（如 Windows 路径 C:\\Users\\...）、换行、XML 特殊字符（<、>、&）等，不用 CDATA 会破坏 XML 结构导致解析失败。CDATA 不是可选项，是必须的。
+
+## 必须遵守的规则
+
+- 不需要工具时，直接回复文本，不要输出任何 XML
+- 工具执行结果已返回时（"[系统通知]"开头的消息），总结结果直接回复用户，不要重复调用相同的已完成工具
+- 触发信号独占一行，与示例完全一致，只出现一次
+- 触发信号后紧跟 <function_calls>（中间可有空白）
+- 所有调用放在一个 <function_calls> 块内，每个工具一个 <function_call>
+- <tool> 的值必须与上方可用工具列表中的名称完全一致
+- <args_json> 内是一个 JSON 对象，参数名和类型匹配工具定义
+- 参数值中的特殊字符必须用 <![CDATA[...]]> 包裹避免 XML 转义错误
+- </function_calls> 之后不得有任何文字${constraintText}`;
 }
 
 export function createPromptPlan({ req, tools = [], toolChoice = 'auto' } = {}) {

@@ -80,9 +80,9 @@ test('tool result messages are converted to Toolify result blocks', () => {
   ], trigger);
   assert.equal(processed[1].role, 'user');
   const text = processed[1].content[0].text;
-  assert.match(text, /^Tool execution result:/);
-  assert.match(text, /- Tool name: read_file/);
-  assert.match(text, /- Tool arguments: {"path":"README.md"}/);
+  assert.match(text, /^\[系统通知\]/);
+  assert.match(text, /工具名称：read_file/);
+  assert.match(text, /调用参数：{"path":"README.md"}/);
   assert.match(text, /<tool_result>\n<!\[CDATA\[file content\]\]>\n<\/tool_result>/);
 });
 
@@ -94,10 +94,13 @@ test('missing tool_call_id reference is rejected', () => {
 });
 
 test('formatToolResultForAI emits escaped Toolify block directly', () => {
-  assert.equal(
-    formatToolResultForAI('read_file', '{"path":"README.md"}', 'ok </tool_result> ]]>'),
-    'Tool execution result:\n- Tool name: read_file\n- Tool arguments: {"path":"README.md"}\n- Execution result:\n<tool_result>\n<![CDATA[ok </tool_result> ]]]]><![CDATA[>]]>\n</tool_result>',
-  );
+  const result = formatToolResultForAI('read_file', '{"path":"README.md"}', 'ok </tool_result> ]]>');
+  assert.match(result, /^\[系统通知\]/);
+  assert.match(result, /工具名称：read_file/);
+  assert.match(result, /调用参数：{"path":"README.md"}/);
+  assert.match(result, /执行结果：/);
+  assert.match(result, /请基于以上结果直接回复用户/);
+  assert.match(result, /<!\[CDATA\[ok <\/tool_result> \]\]\]\]><!\[CDATA\[>\]\]>/);
 });
 
 test('preprocess is a no-op without trigger', () => {

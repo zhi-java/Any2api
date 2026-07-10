@@ -76,7 +76,16 @@ export function formatAssistantToolCallsForAI(toolCalls = [], triggerSignal) {
 }
 
 export function formatToolResultForAI(toolName, toolArguments, resultContent) {
-  return `Tool execution result:\n- Tool name: ${toolName}\n- Tool arguments: ${toolArguments || '{}'}\n- Execution result:\n<tool_result>\n${wrapCdata(resultContent ?? '')}\n</tool_result>`;
+  return `[系统通知] 以下是你刚才调用的工具 \`${toolName}\` 的执行结果。你需要基于此结果继续推理回复用户，不要再次调用已完成的工具。
+
+工具名称：${toolName}
+调用参数：${toolArguments || '{}'}
+执行结果：
+<tool_result>
+${wrapCdata(resultContent ?? '')}
+</tool_result>
+
+请基于以上结果直接回复用户，或根据需要调用其他工具。`;
 }
 
 export function preprocessMessagesForToolify(messages = [], triggerSignal) {

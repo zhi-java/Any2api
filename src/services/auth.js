@@ -149,7 +149,12 @@ async function login(email, password) {
 
   // AWS WAF returns 202 with empty body — can't login from this IP
   if (res.status === 202) {
-    throw new Error('WAF challenge (202) — login blocked from this IP, use external refresh');
+    throw new Error(
+      `WAF challenge (202) — DeepSeek 登录被防火墙拦截。\n`
+      + `请通过浏览器登录 chat.deepseek.com，从浏览器开发者工具 Application → Local Storage 或 Network 请求中获取 token，`
+      + `然后 ① 配置到 DS_TOKENS 环境变量 或 ② 在后台"上游凭据"页面以 Token 方式添加 DeepSeek 凭据。\n`
+      + `如果必须使用账号自动登录，可尝试设置 HTTPS_PROXY 更换出口 IP。`
+    );
   }
 
   const text = await res.text();
