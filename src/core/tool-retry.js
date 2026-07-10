@@ -32,54 +32,57 @@ export function diagnoseToolParseError(content, triggerSignal, parseResult = nul
   return errors.join('; ') || 'XML structure appears malformed or arguments failed validation';
 }
 
-export function getToolErrorRetryPrompt(originalResponse, errorDetails, triggerSignal) {
-  return `Your previous response attempted to make a function call but the format was invalid or could not be parsed.
+export function getToolErrorRetryPrompt(originalResponse, errorDetails, triggerSignal, tools = []) {
+  const toolListText = tools.length
+    ? `\n可用工具列表：\n${tools.map(t => `- ${t.function?.name || t.name}`).join('\n')}`
+    : '';
 
-Your original response:
+  return `你上一次尝试调用工具，但格式无效无法解析。
+
+你的原始输出：
 \`\`\`
 ${originalResponse}
 \`\`\`
 
-Error details:
-${errorDetails}
+错误详情：
+${errorDetails}${toolListText}
 
-Instructions:
-Please retry and output the function call in the correct XML format. Remember:
-1. Start with the trigger signal on its own line exactly as: ${triggerSignal}
-2. Immediately follow with the <function_calls> XML block
-3. Use <args_json> with valid JSON object parameters
-4. The arguments must match the declared tool schema
-5. Do not add any text after </function_calls>
+请重试，严格按以下 XML 格式输出工具调用：
+1. 触发信号独占一行，精确为：${triggerSignal}
+2. 紧跟 <function_calls> XML 块
+3. <args_json> 内必须是合法的 JSON 对象
+4. 参数必须与上方工具列表中声明的 schema 匹配
+5. </function_calls> 之后不得有任何文字
 
-Please provide the corrected function call now. DO NOT OUTPUT ANYTHING ELSE.`;
+现在请输出修正后的工具调用，不要输出任何其他内容。`;
 }
 
 export function getToolContinuationPrompt(truncatedContent, errorDetails) {
   const tail = String(truncatedContent || '').slice(-1500);
-  return `Your previous response was cut off before the function call XML was complete.
+  return `你上一次的输出在工具调用 XML 完成前被截断了。
 
-Your truncated response:
+被截断的输出：
 \`\`\`
 ${tail}
 \`\`\`
 
-What happened:
+发生了什么：
 ${errorDetails}
 
-You have two options:
+你有两种选择：
 
-Option A (PREFERRED — Continue writing):
-Output ONLY the exact continuation from where you were cut off. Rules:
-- Start EXACTLY from the next character after the cutoff point — do not repeat any text.
-- If the cutoff happened mid-word, start from the next character of that word.
-- Do NOT output any trigger signal or opening tags that were already present.
-- End with the proper closing tags (</function_call>, </function_calls> as needed).
-- Do NOT add any explanation before or after.
+选项 A（推荐 — 续写）：
+仅输出从截断点开始的精确续写内容。规则：
+- 从截断点的下一个字符精确开始——不要重复任何已输出的文字。
+- 如果截断发生在词中间，从该词的下一个字符开始。
+- 不要再次输出触发信号或任何已经存在的开标签。
+- 以正确的闭合标签（</function_call>、</function_calls>）结束。
+- 不要添加任何前后解释文字。
 
-Option B (Only if you made an error earlier):
-Start fresh with the complete function call from the trigger signal. Output the trigger signal on its own line, followed by the complete function_calls block.
+选项 B（仅当你认为之前的输出有错误时）：
+从头开始，输出完整的函数调用。先输出触发信号独占一行，然后完整输出 function_calls 块。
 
-Choose Option A unless you believe your previous output contained errors that need correction.`;
+请选择选项 A，除非你确信之前的输出包含需要纠正的错误。`;
 }
 
 export function isContinuationResponse(retryContent, triggerSignal) {
@@ -140,7 +143,7 @@ export async function attemptToolParseWithRetry({
     const errorDetails = diagnoseToolParseError(currentContent, promptPlan.triggerSignal, lastResult);
     const retryPrompt = failureType === 'truncated'
       ? getToolContinuationPrompt(currentContent, errorDetails)
-      : getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal);
+      : getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal, promptPlan.tools);
 
     const retryContent = await retryToolRequest({
       retryPrompt,

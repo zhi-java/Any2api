@@ -64,14 +64,14 @@ test('XML instructions honor tool_choice variants', () => {
   assert.equal(buildXmlToolInstructions({ tools, toolChoice: 'none', triggerSignal: '<Function_AB12_Start/>' }), '');
 
   const required = buildXmlToolInstructions({ tools, toolChoice: 'required', triggerSignal: '<Function_AB12_Start/>' });
-  assert.match(required, /MUST call at least one tool/);
+  assert.match(required, /必须调用至少一个工具/);
 
   const specific = buildXmlToolInstructions({
     tools,
     toolChoice: { type: 'function', function: { name: 'Read' } },
     triggerSignal: '<Function_AB12_Start/>',
   });
-  assert.match(specific, /only the tool named `Read`/);
+  assert.match(specific, /只能调用 `Read` 这一个工具/);
 });
 
 test('createPromptPlan disables injection using raw JSON prompt', () => {

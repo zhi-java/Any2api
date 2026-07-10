@@ -98,7 +98,7 @@ test('syntax_error builds rewrite prompt and retries successfully', async () => 
     },
     maxAttempts: 2,
   });
-  assert.match(seenPrompt, /Your previous response attempted to make a function call/);
+  assert.match(seenPrompt, /你上一次尝试调用工具/);
   assert.match(seenPrompt, /Unexpected text after/);
   assert.equal(result.toolCalls.length, 1);
   assert.equal(JSON.parse(result.toolCalls[0].function.arguments).file_path, 'fixed.txt');
@@ -112,7 +112,7 @@ test('schema_error builds rewrite prompt and retries successfully', async () => 
     retryToolRequest: async ({ retryPrompt, failureType, errorDetails }) => {
       assert.equal(failureType, 'schema_error');
       assert.match(errorDetails, /missing required property/);
-      assert.match(retryPrompt, /arguments must match the declared tool schema/);
+      assert.match(retryPrompt, /参数必须与上方工具列表中声明的 schema 匹配/);
       return validXml(promptPlan.triggerSignal, 'schema-fixed.txt');
     },
     maxAttempts: 2,
@@ -129,7 +129,7 @@ test('truncated output builds continuation prompt and merges exact continuation'
     promptPlan,
     retryToolRequest: async ({ retryPrompt, failureType }) => {
       assert.equal(failureType, 'truncated');
-      assert.match(retryPrompt, /cut off before the function call XML was complete/);
+      assert.match(retryPrompt, /工具调用 XML 完成前被截断/);
       return continuation;
     },
     maxAttempts: 2,
@@ -192,7 +192,7 @@ test('classifyToolFailure and prompt builders expose expected wording', () => {
   assert.equal(classifyToolFailure('hello', promptPlan.triggerSignal), 'no_fc');
   assert.equal(classifyToolFailure(`${promptPlan.triggerSignal}\n<function_calls>`, promptPlan.triggerSignal), 'truncated');
   assert.equal(classifyToolFailure(`${promptPlan.triggerSignal}\nno xml`, promptPlan.triggerSignal), 'syntax_error');
-  assert.match(getToolErrorRetryPrompt('bad', 'details', promptPlan.triggerSignal), /Please retry/);
-  assert.match(getToolContinuationPrompt('tail', 'missing close'), /Option A/);
+  assert.match(getToolErrorRetryPrompt('bad', 'details', promptPlan.triggerSignal), /请重试/);
+  assert.match(getToolContinuationPrompt('tail', 'missing close'), /选项 A/);
   assert.equal(mergeTruncatedAndContinuation('a\n', '\nb'), 'a\n\nb');
 });
