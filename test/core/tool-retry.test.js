@@ -9,9 +9,11 @@ import {
   attemptToolParseWithRetry,
   classifyToolFailure,
   getFcErrorRetryMaxAttempts,
+  getMissingToolCallRetryPrompt,
   getToolContinuationPrompt,
   getToolErrorRetryPrompt,
   isFcErrorRetryEnabled,
+  isMissingToolCallIntent,
   mergeTruncatedAndContinuation,
 } from '../../src/core/tool-retry.js';
 
@@ -195,4 +197,34 @@ test('classifyToolFailure and prompt builders expose expected wording', () => {
   assert.match(getToolErrorRetryPrompt('bad', 'details', promptPlan.triggerSignal), /请重试/);
   assert.match(getToolContinuationPrompt('tail', 'missing close'), /选项 A/);
   assert.equal(mergeTruncatedAndContinuation('a\n', '\nb'), 'a\n\nb');
+});
+
+test('missing tool-call intent detects plan-only coding responses and builds retry prompt', () => {
+  const promptPlan = plan();
+  const planOnly = '好的，我先读取项目的关键文档和目录结构，来为你整理一份分析报告。';
+  assert.equal(isMissingToolCallIntent(planOnly, promptPlan.tools), true);
+  // Claude Code 实际案例：用"探索/分析"表达意图，动词表必须覆盖
+  assert.equal(isMissingToolCallIntent('我来帮你全面分析这个项目。我会先并行探索项目的结构、技术栈、主要功能模块和架构设计。', promptPlan.tools), true);
+  // "获取...以便..." 结构性兜底——避免每漏一个动词就要补一次词表
+  assert.equal(isMissingToolCallIntent('好的，我们先获取设置页完整代码中关于"默认书源"的部分，以便进行针对性优化。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent('我来读取README来帮你了解项目。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent('我先查看一下源代码结构来快速定位问题。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent("I'll explore the project structure and analyze the architecture first.", promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent("Let me fetch the config file to understand the setup.", promptPlan.tools), true);
+  // 直接点名源文件扩展名，不出现“文件/代码/项目”抽象词
+  assert.equal(isMissingToolCallIntent('好的，我们来实施这些具体的 UI/UX 视觉优化。我会先并行读取当前的 SettingsScreen.kt、Theme.kt、Spacing.kt 和 Type.kt，以确保修改时与现有设计系统保持一致。', promptPlan.tools), true);
+  // 路径 / 符号名 / 定位句式
+  assert.equal(isMissingToolCallIntent('我先打开 D:\\tools\\ting13\\android-app\\app\\src\\main\\kotlin 看一下布局。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent('接下来我去检查 SettingsScreen 的实现逻辑。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent('先定位到 LoginFragment 再继续。', promptPlan.tools), true);
+  assert.equal(isMissingToolCallIntent("Let me open src/main/java/com/app/MainActivity.java and Theme.kt.", promptPlan.tools), true);
+  // 仅交互工具时也应识别确认/选择意图
+  assert.equal(isMissingToolCallIntent('我先确认一下优化范围。', [{ function: { name: 'AskUserQuestion' } }]), true);
+  assert.equal(isMissingToolCallIntent('这是一个普通解释，直接回答即可。', promptPlan.tools), false);
+  assert.equal(isMissingToolCallIntent('项目结构包含以下目录: src, test, docs', promptPlan.tools), false);
+  assert.equal(isMissingToolCallIntent(`${promptPlan.triggerSignal}\n<function_calls></function_calls>`, promptPlan.tools), false);
+  const retryPrompt = getMissingToolCallRetryPrompt(planOnly, promptPlan.triggerSignal, promptPlan.tools);
+  assert.match(retryPrompt, /没有输出任何可执行的工具调用结构/);
+  assert.match(retryPrompt, new RegExp(promptPlan.triggerSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(retryPrompt, /Read/);
 });

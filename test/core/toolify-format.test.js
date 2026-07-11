@@ -7,6 +7,7 @@ import {
   formatToolResultForAI,
   preprocessMessagesForToolify,
 } from '../../src/core/toolify-format.js';
+import { getRecentToolCallIndex, recordResponseToolCalls } from '../../src/services/conversation.js';
 
 const trigger = '<Function_AB12_Start/>';
 
@@ -86,6 +87,35 @@ test('tool result messages are converted to Toolify result blocks', () => {
   assert.match(text, /<tool_result>\n<!\[CDATA\[file content\]\]>\n<\/tool_result>/);
 });
 
+test('tool result messages can resolve calls from a seeded response index', () => {
+  const seed = new Map([
+    ['call_previous', { name: 'shell_command', arguments: '{"command":"pwd"}' }],
+  ]);
+  const processed = preprocessMessagesForToolify([
+    { role: 'tool', tool_call_id: 'call_previous', content: 'D:\\tools\\ting13' },
+  ], trigger, seed);
+  assert.equal(processed.length, 1);
+  assert.equal(processed[0].role, 'user');
+  const text = processed[0].content[0].text;
+  assert.match(text, /工具名称：shell_command/);
+  assert.match(text, /调用参数：{"command":"pwd"}/);
+  assert.match(text, /ing13/);
+});
+
+test('tool result messages can resolve calls from recent streamed tool-call cache', () => {
+  recordResponseToolCalls('resp_recent_toolify', [
+    { id: 'call_recent_toolify', function: { name: 'read_file', arguments: '{"path":"README.md"}' } },
+  ]);
+  const processed = preprocessMessagesForToolify([
+    { role: 'tool', tool_call_id: 'call_recent_toolify', content: 'file content' },
+  ], trigger, getRecentToolCallIndex(['call_recent_toolify']));
+  assert.equal(processed[0].role, 'user');
+  const text = processed[0].content[0].text;
+  assert.match(text, /工具名称：read_file/);
+  assert.match(text, /调用参数：{"path":"README.md"}/);
+  assert.match(text, /file content/);
+});
+
 test('missing tool_call_id reference is rejected', () => {
   assert.throws(
     () => preprocessMessagesForToolify([{ role: 'tool', tool_call_id: 'missing', content: 'result' }], trigger),
@@ -99,8 +129,17 @@ test('formatToolResultForAI emits escaped Toolify block directly', () => {
   assert.match(result, /工具名称：read_file/);
   assert.match(result, /调用参数：{"path":"README.md"}/);
   assert.match(result, /执行结果：/);
-  assert.match(result, /请基于以上结果直接回复用户/);
+  assert.match(result, /请基于以上结果判断任务进度/);
+  assert.match(result, /重新 Read 验证、重新运行测试都是正当调用/);
   assert.match(result, /<!\[CDATA\[ok <\/tool_result> \]\]\]\]><!\[CDATA\[>\]\]>/);
+});
+
+test('formatToolResultForAI truncates oversized argument echo but keeps result intact', () => {
+  const bigArgs = JSON.stringify({ path: 'big.txt', content: 'x'.repeat(600) });
+  const result = formatToolResultForAI('write_file', bigArgs, 'written');
+  assert.match(result, /参数过长已截断，共 \d+ 字符/);
+  assert.doesNotMatch(result, /x{300}/);
+  assert.match(result, /<!\[CDATA\[written\]\]>/);
 });
 
 test('preprocess is a no-op without trigger', () => {

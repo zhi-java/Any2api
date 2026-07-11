@@ -1,6 +1,7 @@
 import { aggregateInternalEvents, collectInternalEvents, INTERNAL_EVENT_TYPES, nowSeconds } from '../../core/internal-events.js';
 import { errorToResponseError } from '../../core/errors.js';
 import { getConfig } from '../../services/config-store.js';
+import { recordResponseToolCalls } from '../../services/conversation.js';
 import { flushSSE, safeEnd, writeSSE } from '../../utils/response-utils.js';
 
 function systemFingerprint() {
@@ -59,6 +60,7 @@ export async function renderChatCompletionsJSON(res, events, { model } = {}) {
 
   const aggregated = aggregateInternalEvents(collected);
   const toolCalls = toOpenAIToolCalls(aggregated.toolCalls);
+  recordResponseToolCalls(aggregated.responseId, toolCalls);
   const message = {
     role: 'assistant',
     content: toolCalls.length ? (aggregated.text || null) : aggregated.text,
@@ -96,6 +98,7 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
   let created = nowSeconds();
   let roleSent = false;
   const toolCallIndexes = new Map();
+  const toolCallRecords = new Map();
 
   const base = () => ({ id, object: 'chat.completion.chunk', created, model: currentModel, system_fingerprint: systemFingerprint() });
   const ensureStarted = (event = {}) => {
@@ -128,6 +131,7 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
           ensureStarted(event);
           const index = event.index ?? toolCallIndexes.size;
           toolCallIndexes.set(event.toolCallId, index);
+          toolCallRecords.set(event.toolCallId, { id: event.toolCallId, type: 'function', function: { name: event.name, arguments: event.arguments || '' } });
           writeSSE(res, { ...base(), choices: [{ index: 0, delta: { tool_calls: [{ index, id: event.toolCallId, type: 'function', function: { name: event.name, arguments: '' } }] }, finish_reason: null }] });
           if (event.arguments) writeSSE(res, { ...base(), choices: [{ index: 0, delta: { tool_calls: [{ index, function: { arguments: event.arguments } }] }, finish_reason: null }] });
           break;
@@ -135,7 +139,19 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
         case INTERNAL_EVENT_TYPES.TOOL_CALL_ARGUMENTS_DELTA: {
           ensureStarted(event);
           const index = toolCallIndexes.get(event.toolCallId) ?? event.index ?? 0;
+          const record = toolCallRecords.get(event.toolCallId) || { id: event.toolCallId, type: 'function', function: { name: event.name, arguments: '' } };
+          record.function.arguments += event.delta || '';
+          toolCallRecords.set(event.toolCallId, record);
           writeSSE(res, { ...base(), choices: [{ index: 0, delta: { tool_calls: [{ index, function: { arguments: event.delta || '' } }] }, finish_reason: null }] });
+          break;
+        }
+        case INTERNAL_EVENT_TYPES.TOOL_CALL_DONE: {
+          ensureStarted(event);
+          const record = toolCallRecords.get(event.toolCallId) || { id: event.toolCallId, type: 'function', function: { name: event.name, arguments: '' } };
+          record.function.name = event.name || record.function.name;
+          record.function.arguments = event.arguments ?? record.function.arguments ?? '{}';
+          toolCallRecords.set(event.toolCallId, record);
+          recordResponseToolCalls(event.responseId, [record]);
           break;
         }
         case INTERNAL_EVENT_TYPES.RUN_FAILED:

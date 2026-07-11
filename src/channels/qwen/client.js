@@ -152,6 +152,9 @@ export function buildQwenMessages(messages, options = {}) {
       parts.push(`[System]: ${content}`);
     } else if (msg.role === 'user') {
       parts.push(`[User]: ${content}`);
+      // toolify 预处理已把 tool 角色转成带 [系统通知] 前缀的 user 消息，
+      // 靠前缀识别工具结果轮次，否则下方的续任务指令永远不会触发。
+      if (typeof content === 'string' && content.startsWith('[系统通知]')) hasToolResult = true;
     } else if (msg.role === 'assistant') {
       if (content) parts.push(`[Assistant]: ${content}`);
       if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {

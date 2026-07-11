@@ -1,6 +1,7 @@
 import { createPromptPlan } from '../core/prompt-strategy.js';
-import { attemptToolParseWithRetry } from '../core/tool-retry.js';
+import { attemptToolParseWithRetry, getMissingToolCallRetryPrompt, isMissingToolCallIntent } from '../core/tool-retry.js';
 import { preprocessMessagesForToolify } from '../core/toolify-format.js';
+import { getRecentToolCallIndex, getResponseToolCallIndex } from '../services/conversation.js';
 import {
   createInternalId,
   internalMessagesToOpenAI,
@@ -119,9 +120,17 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
     toolInstructions,
     triggerSignal,
   } = promptPlan;
+  const toolResultIds = openAIMessages
+    .filter(message => message?.role === 'tool')
+    .map(message => message.tool_call_id || message.toolCallId)
+    .filter(Boolean);
+  const previousToolCalls = new Map([
+    ...getResponseToolCallIndex(internalRequest.conversation?.previousResponseId),
+    ...getRecentToolCallIndex(toolResultIds),
+  ]);
   const promptMessages = promptInjectionDisabled
     ? openAIMessages
-    : preprocessMessagesForToolify(openAIMessages, triggerSignal);
+    : preprocessMessagesForToolify(openAIMessages, triggerSignal, previousToolCalls);
 
   const abortController = new AbortController();
   let streamBody = null;
@@ -163,7 +172,6 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
     }
 
     yield createRunStarted({ requestId, responseId, model: responseModel, protocol: internalRequest.protocol });
-    yield createMessageStarted({ requestId, responseId, messageId, role: 'assistant' });
 
     const detector = toolCallingEnabled ? promptPlan.createStreamDetector() : null;
     let rawContent = '';
@@ -171,13 +179,21 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
     let reasoningContent = '';
     let usage = null;
     let emittedText = false;
+    let messageStarted = false;
     let upstreamError = null;
     let detectedToolCalls = null;
     let pendingToolFailureText = '';
     let pendingToolFailureResult = null;
 
+    const ensureMessageStarted = function* () {
+      if (messageStarted) return;
+      messageStarted = true;
+      yield createMessageStarted({ requestId, responseId, messageId, role: 'assistant' });
+    };
+
     const emitDelta = function* (delta) {
       if (!delta) return;
+      for (const event of ensureMessageStarted()) yield event;
       visibleContent += delta;
       emittedText = true;
       yield createTextDelta({ requestId, responseId, messageId, delta });
@@ -285,14 +301,75 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
       }
     }
 
+    // 收尾兜底：模型用 `工具名({...})` 伪代码文本表示调用时，流式检测器
+    // 不会拦截（无 XML 标记），文本已流出无法撤回；此处仍解析/纠错重试
+    // 把 tool_calls 救回来，避免客户端收到一段"宣称调用"的文本后任务死锁。
+    if (!detectedToolCalls && !pendingToolFailureText && toolCallingEnabled && rawContent && promptPlan.parseToolCallsDetailed) {
+      const lateResult = promptPlan.parseToolCallsDetailed(rawContent);
+      if (lateResult?.toolCalls?.length) {
+        detectedToolCalls = lateResult.toolCalls;
+        // late recovery 命中时，rawContent 里通常包含非标准工具文本
+        // （如 <ApplyPatch> 或 ToolName({...})）。最终聚合 content 只保留
+        // 工具调用前的说明文本，避免把 patch/伪调用主体当正文返回。
+        visibleContent = lateResult.content || '';
+        emittedText = !!visibleContent;
+      } else if (lateResult?.failureType && lateResult.failureType !== 'no_fc') {
+        if (cleanup) {
+          cleanup();
+          cleanup = null;
+        }
+        try {
+          const lateRetry = await attemptToolParseWithRetry({
+            content: rawContent,
+            messages: promptMessages,
+            promptPlan,
+            retryToolRequest,
+            signal: abortController.signal,
+          });
+          if (lateRetry?.toolCalls?.length) detectedToolCalls = lateRetry.toolCalls;
+        } catch (err) {
+          console.warn(`[${channelName}] Late tool recovery failed: ${err.message}`);
+        }
+      } else if (lateResult?.failureType === 'no_fc' && isMissingToolCallIntent(rawContent, promptPlan.tools)) {
+        if (cleanup) {
+          cleanup();
+          cleanup = null;
+        }
+        try {
+          const retryContent = await retryToolRequest({
+            retryPrompt: getMissingToolCallRetryPrompt(rawContent, promptPlan.triggerSignal, promptPlan.tools),
+            currentContent: rawContent,
+            messages: promptMessages,
+            signal: abortController.signal,
+            failureType: 'missing_tool_call',
+          });
+          const missingRetry = promptPlan.parseToolCallsDetailed(retryContent);
+          if (missingRetry?.toolCalls?.length) detectedToolCalls = missingRetry.toolCalls;
+        } catch (err) {
+          console.warn(`[${channelName}] Missing tool-call recovery failed: ${err.message}`);
+        }
+      }
+    }
+
+    // 注意：不要在流结束后把已流式发出的 message 文本"回填"成 reasoning。
+    // 那样做无法流式（必须等到检测到 tool_call 才知道），会导致客户端
+    // 思考内容在末尾一次性出现。真正的思考来自上游 thinking/research 通道，
+    // 已逐字流式；工具调用前的说明文本保持为 message 文本，同样逐字流式。
     if (reasoningContent) yield createReasoningDone({ requestId, responseId, messageId, text: reasoningContent });
-    if (emittedText || visibleContent) yield createTextDone({ requestId, responseId, messageId, text: visibleContent });
+    if (emittedText || visibleContent) {
+      for (const event of ensureMessageStarted()) yield event;
+      yield createTextDone({ requestId, responseId, messageId, text: visibleContent });
+    }
 
     if (detectedToolCalls?.length) {
+      for (const event of ensureMessageStarted()) yield event;
       for (const toolEvent of emitToolCallEvents({ requestId, responseId, messageId, toolCalls: detectedToolCalls })) yield toolEvent;
     }
 
-    yield createMessageDone({ requestId, responseId, messageId, status: 'completed' });
+    if (messageStarted || emittedText || visibleContent || detectedToolCalls?.length) {
+      for (const event of ensureMessageStarted()) yield event;
+      yield createMessageDone({ requestId, responseId, messageId, status: 'completed' });
+    }
     yield createRunCompleted({
       requestId,
       responseId,

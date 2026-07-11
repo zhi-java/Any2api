@@ -83,7 +83,7 @@ function getLogPath(date) {
 
 function getChatLogPath(date) {
   const safeDate = sanitizeDate(date);
-  const dir = join(logDir, serviceName, 'chats');
+  const dir = join(currentLogDir(), serviceName, 'chats');
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${safeDate}.jsonl`);
   assertWithinLogDir(p);
