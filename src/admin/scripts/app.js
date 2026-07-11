@@ -12,13 +12,13 @@ import { initChartDefaults } from './charts.js';
 initChartDefaults();
 
 const routes = {
-  dashboard: { label: 'Dashboard', eyebrow: 'Overview', render: renderDashboard },
-  channels: { label: '渠道', eyebrow: 'Routing', render: renderChannels },
-  credentials: { label: '上游凭据', eyebrow: 'Secrets', render: renderCredentials },
+  dashboard: { label: '首页', eyebrow: 'Home', render: renderDashboard },
+  channels: { label: '渠道', eyebrow: 'Channels', render: renderChannels },
+  credentials: { label: '凭据', eyebrow: 'Credentials', render: renderCredentials },
   apiKeys: { label: 'API Keys', eyebrow: 'Access', render: renderApiKeys },
-  settings: { label: '配置', eyebrow: 'Runtime', render: renderSettings },
-  logs: { label: '日志', eyebrow: 'Observability', render: renderLogs },
-  performance: { label: '性能', eyebrow: 'Telemetry', render: renderPerformance },
+  settings: { label: '设置', eyebrow: 'Settings', render: renderSettings },
+  logs: { label: '日志', eyebrow: 'Logs', render: renderLogs },
+  performance: { label: '监控', eyebrow: 'Monitor', render: renderPerformance },
 };
 
 let currentCleanup = null;

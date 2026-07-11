@@ -7,45 +7,96 @@
   <style>
     :root {
       color-scheme: light;
-      --bg-canvas: #f5f5f7;
-      --bg-panel: rgba(255, 255, 255, .78);
-      --border-strong: rgba(60, 60, 67, .22);
-      --text-primary: #1d1d1f;
-      --text-secondary: rgba(29, 29, 31, .68);
-      --text-muted: rgba(60, 60, 67, .52);
-      --accent: #007aff;
-      --accent-strong: #0057d9;
-      --danger: #d92d20;
-      --radius-md: 8px;
-      --radius-lg: 12px;
-      --shadow-soft: 0 22px 70px rgba(22, 35, 52, .14);
-      --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Inter, sans-serif;
+      --bg-canvas: #fafbff;
+      --bg-panel: #ffffff;
+      --border-strong: #cbd5e1;
+      --text-primary: #0f172a;
+      --text-secondary: #64748b;
+      --text-muted: #94a3b8;
+      --accent: #4f46e5;
+      --accent-strong: #4338ca;
+      --danger: #ef4444;
+      --radius-md: 14px;
+      --radius-lg: 18px;
+      --shadow-soft: 0 18px 40px rgba(15, 23, 42, 0.05);
+      --font-sans: "Plus Jakarta Sans", Inter, "Segoe UI", system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; background: var(--bg-canvas); color: var(--text-primary); font-family: var(--font-sans); }
     [hidden] { display: none !important; }
-    .login-view { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 28% 14%, rgba(0, 122, 255, .14), transparent 30%), radial-gradient(circle at 78% 10%, rgba(255, 45, 85, .10), transparent 26%), var(--bg-canvas); }
-    .login-card { width: min(420px, 100%); display: grid; gap: 14px; padding: 28px; background: var(--bg-panel); border: 1px solid rgba(255,255,255,.78); border-bottom-color: rgba(60,60,67,.14); border-radius: 18px; box-shadow: var(--shadow-soft); backdrop-filter: blur(16px) saturate(1.35); }
-    .login-card::before { content: ''; width: 54px; height: 14px; background: radial-gradient(circle at 7px 7px, #ff5f57 0 6px, transparent 6.5px), radial-gradient(circle at 27px 7px, #ffbd2e 0 6px, transparent 6.5px), radial-gradient(circle at 47px 7px, #28c840 0 6px, transparent 6.5px); }
-    .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(180deg, rgba(255,255,255,.42), transparent 46%), linear-gradient(135deg, #007aff, #32ade6 52%, #af52de); color: white; font-weight: 800; letter-spacing: 0; }
-    .login-card h1 { margin: 0; font-size: 26px; letter-spacing: 0; }
+    .login-view {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at 18% 10%, rgba(79, 70, 229, 0.10), transparent 28%),
+        radial-gradient(circle at 88% 8%, rgba(6, 182, 212, 0.08), transparent 24%),
+        var(--bg-canvas);
+    }
+    .login-card {
+      width: min(420px, 100%);
+      display: grid;
+      gap: 14px;
+      padding: 28px;
+      background: var(--bg-panel);
+      border: 1px solid #e2e8f0;
+      border-radius: 22px;
+      box-shadow: var(--shadow-soft);
+    }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5 55%, #06b6d4);
+      color: white;
+      font-weight: 800;
+      letter-spacing: 0;
+      box-shadow: 0 12px 28px rgba(79, 70, 229, 0.28);
+    }
+    .login-card h1 { margin: 0; font-size: 26px; letter-spacing: -0.03em; font-weight: 800; }
     .login-card p { margin: 0 0 8px; color: var(--text-secondary); line-height: 1.6; }
     .field-label { color: var(--text-secondary); font-size: 13px; font-weight: 600; }
-    .input { width: 100%; min-height: 42px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: rgba(255, 255, 255, .82); color: var(--text-primary); padding: 10px 12px; font: inherit; }
-    .input:focus { outline: 3px solid rgba(0, 122, 255, .18); border-color: var(--accent); }
-    .btn { min-height: 42px; border: 1px solid transparent; border-radius: var(--radius-md); padding: 10px 14px; font: inherit; font-weight: 700; cursor: pointer; }
-    .btn-primary { background: var(--accent); color: #fff; }
+    .input {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--text-primary);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    .input:focus { outline: 3px solid rgba(79, 70, 229, 0.16); border-color: var(--accent); }
+    .btn {
+      min-height: 42px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 8px 20px rgba(79, 70, 229, 0.22); }
     .btn-primary:hover { background: var(--accent-strong); color: white; }
-    .form-error { padding: 10px 12px; border-radius: var(--radius-md); color: #912018; background: rgba(217, 45, 32, .10); border: 1px solid rgba(217, 45, 32, .28); }
+    .form-error {
+      padding: 10px 12px;
+      border-radius: 12px;
+      color: #b91c1c;
+      background: #fef2f2;
+      border: 1px solid rgba(239, 68, 68, 0.28);
+    }
     .boot-message { color: var(--text-secondary); text-align: center; }
   </style>
 </head>
 <body>
   <div id="loginView" class="login-view" hidden>
     <form id="loginForm" class="login-card">
-      <div class="brand-mark">A2</div>
+      <div class="brand-mark">O</div>
       <h1>OmniAPI 控制台</h1>
-      <p>输入 API Key 后访问运行状态、凭据、日志和性能数据。</p>
+      <p>登录后查看服务状态、复制接入地址，并管理渠道与凭据。</p>
       <label class="field-label" for="apiKeyInput">API Key</label>
       <input id="apiKeyInput" class="input" type="password" autocomplete="current-password" placeholder="sk-...">
       <div id="authError" class="form-error" role="alert" hidden></div>
@@ -55,12 +106,12 @@
 
   <div id="appShell" class="app-shell" hidden>
     <aside class="sidebar" aria-label="主导航">
-      <div class="sidebar-brand"><div class="brand-mark">A2</div><div><strong>OmniAPI</strong><span>Multi-channel proxy</span></div></div>
+      <div class="sidebar-brand"><div class="brand-mark">O</div><div><strong>OmniAPI</strong><span>本地 AI 网关</span></div></div>
       <nav id="nav" class="sidebar-nav"></nav>
     </aside>
     <main class="main-shell">
       <header class="topbar">
-        <div><p id="sectionEyebrow" class="eyebrow">Overview</p><h1 id="sectionTitle">Dashboard</h1></div>
+        <div><p id="sectionEyebrow" class="eyebrow">Home</p><h1 id="sectionTitle">首页</h1></div>
         <div id="topbarStatus" class="topbar-status">
           <button id="logoutBtn" class="icon-btn" type="button" aria-label="退出登录" title="退出登录">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V6H6v12h3v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5Zm6.3 4.3 3 3a1 1 0 0 1 0 1.4l-3 3a1 1 0 1 1-1.4-1.4l1.29-1.3H10a1 1 0 1 1 0-2h6.19L14.9 9.7a1 1 0 0 1 1.4-1.4Z" fill="currentColor"/></svg>

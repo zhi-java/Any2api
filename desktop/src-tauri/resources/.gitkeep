@@ -1,0 +1,3 @@
+# Placeholder so resources/ is tracked.
+# Built Core binary (omniapi-core.exe) is produced by `npm run prepare:core`
+# and ignored from git (see .gitignore).

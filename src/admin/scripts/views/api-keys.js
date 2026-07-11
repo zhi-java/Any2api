@@ -10,39 +10,33 @@ function formatCreatedAt(value) {
 function renderKeyRows(config) {
   const keys = config.apiKeys || [];
   const legacyRow = config.adminKeyAcceptedForApi
-    ? `<tr><td><strong>管理后台 Key</strong><small>来自 API_KEY，兼容旧客户端</small></td><td><code>${escapeHtml(config.apiKey || '-')}</code></td><td>${config.apiKeyConfigured ? '已启用' : '未配置'}</td><td><span class="badge badge-muted">系统</span></td></tr>`
+    ? `<tr><td><strong>管理后台 Key</strong><small>来自 API_KEY，兼容旧客户端</small></td><td><code>${escapeHtml(config.apiKey || '-')}</code></td><td><span class="badge badge-muted">系统</span></td></tr>`
     : '';
-  const rows = keys.map(item => `<tr><td><strong>${escapeHtml(item.name || 'External API Key')}</strong><small>${escapeHtml(formatCreatedAt(item.createdAt))}</small></td><td><code>${escapeHtml(item.label || item.id)}</code></td><td>已启用</td><td><button class="btn btn-sm btn-danger" type="button" data-action="remove" data-id="${escapeHtml(item.id)}">删除</button></td></tr>`).join('');
+  const rows = keys.map(item => `<tr><td><strong>${escapeHtml(item.name || 'External API Key')}</strong><small>${escapeHtml(formatCreatedAt(item.createdAt))}</small></td><td><code>${escapeHtml(item.label || item.id)}</code></td><td><button class="btn btn-sm btn-danger" type="button" data-action="remove" data-id="${escapeHtml(item.id)}">删除</button></td></tr>`).join('');
   if (!legacyRow && !rows) return emptyState('暂无外部 API Key', '创建后即可用于 /v1/chat/completions、/v1/messages 和 /v1/responses');
-  return `<table class="table"><thead><tr><th>名称</th><th>Key</th><th>状态</th><th></th></tr></thead><tbody>${legacyRow}${rows}</tbody></table>`;
+  return `<table class="table dense-table"><thead><tr><th>名称</th><th>Key</th><th></th></tr></thead><tbody>${legacyRow}${rows}</tbody></table>`;
 }
 
 function render(root, serverConfig, createdKey = '') {
   root.innerHTML = `
-    <section class="hero-panel api-keys-hero">
-      <div>
-        <span class="hero-kicker">Access Control</span>
-        <h2>对外 API Key</h2>
-        <p>把调用方密钥从上游渠道凭据中拆出来管理。新 key 只在创建后显示一次，请立即保存到客户端环境变量。</p>
+    <div class="compact-page api-keys-workbench">
+      <div class="api-key-workbench-grid">
+        <section class="panel compact-panel">
+          <div class="panel-header"><h2>Key 列表</h2><span>${serverConfig.externalApiKeyCount || 0} 个可用</span></div>
+          <div class="table-wrap bounded-table key-table-wrap">${renderKeyRows(serverConfig)}</div>
+        </section>
+        <section class="panel compact-panel">
+          <div class="panel-header"><h2>创建 Key</h2><span>自动生成高熵密钥</span></div>
+          ${createdKey ? `<div class="created-key-strip"><div class="label">新 Key 已创建 · 仅显示一次</div><div class="copy-strip"><code>${escapeHtml(createdKey)}</code><button class="btn btn-secondary" type="button" data-action="copy-created">复制</button></div></div>` : ''}
+          <form id="apiKeyForm" class="form-stack">
+            <label class="field-label">名称</label>
+            <input class="input" name="name" autocomplete="off" placeholder="例如：生产环境网关">
+            <label class="field-label">自定义 Key（可选）</label>
+            <input class="input" name="key" type="password" autocomplete="off" placeholder="留空自动生成 sk-omni-...">
+            <button class="btn btn-primary" type="submit">创建外部 Key</button>
+          </form>
+        </section>
       </div>
-      <div class="hero-stat"><span>可用 Key</span><strong>${serverConfig.externalApiKeyCount || 0}</strong></div>
-    </section>
-    ${createdKey ? `<section class="panel reveal-panel"><div class="panel-header"><h2>新 Key 已创建</h2><span>仅显示一次</span></div><div class="copy-strip"><code>${escapeHtml(createdKey)}</code><button class="btn btn-secondary" type="button" data-action="copy-created">复制</button></div></section>` : ''}
-    <div class="content-grid two-columns">
-      <section class="panel">
-        <div class="panel-header"><h2>Key 列表</h2><span>${serverConfig.externalApiKeyCount || 0} 个可用</span></div>
-        <div class="table-wrap">${renderKeyRows(serverConfig)}</div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h2>创建 Key</h2><span>自动生成高熵密钥</span></div>
-        <form id="apiKeyForm" class="form-stack">
-          <label class="field-label">名称</label>
-          <input class="input" name="name" autocomplete="off" placeholder="例如：生产环境网关">
-          <label class="field-label">自定义 Key（可选）</label>
-          <input class="input" name="key" type="password" autocomplete="off" placeholder="留空自动生成 sk-omni-...">
-          <button class="btn btn-primary" type="submit">创建外部 Key</button>
-        </form>
-      </section>
     </div>
   `;
 }

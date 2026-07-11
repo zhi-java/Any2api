@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OmniAPI",
+  "version": "0.1.0",
+  "identifier": "com.omniapi.desktop",
+  "build": {
+    "frontendDist": "../src",
+    "beforeBuildCommand": "node scripts/prepare-core.mjs --force"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "OmniAPI",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/512x512.png",
+      "icons/128x128.png",
+      "icons/32x32.png"
+    ],
+    "resources": [
+      "resources/*"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    },
+    "shortDescription": "本地 AI 网关桌面控制台",
+    "longDescription": "OmniAPI Desktop：托盘控制台 + 首启向导 + 本机 Core 生命周期管理。安装包内含 Core 二进制，无需本机 Node。"
+  },
+  "plugins": {}
+}

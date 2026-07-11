@@ -7,7 +7,11 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:build": "npm --prefix desktop run build",
+    "desktop:prepare-core": "npm --prefix desktop run prepare:core",
+    "pack:core": "npm --prefix desktop run prepare:core:force"
   },
   "dependencies": {
     "ali-oss": "^6.23.0",
