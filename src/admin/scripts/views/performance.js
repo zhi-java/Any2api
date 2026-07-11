@@ -60,10 +60,10 @@ export async function renderPerformance(root, { API }) {
     `;
     const colors = window.ZhiCharts?.CHART_THEME?.colors || {};
     charts = [
-      createLine(root.querySelector('#rpmChart'), [], [dataset('RPM', colors.primary || '#007aff', [])]),
-      createLine(root.querySelector('#latencyChart'), [], [dataset('P50', colors.success || '#0a8f5a', []), dataset('P90', colors.warning || '#b87500', [])]),
-      createLine(root.querySelector('#speedChart'), [], [dataset('Token/s', colors.info || '#5e5ce6', [])]),
-      createLine(root.querySelector('#errorChart'), [], [dataset('错误率', colors.error || '#d92d20', [])]),
+      createLine(root.querySelector('#rpmChart'), [], [dataset('RPM', colors.primary || '#4f46e5', [])]),
+      createLine(root.querySelector('#latencyChart'), [], [dataset('P50', colors.success || '#10b981', []), dataset('P90', colors.warning || '#f59e0b', [])]),
+      createLine(root.querySelector('#speedChart'), [], [dataset('Token/s', colors.info || '#6366f1', [])]),
+      createLine(root.querySelector('#errorChart'), [], [dataset('错误率', colors.error || '#ef4444', [])]),
     ];
     root.querySelectorAll('[data-range]').forEach(button => {
       button.addEventListener('click', () => {
@@ -95,10 +95,10 @@ export async function renderPerformance(root, { API }) {
     setText('[data-metric="errorRate"]', `${metrics.errorRate || 0}%`);
 
     const colors = window.ZhiCharts?.CHART_THEME?.colors || {};
-    updateChart(charts[0], labels, [dataset('RPM', colors.primary || '#007aff', points.map(point => point.rpm || 0))]);
-    updateChart(charts[1], labels, [dataset('P50', colors.success || '#0a8f5a', points.map(point => point.ttfbP50 || 0)), dataset('P90', colors.warning || '#b87500', points.map(point => point.ttfbP90 || 0))]);
-    updateChart(charts[2], labels, [dataset('Token/s', colors.info || '#5e5ce6', points.map(point => point.tokenSpeed || 0))]);
-    updateChart(charts[3], labels, [dataset('错误率', colors.error || '#d92d20', points.map(point => point.errorRate || 0))]);
+    updateChart(charts[0], labels, [dataset('RPM', colors.primary || '#4f46e5', points.map(point => point.rpm || 0))]);
+    updateChart(charts[1], labels, [dataset('P50', colors.success || '#10b981', points.map(point => point.ttfbP50 || 0)), dataset('P90', colors.warning || '#f59e0b', points.map(point => point.ttfbP90 || 0))]);
+    updateChart(charts[2], labels, [dataset('Token/s', colors.info || '#6366f1', points.map(point => point.tokenSpeed || 0))]);
+    updateChart(charts[3], labels, [dataset('错误率', colors.error || '#ef4444', points.map(point => point.errorRate || 0))]);
   }
 
   const polling = new PollingManager(15000);

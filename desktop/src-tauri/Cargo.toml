@@ -1,0 +1,31 @@
+[package]
+name = "omniapi-desktop"
+version = "0.1.0"
+description = "OmniAPI desktop shell"
+authors = ["OmniAPI"]
+edition = "2021"
+
+[lib]
+name = "omniapi_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
+dirs = "5"
+parking_lot = "0.12"
+ureq = { version = "2", features = ["json"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

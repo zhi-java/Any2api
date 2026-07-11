@@ -1,10 +1,32 @@
 import { emptyState, escapeHtml, showToast } from '../ui.js';
 
 const channelMeta = {
-  deepseek: { name: 'DeepSeek', modes: ['token', 'account'] },
-  glm: { name: 'GLM', modes: ['token'] },
-  qwen: { name: 'Qwen', modes: ['token', 'account'] },
-  kimi: { name: 'Kimi', modes: ['token'] },
+  deepseek: {
+    name: 'DeepSeek',
+    modes: ['token', 'account'],
+    tokenLabel: 'userToken',
+    tokenHint: '来源：Local Storage → userToken',
+    accountHint: '账号模式使用上游网页登录账号/密码。如遇验证码或风控，优先使用 Token/Cookie 模式。',
+  },
+  glm: {
+    name: 'GLM',
+    modes: ['token'],
+    tokenLabel: 'chatglm_refresh_token',
+    tokenHint: '来源：智谱清言 Cookies → chatglm_refresh_token',
+  },
+  qwen: {
+    name: 'Qwen',
+    modes: ['token', 'account'],
+    tokenLabel: 'token',
+    tokenHint: '来源：Qwen Studio Cookies → token',
+    accountHint: '账号模式使用上游网页登录账号/密码。如遇验证码或风控，优先使用 Token/Cookie 模式。',
+  },
+  kimi: {
+    name: 'Kimi',
+    modes: ['token'],
+    tokenLabel: 'access_token',
+    tokenHint: '来源：Local Storage → access_token',
+  },
 };
 
 let activeChannel = 'deepseek';
@@ -32,33 +54,49 @@ function renderCredentialRows(channel, config) {
   const accountModeNote = channel === 'deepseek' && config.authMode === 'account-pool' && Number(config.tokenCount || 0) > 0
     ? `<div class="empty-state compact-state"><strong>Token 已隐藏</strong><span>当前使用 DS_ACCOUNTS 账号池，${Number(config.tokenCount || 0)} 个运行时 token 不在后台展示。</span></div>`
     : '';
-  if (!rows.length) return accountModeNote || emptyState(channel === 'glm' && config.guestMode ? '访客模式已启用' : '暂无凭据');
-  return `${accountModeNote}<table class="table"><thead><tr><th>类型</th><th>标识</th><th>状态</th><th></th></tr></thead><tbody>${rows.map(item => `<tr><td>${credentialType(item)}</td><td><code>${escapeHtml(credentialLabel(item))}</code></td><td><span class="badge badge-muted">已保存</span></td><td><button class="btn btn-sm btn-danger" data-action="remove" data-id="${escapeHtml(item.id)}">删除</button></td></tr>`).join('')}</tbody></table>`;
+  if (!rows.length) {
+    return accountModeNote || emptyState(channel === 'glm' && config.guestMode ? '访客模式已启用' : '暂无凭据');
+  }
+  return `${accountModeNote}<table class="table dense-table"><thead><tr><th>类型</th><th>标识</th><th>状态</th><th></th></tr></thead><tbody>${rows.map(item => `<tr><td>${credentialType(item)}</td><td><code>${escapeHtml(credentialLabel(item))}</code></td><td><span class="badge badge-muted">已保存</span></td><td><button class="btn btn-sm btn-danger" data-action="remove" data-id="${escapeHtml(item.id)}">删除</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+function tokenFieldLabel(channel, meta) {
+  if (channel === 'glm') return 'Refresh Token';
+  if (meta.tokenLabel) return `Token（${meta.tokenLabel}）`;
+  return 'Token';
 }
 
 function render(root, configs) {
   const config = configs[activeChannel] || {};
   const meta = channelMeta[activeChannel];
   root.innerHTML = `
-    <div class="tabs">${Object.entries(channelMeta).map(([id, item]) => `<button class="tab ${id === activeChannel ? 'active' : ''}" type="button" data-channel="${id}">${item.name}</button>`).join('')}</div>
-    <div class="content-grid two-columns">
-      <section class="panel">
-        <div class="panel-header"><h2>${meta.name} 凭据</h2><button class="btn btn-secondary" type="button" data-action="test">测试渠道</button></div>
-        <div class="table-wrap">${renderCredentialRows(activeChannel, config)}</div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h2>添加凭据</h2><span>保存后仅显示掩码</span></div>
-        <form id="credentialForm" class="form-stack">
-          ${meta.modes.includes('account') ? `<label class="field-label">类型</label><select class="select" name="type"><option value="token">Token</option><option value="account">账号</option></select>` : `<input type="hidden" name="type" value="token">`}
-          <div data-token-fields>
-            <label class="field-label">Token</label>
-            <input class="input" name="token" type="password" autocomplete="off" placeholder="粘贴 Token">
+    <div class="compact-page credentials-workbench">
+      <div class="tabs compact-tabs credential-tabs">
+        ${Object.entries(channelMeta).map(([id, item]) => `<button class="tab ${id === activeChannel ? 'active' : ''}" type="button" data-channel="${id}">${item.name}</button>`).join('')}
+      </div>
+      <div class="credential-workbench-grid">
+        <section class="panel compact-panel">
+          <div class="panel-header">
+            <h2>${meta.name} 凭据</h2>
+            <button class="btn btn-secondary btn-sm" type="button" data-action="test">测试渠道</button>
           </div>
-          ${meta.modes.includes('account') ? `<div data-account-fields hidden><label class="field-label">邮箱</label><input class="input" name="email" type="email" autocomplete="off"><label class="field-label">密码</label><input class="input" name="password" type="password" autocomplete="off"></div>` : ''}
-          ${activeChannel === 'glm' ? `<label class="switch-row"><input type="checkbox" name="guestMode" ${config.guestMode ? 'checked' : ''}> 启用访客模式</label>` : ''}
-          <button class="btn btn-primary" type="submit">保存</button>
-        </form>
-      </section>
+          <div class="table-wrap bounded-table credential-table-wrap">${renderCredentialRows(activeChannel, config)}</div>
+        </section>
+        <section class="panel compact-panel">
+          <div class="panel-header"><h2>添加凭据</h2><span>保存后仅显示掩码</span></div>
+          <form id="credentialForm" class="form-stack">
+            ${meta.modes.includes('account') ? `<label class="field-label">类型</label><select class="select" name="type"><option value="token">Token</option><option value="account">账号</option></select>` : `<input type="hidden" name="type" value="token">`}
+            <div data-token-fields>
+              <label class="field-label">${escapeHtml(tokenFieldLabel(activeChannel, meta))}</label>
+              <input class="input" name="token" type="password" autocomplete="off" placeholder="粘贴 ${escapeHtml(meta.tokenLabel || 'Token')}">
+              <p class="field-help">${escapeHtml(meta.tokenHint)}</p>
+            </div>
+            ${meta.modes.includes('account') ? `<div data-account-fields hidden><label class="field-label">邮箱 / 账号</label><input class="input" name="email" type="email" autocomplete="off" placeholder="上游网页登录邮箱或账号"><label class="field-label">密码</label><input class="input" name="password" type="password" autocomplete="off" placeholder="上游网页登录密码"><p class="field-help">${escapeHtml(meta.accountHint || '账号模式使用上游网页登录账号/密码。如遇验证码或风控，优先使用 Token/Cookie 模式。')}</p></div>` : ''}
+            ${activeChannel === 'glm' ? `<label class="switch-row"><input type="checkbox" name="guestMode" ${config.guestMode ? 'checked' : ''}> 启用访客模式</label>` : ''}
+            <button class="btn btn-primary" type="submit">保存</button>
+          </form>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -153,7 +191,7 @@ export async function renderCredentials(root, { API }) {
             <div class="test-modal-overlay"></div>
             <div class="test-modal-card">
               <div class="panel-header"><h2>${escapeHtml(channelMeta[activeChannel]?.name || activeChannel)} 测试结果</h2><span>${allOk}/${allCount} 通过</span></div>
-              <div class="table-wrap"><table class="table"><thead><tr><th>凭据</th><th>结果</th><th>消息</th></tr></thead><tbody>${detailRows}</tbody></table></div>
+              <div class="table-wrap"><table class="table dense-table"><thead><tr><th>凭据</th><th>结果</th><th>消息</th></tr></thead><tbody>${detailRows}</tbody></table></div>
               <div class="toolbar" style="justify-content:flex-end"><button class="btn btn-secondary" type="button" data-test-modal-close>关闭</button></div>
             </div>
           `;
