@@ -37,8 +37,8 @@ function toolCallArguments(call) {
   return call?.function?.arguments ?? call?.arguments ?? '{}';
 }
 
-export function buildToolCallIndexFromMessages(messages = []) {
-  const index = new Map();
+export function buildToolCallIndexFromMessages(messages = [], seedIndex = null) {
+  const index = new Map(seedIndex instanceof Map ? seedIndex : []);
   for (const message of messages || []) {
     if (!message || message.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
     for (const call of message.tool_calls) {
@@ -75,22 +75,32 @@ export function formatAssistantToolCallsForAI(toolCalls = [], triggerSignal) {
   return `${triggerSignal}\n<function_calls>\n${xmlCalls}\n</function_calls>`;
 }
 
+// 参数回显只用于帮模型把结果对应回调用（并行调用时靠它区分），
+// 截断以免 Write/Edit 的大参数在历史里出现两遍（XML 一遍、回显一遍）。
+const ARGS_ECHO_MAX_CHARS = 200;
+
+function truncateArgsEcho(toolArguments) {
+  const text = String(toolArguments || '{}');
+  if (text.length <= ARGS_ECHO_MAX_CHARS) return text;
+  return `${text.slice(0, ARGS_ECHO_MAX_CHARS)}…[参数过长已截断，共 ${text.length} 字符]`;
+}
+
 export function formatToolResultForAI(toolName, toolArguments, resultContent) {
-  return `[系统通知] 以下是你刚才调用的工具 \`${toolName}\` 的执行结果。你需要基于此结果继续推理回复用户，不要再次调用已完成的工具。
+  return `[系统通知] 以下是你调用的工具 \`${toolName}\` 的执行结果。
 
 工具名称：${toolName}
-调用参数：${toolArguments || '{}'}
+调用参数：${truncateArgsEcho(toolArguments)}
 执行结果：
 <tool_result>
 ${wrapCdata(resultContent ?? '')}
 </tool_result>
 
-请基于以上结果直接回复用户，或根据需要调用其他工具。`;
+请基于以上结果判断任务进度：未完成则按工具调用格式继续调用所需工具（修改后重新 Read 验证、重新运行测试都是正当调用）；全部完成则直接用自然语言总结回复用户，禁止空回复。不要用完全相同的参数重复这一次已返回结果的调用。`;
 }
 
-export function preprocessMessagesForToolify(messages = [], triggerSignal) {
+export function preprocessMessagesForToolify(messages = [], triggerSignal, seedToolCallIndex = null) {
   if (!triggerSignal) return messages || [];
-  const toolCallIndex = buildToolCallIndexFromMessages(messages);
+  const toolCallIndex = buildToolCallIndexFromMessages(messages, seedToolCallIndex);
   const processed = [];
 
   for (const message of messages || []) {

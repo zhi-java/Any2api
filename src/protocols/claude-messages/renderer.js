@@ -45,6 +45,7 @@ export async function renderClaudeMessagesJSON(res, events, { model } = {}) {
 
   const aggregated = aggregateInternalEvents(collected);
   const content = [];
+  if (aggregated.reasoning) content.push({ type: 'thinking', thinking: aggregated.reasoning });
   if (aggregated.text) content.push({ type: 'text', text: aggregated.text });
   content.push(...toolBlocks(aggregated.toolCalls));
   return res.json({
@@ -70,8 +71,8 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
   let id = null;
   let currentModel = model;
   let messageStarted = false;
-  let textBlockStarted = false;
-  let textBlockStopped = false;
+  let activeBlockType = null;
+  let activeBlockIndex = null;
   let blockIndex = 0;
   const toolBlockIndexes = new Map();
 
@@ -96,20 +97,30 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
     }
   };
 
-  const ensureTextBlockStarted = (event = {}) => {
-    ensureMessageStarted(event);
-    if (!textBlockStarted) {
-      textBlockStarted = true;
-      writeClaudeSSE(res, { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
-    }
+  const closeActiveBlock = () => {
+    if (activeBlockType == null || activeBlockIndex == null) return;
+    writeClaudeSSE(res, { type: 'content_block_stop', index: activeBlockIndex });
+    activeBlockType = null;
+    activeBlockIndex = null;
+    blockIndex++;
   };
 
-  const stopTextBlock = () => {
-    if (textBlockStarted && !textBlockStopped) {
-      writeClaudeSSE(res, { type: 'content_block_stop', index: blockIndex });
-      textBlockStopped = true;
-      blockIndex++;
-    }
+  const ensureTextBlockStarted = (event = {}) => {
+    ensureMessageStarted(event);
+    if (activeBlockType === 'text') return;
+    closeActiveBlock();
+    activeBlockType = 'text';
+    activeBlockIndex = blockIndex;
+    writeClaudeSSE(res, { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'text', text: '' } });
+  };
+
+  const ensureThinkingBlockStarted = (event = {}) => {
+    ensureMessageStarted(event);
+    if (activeBlockType === 'thinking') return;
+    closeActiveBlock();
+    activeBlockType = 'thinking';
+    activeBlockIndex = blockIndex;
+    writeClaudeSSE(res, { type: 'content_block_start', index: activeBlockIndex, content_block: { type: 'thinking', thinking: '' } });
   };
 
   try {
@@ -122,16 +133,20 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
           break;
         case INTERNAL_EVENT_TYPES.TEXT_DELTA:
           ensureTextBlockStarted(event);
-          if (event.delta) writeClaudeSSE(res, { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: event.delta } });
+          if (event.delta) writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: event.delta } });
           break;
         case INTERNAL_EVENT_TYPES.TEXT_DONE:
-          stopTextBlock();
+          if (activeBlockType === 'text') closeActiveBlock();
           break;
         case INTERNAL_EVENT_TYPES.REASONING_DELTA:
-          // Keep current conservative behavior: do not expose reasoning through Claude renderer until policy is finalized.
+          ensureThinkingBlockStarted(event);
+          if (event.delta) writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'thinking_delta', thinking: event.delta } });
+          break;
+        case INTERNAL_EVENT_TYPES.REASONING_DONE:
+          if (activeBlockType === 'thinking') closeActiveBlock();
           break;
         case INTERNAL_EVENT_TYPES.TOOL_CALL_STARTED: {
-          stopTextBlock();
+          closeActiveBlock();
           ensureMessageStarted(event);
           const index = blockIndex++;
           toolBlockIndexes.set(event.toolCallId, index);
@@ -152,14 +167,14 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
         case INTERNAL_EVENT_TYPES.RUN_FAILED:
           ensureMessageStarted(event);
           ensureTextBlockStarted(event);
-          writeClaudeSSE(res, { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: event.error?.message || 'Internal Server Error' } });
-          stopTextBlock();
+          writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: event.error?.message || 'Internal Server Error' } });
+          closeActiveBlock();
           writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
           writeClaudeSSE(res, { type: 'message_stop' });
           safeEnd(res);
           return;
         case INTERNAL_EVENT_TYPES.RUN_COMPLETED:
-          stopTextBlock();
+          closeActiveBlock();
           writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: mapStopReason(event.finishReason), stop_sequence: null }, usage: { output_tokens: event.usage?.outputTokens || 0 } });
           writeClaudeSSE(res, { type: 'message_stop' });
           flushSSE(res);
@@ -170,7 +185,7 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
 
     if (!res.writableEnded) {
       ensureMessageStarted({});
-      stopTextBlock();
+      closeActiveBlock();
       writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
       writeClaudeSSE(res, { type: 'message_stop' });
       safeEnd(res);
@@ -178,8 +193,8 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
   } catch (err) {
     if (!res.headersSent) return writeClaudeProtocolError(res, err);
     ensureTextBlockStarted({});
-    writeClaudeSSE(res, { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: err.message || 'Internal Server Error' } });
-    stopTextBlock();
+    writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: err.message || 'Internal Server Error' } });
+    closeActiveBlock();
     writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
     writeClaudeSSE(res, { type: 'message_stop' });
     safeEnd(res);

@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { getResponseToolCallIndex } from '../../src/services/conversation.js';
 import { renderResponsesJSON, renderResponsesStream } from '../../src/protocols/responses/renderer.js';
 import {
   createMessageDone,
   createMessageStarted,
+  createReasoningDelta,
+  createReasoningDone,
   createRunCompleted,
   createRunStarted,
   createTextDelta,
@@ -96,6 +99,30 @@ test('Responses stream renderer closes empty text content parts', async () => {
   assert.match(wire, /event: response\.content_part\.done/);
 });
 
+test('Responses stream renderer emits reasoning summary events before text', async () => {
+  const requestId = 'req_reasoning';
+  const responseId = 'resp_reasoning';
+  const messageId = 'msg_reasoning';
+  const res = streamRes();
+  await renderResponsesStream(res, asyncEvents([
+    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' }),
+    createReasoningDelta({ requestId, responseId, messageId, delta: '先分析需求。' }),
+    createReasoningDone({ requestId, responseId, messageId, text: '先分析需求。' }),
+    createMessageStarted({ requestId, responseId, messageId }),
+    createTextDelta({ requestId, responseId, messageId, delta: '结果' }),
+    createRunCompleted({ requestId, responseId, finishReason: 'stop' }),
+  ]), { model: 'deepseek-v4-flash' });
+  const wire = res.chunks.join('');
+  assert.match(wire, /event: response\.reasoning_summary_part\.added/);
+  assert.match(wire, /event: response\.reasoning_summary_text\.delta/);
+  assert.match(wire, /"delta":"先分析需求。"/);
+  assert.ok(wire.indexOf('response.reasoning_summary_text.delta') < wire.indexOf('response.output_text.delta'));
+  const completed = wire.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(p => p.type === 'response.completed');
+  assert.equal(completed.response.output[0].type, 'reasoning');
+  assert.equal(completed.response.output[0].summary[0].text, '先分析需求。');
+  assert.equal(completed.response.output[1].type, 'message');
+});
+
 test('Responses stream renderer keeps tool call output indices consistent', async () => {
   const requestId = 'req_tool';
   const responseId = 'resp_tool';
@@ -116,6 +143,21 @@ test('Responses stream renderer keeps tool call output indices consistent', asyn
   assert.equal(added.output_index, 1);
   assert.equal(delta.output_index, added.output_index);
   assert.equal(done.output_index, added.output_index);
+  const recorded = getResponseToolCallIndex(responseId);
+  assert.deepEqual(recorded.get('call_1'), { name: 'Read', arguments: '{"file_path":"README.md"}' });
+});
+
+test('Responses stream records tool call before stream completion for immediate follow-up tool output', async () => {
+  const requestId = 'req_tool_early';
+  const responseId = 'resp_tool_early';
+  const messageId = 'msg_tool_early';
+  const res = streamRes();
+  async function* interruptedEvents() {
+    yield createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' });
+    yield createToolCallDone({ requestId, responseId, messageId, toolCallId: 'call_early', index: 0, name: 'Read', arguments: '{"file_path":"README.md"}' });
+    assert.deepEqual(getResponseToolCallIndex(responseId).get('call_early'), { name: 'Read', arguments: '{"file_path":"README.md"}' });
+  }
+  await renderResponsesStream(res, interruptedEvents(), { model: 'deepseek-v4-flash' });
 });
 
 test('Responses stream renderer adds fallback tool item for tool_call.done only', async () => {

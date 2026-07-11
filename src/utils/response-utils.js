@@ -1277,12 +1277,37 @@ export function buildPromptFromMessages(messages) {
 }
 
 export function buildLatestPrompt(messages) {
+  // 从最后一条 assistant 消息之后开始截取：并行工具调用的多条结果会被
+  // toolify 拆成多条连续 user 消息，只取"最后一条 user"会丢掉前面的结果。
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') { lastAssistantIdx = i; break; }
+  }
+  const start = lastAssistantIdx + 1;
+  if (start > 0 && start < messages.length) {
+    return buildPromptInner(messages, start, messages.length);
+  }
   let lastUserIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'user') { lastUserIdx = i; break; }
   }
   if (lastUserIdx === -1) return buildPromptFromMessages(messages);
   return buildPromptInner(messages, lastUserIdx, messages.length);
+}
+
+/**
+ * 亲和增量模式：根据前缀匹配结果计算本轮新增消息的起始下标。
+ * 跳过增量开头的 assistant 消息——那是上游会话自己生成的上一轮回复，
+ * 通过 parent_message_id 已经链上，重发会在上游上下文里出现两份。
+ * 返回 null 表示无法确定精确增量（调用方回退到启发式截取或完整历史）。
+ */
+export function latestDeltaStartIndex(messages, matchedPrefixLength) {
+  if (!Array.isArray(messages)) return null;
+  if (!Number.isInteger(matchedPrefixLength) || matchedPrefixLength <= 0) return null;
+  if (matchedPrefixLength >= messages.length) return null;
+  let start = matchedPrefixLength;
+  while (start < messages.length && messages[start]?.role === 'assistant') start++;
+  return start < messages.length ? start : null;
 }
 
 /**

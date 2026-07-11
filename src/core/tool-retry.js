@@ -57,6 +57,107 @@ ${errorDetails}${toolListText}
 现在请输出修正后的工具调用，不要输出任何其他内容。`;
 }
 
+function toolNamesText(tools = []) {
+  return tools.map(t => t.function?.name || t.name).filter(Boolean).join('\n- ');
+}
+
+// 源码/资源文件扩展名：模型常直接点名 Xxx.kt / main.ts
+const SOURCE_FILE_EXT =
+  /\.(?:[jt]sx?|mjs|cjs|json|ya?ml|toml|md|txt|kt|kts|java|go|rs|py|rb|php|swift|cs|cpp|cc|cxx|h|hpp|vue|svelte|css|scss|less|html?|xml|gradle|properties|ini|env|sh|bash|ps1|bat|cmd|sql|proto|graphql|tf|hcl)\b/i;
+
+// 路径片段：D:\repo\... 或 src/main/java/...
+const PATH_LIKE =
+  /(?:[A-Za-z]:\\|\\\\|\/)?(?:[\w.-]+[\\/]){1,}[\w.-]+/;
+
+// 类/组件符号：LoginFragment、SettingsScreen、MainActivity
+const CODE_SYMBOL =
+  /\b[A-Z][A-Za-z0-9]*(?:Screen|Activity|Fragment|View|ViewModel|Controller|Service|Repository|Adapter|Helper|Utils|Manager|Provider|Factory|Module|Component|Page|Dialog|Sheet|Composable|Router|Handler|Interceptor|Config|Theme|Type|Style)\b/;
+
+function toolNameSet(tools = []) {
+  return new Set((tools || []).map(t => String(t.function?.name || t.name || '').toLowerCase()));
+}
+
+function hasAnyTool(toolNames, needles) {
+  return needles.some(name => [...toolNames].some(tool => tool === name || tool.includes(name)));
+}
+
+export function isMissingToolCallIntent(content, tools = []) {
+  const text = String(content || '').trim();
+  if (!text) return false;
+  if (/<function_calls\b|<function_call\b/i.test(text)) return false;
+  const lower = text.toLowerCase();
+  const toolNames = toolNameSet(tools);
+
+  const hasCodingTools = hasAnyTool(toolNames, [
+    'read', 'glob', 'grep', 'bash', 'edit', 'write', 'ls', 'list', 'shell',
+    'applypatch', 'apply_patch', 'notebookedit', 'multiedit', 'search',
+  ]);
+  const hasInteractiveTools = hasAnyTool(toolNames, [
+    'askuserquestion', 'ask_user', 'askuser', 'askq', 'question',
+  ]);
+  if (!hasCodingTools && !hasInteractiveTools) return false;
+
+  // 目标对象：抽象词 + 扩展名 + 路径 + 代码符号
+  const hasCodingTarget = /(项目|代码|文件|目录|结构|文档|README|package|测试|命令|日志|配置|技术栈|模块|架构|内容|页面|设置|界面|布局|样式|功能|逻辑|实现|源码|源代码|工程|仓库|组件|类|函数|方法|脚本|配置文件|源文件|设计系统|主题|主题色|排版|间距|视觉)/i.test(text)
+    || SOURCE_FILE_EXT.test(text)
+    || /[A-Za-z][\w.-]*\.(?:[jt]sx?|kt|kts|java|go|rs|py|json|md|xml|gradle)\b/.test(text)
+    || PATH_LIKE.test(text)
+    || CODE_SYMBOL.test(text);
+
+  // 动作主体：覆盖“我们来/我会先/先并行读取/定位到”等
+  const chineseIntent = /(我|先|现在|接下来|马上|准备|开始|需要|将|会|为你|我们来|我们先|我先|我会先|我现在|我准备|并行|去).{0,48}(读取|查看|搜索|检索|检查|打开|列出|扫描|运行|执行|修改|编辑|写入|创建|探索|分析|梳理|了解|浏览|定位|遍历|获取|查找|找出|看看|查询|查查|调查|抓取|提取|调取|拉取|取得|取出|翻看|翻阅|定位到|导航到|进入|实施)/i.test(text)
+    && hasCodingTarget;
+
+  // 结构性兜底："我们先X，以便Y" / "我来X来帮你Y" / "我会先X，以确保Y"
+  const structuralIntent = /(我们先|我们来|我来|我先|我会先|我准备|我现在|接下来).{2,80}(以便|为了|从而|来帮你|来给|来为|来快速|来高效|来准确|来系统|来完整|来深入|来全面|以确保|好确保|保证|方便|用于|与现有|以便进行|再开始|再继续|再改)/i.test(text)
+    && hasCodingTarget;
+
+  // "先定位到 XxxFragment 再继续" —— 动词与目标粘在一起、主语可省略
+  const locateSymbolIntent = /(先|接下来|现在|马上)?(定位到|导航到|打开|检查|查看|读取)\s*[A-Z][A-Za-z0-9_]*(?:Screen|Activity|Fragment|View|ViewModel|Controller|Service|Repository|Adapter|Page|Dialog|Component|Module)?/i.test(text);
+
+  const englishIntent = /\b(i|i'll|i will|let me|first|now|next|we will|we'll)\b.{0,80}\b(read|inspect|check|search|grep|list|scan|open|run|execute|edit|modify|write|create|explore|analyze|examine|browse|review|fetch|retrieve|find|look up|locate|navigate|grab|pull)\b/i.test(lower)
+    && (/\b(project|code|file|directory|repo|repository|readme|package|test|command|log|config|structure|module|architecture|content|page|setting|layout|style|function|logic|implementation|source|component|class)\b/i.test(lower)
+      || SOURCE_FILE_EXT.test(text)
+      || PATH_LIKE.test(text)
+      || CODE_SYMBOL.test(text));
+
+  const englishStructural = /\b(i'll|i will|let me|first let me|now let me|we'll|we will)\b.{5,80}\b(to|and then|in order to|so (?:that|i|we)|to ensure|to keep)\b/i.test(lower)
+    && (/\b(file|code|project|repo|directory|content|page|component)\b/i.test(lower)
+      || SOURCE_FILE_EXT.test(text)
+      || PATH_LIKE.test(text)
+      || CODE_SYMBOL.test(text));
+
+  // 交互工具意图：确认/选择/提问但未输出工具 XML
+  const interactiveIntent = hasInteractiveTools && (
+    /(我|先|现在|接下来|准备|需要|想|会).{0,24}(确认|询问|提问|问一下|征求|选择|让你选|请你选|请确认|请选择)/i.test(text)
+    || /(是否允许|是否同意|要不要|可不可以|哪个方案|哪种方案)/i.test(text)
+  );
+
+  if (!hasCodingTools) return interactiveIntent;
+  return chineseIntent || structuralIntent || locateSymbolIntent || englishIntent || englishStructural || interactiveIntent;
+}
+
+export function getMissingToolCallRetryPrompt(originalResponse, triggerSignal, tools = []) {
+  const names = toolNamesText(tools);
+  const toolListText = names ? `\n可用工具列表：\n- ${names}` : '';
+  return `你上一次的回复表示要执行工具操作，但没有输出任何可执行的工具调用结构。
+
+你的原始输出：
+\`\`\`
+${originalResponse}
+\`\`\`
+${toolListText}
+
+如果你确实需要读取/搜索/运行/修改项目内容，或需要向用户提问确认，请立即重试，只输出工具调用 XML：
+1. 触发信号独占一行，精确为：${triggerSignal}
+2. 紧跟 <function_calls> XML 块
+3. <args_json> 内必须是合法 JSON 对象，并用 <![CDATA[...]]> 包裹
+4. 参数必须与工具 schema 匹配
+5. </function_calls> 之后不得有任何文字
+
+不要再输出计划、说明或道歉；现在只输出要执行的工具调用。`;
+}
+
 export function getToolContinuationPrompt(truncatedContent, errorDetails) {
   const tail = String(truncatedContent || '').slice(-1500);
   return `你上一次的输出在工具调用 XML 完成前被截断了。
