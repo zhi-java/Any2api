@@ -1,4 +1,4 @@
-import { findLastTriggerSignalOutsideThink } from './prompt-strategy.js';
+import { detectFileMutationTools, findLastTriggerSignalOutsideThink } from './prompt-strategy.js';
 import { getConfig } from '../services/config-store.js';
 
 export function isFcErrorRetryEnabled() {
@@ -32,6 +32,15 @@ export function diagnoseToolParseError(content, triggerSignal, parseResult = nul
   return errors.join('; ') || 'XML structure appears malformed or arguments failed validation';
 }
 
+// 格式纠错/意图重试时的 Edit 优先引导：真实场景中模型在编辑工具格式失败后
+// 常"降级"改用写入工具整文件重写来绕开精确匹配，这比格式错误更危险。
+// 只有编辑类与写入类工具同时存在时才注入，且只引用真实存在的工具名。
+function editFirstRetryNote(tools = []) {
+  const { editNames, writeNames } = detectFileMutationTools(tools);
+  if (!editNames.length || !writeNames.length) return '';
+  return `\n\n工具选择提醒：如果这次操作是在修改一个已存在的文件，修正格式后必须继续用 ${editNames.join('/')} 完成同一处精确替换；禁止为了绕开格式错误或精确匹配失败而改用 ${writeNames.join('/')} 整文件重写——那会删除所有未复述进参数的内容。${writeNames.join('/')} 只用于创建新文件，或用户明确要求且你已读过全文的整文件重写。`;
+}
+
 export function getToolErrorRetryPrompt(originalResponse, errorDetails, triggerSignal, tools = []) {
   const toolListText = tools.length
     ? `\n可用工具列表：\n${tools.map(t => `- ${t.function?.name || t.name}`).join('\n')}`
@@ -52,7 +61,7 @@ ${errorDetails}${toolListText}
 2. 紧跟 <function_calls> XML 块
 3. <args_json> 内必须是合法的 JSON 对象
 4. 参数必须与上方工具列表中声明的 schema 匹配
-5. </function_calls> 之后不得有任何文字
+5. </function_calls> 之后不得有任何文字${editFirstRetryNote(tools)}
 
 现在请输出修正后的工具调用，不要输出任何其他内容。`;
 }
@@ -153,13 +162,19 @@ ${toolListText}
 2. 紧跟 <function_calls> XML 块
 3. <args_json> 内必须是合法 JSON 对象，并用 <![CDATA[...]]> 包裹
 4. 参数必须与工具 schema 匹配
-5. </function_calls> 之后不得有任何文字
+5. </function_calls> 之后不得有任何文字${editFirstRetryNote(tools)}
 
 不要再输出计划、说明或道歉；现在只输出要执行的工具调用。`;
 }
 
-export function getToolContinuationPrompt(truncatedContent, errorDetails) {
+export function getToolContinuationPrompt(truncatedContent, errorDetails, tools = []) {
   const tail = String(truncatedContent || '').slice(-1500);
+  // 截断最常发生在超大 content/new_string 里。有编辑+写入工具时提示改用
+  // 分段模式重来，避免"重发全量 → 再次截断"的循环。
+  const { editNames, writeNames } = detectFileMutationTools(tools);
+  const segmentNote = editNames.length && writeNames.length
+    ? `\n\n分段提示：如果这次截断发生在很长的文件内容参数里，说明单次输出过大。选择选项 B 重来时禁止再一次性输出全部内容——新建文件先用 ${writeNames[0]} 写入第一段并在结尾留一行全文件唯一的续写标记，后续轮次用 ${editNames[0]} 把标记替换为下一段；修改已有文件则拆成多个小 ${editNames[0]}，跨多轮完成。`
+    : '';
   return `你上一次的输出在工具调用 XML 完成前被截断了。
 
 被截断的输出：
@@ -183,7 +198,7 @@ ${errorDetails}
 选项 B（仅当你认为之前的输出有错误时）：
 从头开始，输出完整的函数调用。先输出触发信号独占一行，然后完整输出 function_calls 块。
 
-请选择选项 A，除非你确信之前的输出包含需要纠正的错误。`;
+请选择选项 A，除非你确信之前的输出包含需要纠正的错误。${segmentNote}`;
 }
 
 export function isContinuationResponse(retryContent, triggerSignal) {
@@ -243,7 +258,7 @@ export async function attemptToolParseWithRetry({
 
     const errorDetails = diagnoseToolParseError(currentContent, promptPlan.triggerSignal, lastResult);
     const retryPrompt = failureType === 'truncated'
-      ? getToolContinuationPrompt(currentContent, errorDetails)
+      ? getToolContinuationPrompt(currentContent, errorDetails, promptPlan.tools)
       : getToolErrorRetryPrompt(currentContent, errorDetails, promptPlan.triggerSignal, promptPlan.tools);
 
     const retryContent = await retryToolRequest({
