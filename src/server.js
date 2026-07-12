@@ -65,8 +65,16 @@ export function createApp() {
     if (!req.path.startsWith('/v1')) return next();
     if (getAcceptedApiKeys().length === 0) return next();
 
+    // 兼容三种认证方式：
+    // 1. Authorization: Bearer <key>
+    // 2. api-key: <key>
+    // 3. x-api-key: <key>
     const auth = req.headers?.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    const apiKeyHdr = req.headers?.['api-key'] || '';
+    const xApiKeyHdr = req.headers?.['x-api-key'] || '';
+    const token = (auth.startsWith('Bearer ') ? auth.slice(7).trim() : '')
+      || apiKeyHdr.trim()
+      || xApiKeyHdr.trim();
     if (token && isAcceptedApiKey(token)) return next();
 
     return res.status(401).json({

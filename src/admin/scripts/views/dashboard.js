@@ -59,13 +59,7 @@ export async function renderDashboard(root, { API }) {
                 <div class="label">服务状态</div>
                 <div class="status-word ${health.cls}" data-metric="healthWord">${health.text}</div>
               </div>
-              <button
-                type="button"
-                class="service-toggle"
-                data-action="toggle-display"
-                aria-checked="true"
-                title="网关进程由服务端管理；此处展示运行态"
-              ></button>
+              <span class="badge badge-muted">自动托管</span>
             </div>
             <div class="endpoint-well">
               <code data-metric="endpoint">${escapeHtml(endpoint)}</code>
@@ -203,13 +197,6 @@ export async function renderDashboard(root, { API }) {
     if (word) {
       word.textContent = health.text;
       word.className = `status-word ${health.cls}`;
-    }
-
-    const toggle = root.querySelector('[data-action="toggle-display"]');
-    if (toggle) {
-      const on = health.cls !== 'is-bad';
-      toggle.classList.toggle('is-off', !on);
-      toggle.setAttribute('aria-checked', on ? 'true' : 'false');
     }
 
     setText('[data-metric="endpoint"]', endpoint);

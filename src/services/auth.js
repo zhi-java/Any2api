@@ -483,6 +483,18 @@ export async function getToken(preferVision = false) {
 // Legacy: email/password login (adds to pool dynamically)
 export async function loginAndAddToken(email, password) {
   const token = await login(email, password);
+  // 优先更新同一邮箱名下 token 为 null 的旧条目，避免 push 后出现双条目
+  // （一个旧 null-token + 一个新 token），导致 admin 测试回路报"无可用 Token"。
+  const nullEntry = tokenPool.find(t => t.email === email && !t.token);
+  if (nullEntry) {
+    nullEntry.token = token;
+    nullEntry.errorCount = 0;
+    nullEntry.dead = false;
+    const vision = await checkVisionCapability(token);
+    nullEntry.visionCapable = vision;
+    persistTokensToConfig();
+    return token;
+  }
   const existing = tokenPool.find(t => t.token === token);
   if (!existing) {
     const vision = await checkVisionCapability(token);

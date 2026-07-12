@@ -222,6 +222,12 @@ export class GlmTokenManager {
     return json.result;
   }
 
+  /** 校验指定 refresh token：不轮询池、不降级访客，成功则写入缓存并处理轮换。 */
+  async testRefreshToken(refreshToken) {
+    const accessToken = await this._getAccessTokenForRefresh(refreshToken);
+    return Boolean(accessToken);
+  }
+
   /** 重置认证状态（外部调用，如发现 401 时） */
   reset() {
     this.tokenCache.clear();

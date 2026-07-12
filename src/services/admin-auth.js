@@ -35,8 +35,14 @@ export function hasValidAdminAuth(req) {
   const apiKey = getAdminApiKey();
   if (!apiKey) return true;
 
+  // 兼容三种认证方式，与 /v1/ 中间件保持一致
   const auth = req.headers?.authorization || '';
-  if (auth === `Bearer ${apiKey}`) return true;
+  const apiKeyHeader = req.headers?.['api-key'] || '';
+  const xApiKey = req.headers?.['x-api-key'] || '';
+  const token = (auth.startsWith('Bearer ') ? auth.slice(7).trim() : '')
+    || apiKeyHeader.trim()
+    || xApiKey.trim();
+  if (token === apiKey) return true;
 
   const cookies = parseCookies(req.headers?.cookie);
   return safeEqual(cookies[ADMIN_SESSION_COOKIE], sessionValue(apiKey));

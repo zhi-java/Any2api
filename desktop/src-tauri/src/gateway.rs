@@ -53,6 +53,66 @@ pub struct CoreManager {
     resource_dir: Mutex<Option<PathBuf>>,
 }
 
+/// Kill any process listening on the given TCP port.
+/// Used as a pre-start cleanup and as a fallback when the child handle is lost.
+/// 只匹配 LISTENING 状态且本地地址正好是该端口的行——此前用
+/// `findstr :{port}` 会把远端地址、前缀端口（:87871）甚至连着该端口的
+/// 浏览器/WebView 进程一并强杀。
+fn kill_port_process(port: u16) {
+    use std::process::Command;
+    #[cfg(windows)]
+    {
+        let output = Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        let suffix = format!(":{port}");
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // TCP  0.0.0.0:8787  0.0.0.0:0  LISTENING  1234
+                if parts.len() < 5 || !parts[0].eq_ignore_ascii_case("tcp") {
+                    continue;
+                }
+                if !parts[3].eq_ignore_ascii_case("listening") || !parts[1].ends_with(&suffix) {
+                    continue;
+                }
+                if let Ok(pid) = parts[4].parse::<u32>() {
+                    if pid == 0 || pid == std::process::id() {
+                        continue;
+                    }
+                    println!("[gateway] Kill ghost PID {pid} on port {port}");
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .status();
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("sh")
+            .args(["-c", &format!("lsof -ti tcp:{} -sTCP:LISTEN", port)])
+            .output();
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for pid_str in text.split_whitespace() {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if pid == std::process::id() { continue; }
+                    println!("[gateway] Kill ghost PID {pid} on port {port}");
+                    let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+                }
+            }
+        }
+    }
+}
+
 impl CoreManager {
     pub fn new(repo_root: PathBuf) -> Self {
         Self {
@@ -79,31 +139,32 @@ impl CoreManager {
     }
 
     pub fn start(&self, cfg: &DesktopConfig) -> Result<CoreStatus, String> {
-        {
+        // 如果仍持有旧 child（例如停止后立刻启动），先取出并在锁外清理，
+        // 避免旧停止线程/旧 child 干扰新启动。
+        let stale_child = {
             let mut g = self.inner.lock();
-            if let Some(child) = g.child.as_mut() {
-                match child.try_wait() {
-                    Ok(None) => {
-                        g.state = CoreState::Starting;
-                        return Ok(self.status_unlocked(cfg, &g));
-                    }
-                    Ok(Some(_)) | Err(_) => {
-                        g.child = None;
-                    }
-                }
-            }
+            let child = g.child.take();
             g.intentional_stop = false;
             g.state = CoreState::Starting;
             g.last_error = None;
+            child
+        };
+
+        if let Some(mut child) = stale_child {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => {}
+                Ok(None) => {
+                    let pid = child.id();
+                    println!("[gateway] Old child PID {pid} still alive before start, force-killing");
+                    self.kill_process_force(pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
         }
 
-        // If something already answers healthz, don't double-start.
-        if healthz_sync(cfg).unwrap_or(false) {
-            let mut g = self.inner.lock();
-            g.state = CoreState::Running;
-            g.started_at = Some(Instant::now());
-            return Ok(self.status_unlocked(cfg, &g));
-        }
+        // 强制清理端口上可能残留的旧进程，确保后续 spawn 的新进程是我们自己的 child。
+        kill_port_process(cfg.port);
 
         let launch = resolve_launch(&self.repo_root, self.resource_dir.lock().clone())?;
         let data_dir = data_dir();
@@ -123,7 +184,7 @@ impl CoreManager {
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             format!(
                 "无法启动 Core ({} {}): {}",
                 launch.program.display(),
@@ -132,95 +193,200 @@ impl CoreManager {
             )
         })?;
 
+        // stderr 必须持续排水：管道写满（~64KB）后子进程的所有 console.warn/error
+        // 都会阻塞，核心表现为"跑着跑着卡死"。顺带把内容落盘，方便排查启动失败。
+        if let Some(mut stderr) = child.stderr.take() {
+            let log_path = data_dir.join("logs").join("core-stderr.log");
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                if let Some(parent) = log_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut file = std::fs::File::create(&log_path).ok();
+                const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+                let mut written: u64 = 0;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match stderr.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if written < MAX_LOG_BYTES {
+                                if let Some(f) = file.as_mut() {
+                                    let take = (MAX_LOG_BYTES - written).min(n as u64) as usize;
+                                    let _ = f.write_all(&buf[..take]);
+                                    written += take as u64;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        {
+            let mut g = self.inner.lock();
+            g.child = Some(child);
+            g.state = CoreState::Starting;
+            g.started_at = Some(Instant::now());
+            g.restart_attempts = 0;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if healthz_sync(cfg).unwrap_or(false) {
+                let mut g = self.inner.lock();
+                g.state = CoreState::Running;
+                g.last_error = None;
+                return Ok(self.status_unlocked(cfg, &g));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
         let mut g = self.inner.lock();
-        g.child = Some(child);
-        g.state = CoreState::Starting;
-        g.started_at = Some(Instant::now());
-        g.restart_attempts = 0;
+        g.state = CoreState::Crashed;
+        g.last_error = Some("启动超时：/healthz 无响应".into());
         Ok(self.status_unlocked(cfg, &g))
     }
 
     pub fn stop(&self, cfg: &DesktopConfig) -> Result<CoreStatus, String> {
-        let mut g = self.inner.lock();
-        g.intentional_stop = true;
-        if let Some(child) = g.child.take() {
+        let child_opt = {
+            let mut g = self.inner.lock();
+            // 已停止且无子进程：直接返回，保证退出路径上重复调用不再触发
+            // 端口扫描 + 健康等待（那会让"退出"看起来卡住几秒）。
+            if g.child.is_none() && matches!(g.state, CoreState::Stopped) {
+                g.intentional_stop = true;
+                return Ok(self.status_unlocked(cfg, &g));
+            }
+            g.intentional_stop = true;
+            g.child.take()
+        };
+
+        let mut child_confirmed_dead = false;
+        if let Some(mut child) = child_opt {
             let pid = child.id();
-
-            // Preferred: kill the child process.
-            // On Windows, child.kill() calls TerminateProcess.
-            // As a belt-and-suspenders measure, also issue
-            // `taskkill /T /PID <pid>` to terminate the full process tree
-            // including any JS child workers or npm subprocesses.
-            let _ = self.child_kill_with_tree(pid, true);
-
-            // Wait the child we spawned so its zombie is reaped.
-            // Killing a process tree may have already killed this child,
-            // but we still need the parent Child handle finalised.
-            let _ = self.wait_child(child);
+            // 无窗口控制台进程收不到 WM_CLOSE，graceful taskkill 通常直接失败；
+            // 失败就立即强杀，成功才给最多 800ms 的自然退出窗口。
+            let grace_deadline = if self.kill_process_graceful(pid) {
+                Instant::now() + Duration::from_millis(800)
+            } else {
+                Instant::now()
+            };
+            loop {
+                if child.try_wait().ok().flatten().is_some() {
+                    child_confirmed_dead = true;
+                    break;
+                }
+                if Instant::now() >= grace_deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            if !child_confirmed_dead {
+                self.kill_process_force(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                child_confirmed_dead = true;
+            }
+            println!("[gateway] Core stopped: PID {pid}");
+        } else {
+            // 兜底：child handle 丢失（例如 healthz 快捷路径导致），
+            // 仍然尝试通过端口杀掉残留进程。
+            println!("[gateway] No child handle, killing any process on port {}", cfg.port);
+            kill_port_process(cfg.port);
         }
-        g.state = CoreState::Stopped;
-        g.last_error = None;
+
+        // 子进程已确认退出时端口随之释放，无需等待 healthz 消失；
+        // 只有孤儿进程路径才需要有界复查。
+        let mut still_alive = false;
+        if !child_confirmed_dead {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if !healthz_sync(cfg).unwrap_or(false) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            still_alive = healthz_sync(cfg).unwrap_or(false);
+            if still_alive {
+                println!("[gateway] healthz still alive after stop, killing port {}", cfg.port);
+                kill_port_process(cfg.port);
+            }
+        }
+
+        let mut g = self.inner.lock();
+        // 仅在用户仍想停止时才覆写状态。如果 start 已经把 intentional_stop
+        // 重置为 false（快速点击 停止→启动），则不要覆盖。
+        if g.intentional_stop {
+            g.state = CoreState::Stopped;
+            g.last_error = if still_alive {
+                Some("停止失败：/healthz 仍可访问".into())
+            } else {
+                None
+            };
+        }
         Ok(self.status_unlocked(cfg, &g))
     }
 
+    /// Whether a managed child process is currently held.
+    pub fn has_child(&self) -> bool {
+        self.inner.lock().child.is_some()
+    }
+
     #[cfg(windows)]
-    fn child_kill_with_tree(&self, pid: u32, graceful: bool) -> std::io::Result<()> {
+    fn kill_process_graceful(&self, pid: u32) -> bool {
         use std::process::Command;
-        if graceful {
-            // Send Ctrl-C-ish close then escalate to termination.
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            std::thread::sleep(Duration::from_millis(200));
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!("[gateway] Graceful kill sent to PID {pid}");
+                true
+            }
+            Ok(s) => {
+                eprintln!("[gateway] Graceful kill PID {pid} returned {s}");
+                false
+            }
+            Err(e) => {
+                eprintln!("[gateway] Graceful kill PID {pid} failed: {e}");
+                false
+            }
         }
+    }
+
+    #[cfg(windows)]
+    fn kill_process_force(&self, pid: u32) {
+        use std::process::Command;
         let status = Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()?;
-        if !status.success() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("taskkill /T failed with {}", status),
-            ));
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("[gateway] Force kill PID {pid} tree succeeded"),
+            Ok(s) => eprintln!("[gateway] Force kill PID {pid} tree returned {s}"),
+            Err(e) => eprintln!("[gateway] Force kill PID {pid} tree failed: {e}"),
         }
-        Ok(())
     }
 
     #[cfg(not(windows))]
-    fn child_kill_with_tree(&self, pid: u32, _graceful: bool) -> std::io::Result<()> {
+    fn kill_process_graceful(&self, pid: u32) -> bool {
         use std::process::Command;
-        // Unix: kill process group (-pid).
-        let _ = Command::new("kill")
-            .args(["-TERM", &format!("-{}", pid)])
-            .status();
-        std::thread::sleep(Duration::from_millis(200));
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{}", pid)])
-            .status();
-        Ok(())
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
-    fn wait_child(&self, mut child: Child) {
-        // Try a brief wait first; if that times out the process was
-        // killed externally and we can stop.
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(5) {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-                Err(_) => return,
-            }
-        }
-        let _ = child.kill();
-    }
-
-    pub fn restart(&self, cfg: &DesktopConfig) -> Result<CoreStatus, String> {
-        let _ = self.stop(cfg);
-        std::thread::sleep(Duration::from_millis(400));
-        self.start(cfg)
+    #[cfg(not(windows))]
+    fn kill_process_force(&self, pid: u32) {
+        use std::process::Command;
+        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
     }
 
     /// Poll child + health endpoint; update state; maybe auto-restart.
@@ -249,7 +415,10 @@ impl CoreManager {
         let healthy = healthz_sync(cfg).unwrap_or(false);
         {
             let mut g = self.inner.lock();
-            if healthy {
+            if g.intentional_stop {
+                // 用户主动点了停止——不要因为旧进程 healthz 还活着就复活 state
+                // 等后台线程杀完进程后 tick 自然会看到 child 退出 + intentional_stop
+            } else if healthy {
                 g.state = CoreState::Running;
                 g.restart_attempts = 0;
             } else if matches!(g.state, CoreState::Starting) {

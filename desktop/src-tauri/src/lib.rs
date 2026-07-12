@@ -25,7 +25,6 @@ struct AppState {
     config: parking_lot::Mutex<DesktopConfig>,
     tray: parking_lot::Mutex<Option<TrayIcon>>,
     tray_status_item: parking_lot::Mutex<Option<MenuItem<tauri::Wry>>>,
-    tray_toggle_item: parking_lot::Mutex<Option<MenuItem<tauri::Wry>>>,
     last_notified_state: parking_lot::Mutex<Option<CoreState>>,
 }
 
@@ -75,13 +74,6 @@ fn status_menu_label(status: &CoreStatus) -> String {
         CoreState::Stopped => "○",
     };
     format!("{} {}", icon, status.message)
-}
-
-fn toggle_menu_label(status: &CoreStatus) -> &'static str {
-    match status.state {
-        CoreState::Running | CoreState::Degraded | CoreState::Starting => "停止网关",
-        CoreState::Stopped | CoreState::Crashed => "启动网关",
-    }
 }
 
 fn notify(app: &AppHandle, title: &str, body: &str) {
@@ -150,32 +142,6 @@ fn get_shell_info(app: AppHandle, state: State<'_, AppState>) -> ShellInfo {
 fn get_core_status(state: State<'_, AppState>) -> CoreStatus {
     let cfg = state.config.lock().clone();
     state.core.tick(&cfg)
-}
-
-#[tauri::command]
-fn start_core(app: AppHandle, state: State<'_, AppState>) -> Result<CoreStatus, String> {
-    let cfg = state.config.lock().clone();
-    let status = state.core.start(&cfg)?;
-    update_tray_visual(&app, &status);
-    Ok(status)
-}
-
-#[tauri::command]
-fn stop_core(app: AppHandle, state: State<'_, AppState>) -> Result<CoreStatus, String> {
-    let cfg = state.config.lock().clone();
-    let status = state.core.stop(&cfg)?;
-    *state.last_notified_state.lock() = Some(CoreState::Stopped);
-    update_tray_visual(&app, &status);
-    Ok(status)
-}
-
-#[tauri::command]
-fn restart_core(app: AppHandle, state: State<'_, AppState>) -> Result<CoreStatus, String> {
-    let cfg = state.config.lock().clone();
-    let status = state.core.restart(&cfg)?;
-    *state.last_notified_state.lock() = Some(status.state.clone());
-    update_tray_visual(&app, &status);
-    Ok(status)
 }
 
 #[tauri::command]
@@ -345,9 +311,6 @@ fn update_tray_visual(app: &AppHandle, status: &CoreStatus) {
         if let Some(item) = state.tray_status_item.lock().as_ref() {
             let _ = item.set_text(status_menu_label(status));
         }
-        if let Some(item) = state.tray_toggle_item.lock().as_ref() {
-            let _ = item.set_text(toggle_menu_label(status));
-        }
     }
 }
 
@@ -380,14 +343,6 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let open_i = MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?;
     let copy_i = MenuItem::with_id(app, "copy", "复制 API 地址", true, None::<&str>)?;
-    let toggle_i = MenuItem::with_id(
-        app,
-        "toggle",
-        toggle_menu_label(&initial),
-        true,
-        None::<&str>,
-    )?;
-    let restart_i = MenuItem::with_id(app, "restart", "重启网关", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -397,8 +352,6 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             &sep,
             &open_i,
             &copy_i,
-            &toggle_i,
-            &restart_i,
             &quit_i,
         ],
     )?;
@@ -429,43 +382,20 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = app.emit("endpoint-copied", endpoint);
                 }
             }
-            "toggle" => {
-                if let Some(state) = app.try_state::<AppState>() {
-                    let cfg = state.config.lock().clone();
-                    let current = state.core.status(&cfg);
-                    let status = match current.state {
-                        CoreState::Running | CoreState::Degraded | CoreState::Starting => {
-                            let s = state.core.stop(&cfg);
-                            *state.last_notified_state.lock() = Some(CoreState::Stopped);
-                            s
-                        }
-                        CoreState::Stopped | CoreState::Crashed => state.core.start(&cfg),
-                    }
-                    .unwrap_or_else(|e| {
-                        let mut s = state.core.status(&cfg);
-                        s.last_error = Some(e);
-                        s
-                    });
-                    update_tray_visual(app, &status);
-                    let _ = app.emit("core-status", status);
-                }
-            }
-            "restart" => {
-                if let Some(state) = app.try_state::<AppState>() {
-                    let cfg = state.config.lock().clone();
-                    let _ = state.core.restart(&cfg);
-                    let status = state.core.status(&cfg);
-                    *state.last_notified_state.lock() = Some(status.state.clone());
-                    update_tray_visual(app, &status);
-                    let _ = app.emit("core-status", status);
-                }
-            }
             "quit" => {
-                if let Some(state) = app.try_state::<AppState>() {
-                    let cfg = state.config.lock().clone();
-                    let _ = state.core.stop(&cfg);
+                // 停止核心可能耗时数百毫秒：先隐藏窗口给出即时反馈，
+                // 清理放后台线程，避免托盘菜单线程卡住。
+                let handle = app.clone();
+                if let Some(win) = handle.get_webview_window("main") {
+                    let _ = win.hide();
                 }
-                app.exit(0);
+                std::thread::spawn(move || {
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        let cfg = state.config.lock().clone();
+                        let _ = state.core.stop(&cfg);
+                    }
+                    handle.exit(0);
+                });
             }
             _ => {}
         })
@@ -484,7 +414,6 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     if let Some(state) = app.try_state::<AppState>() {
         *state.tray.lock() = Some(tray);
         *state.tray_status_item.lock() = Some(status_i);
-        *state.tray_toggle_item.lock() = Some(toggle_i);
     }
     Ok(())
 }
@@ -522,15 +451,11 @@ pub fn run() {
             config: parking_lot::Mutex::new(cfg.clone()),
             tray: parking_lot::Mutex::new(None),
             tray_status_item: parking_lot::Mutex::new(None),
-            tray_toggle_item: parking_lot::Mutex::new(None),
             last_notified_state: parking_lot::Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_shell_info,
             get_core_status,
-            start_core,
-            stop_core,
-            restart_core,
             get_config,
             update_config,
             complete_onboarding,
@@ -554,12 +479,23 @@ pub fn run() {
             build_tray(app.handle())?;
 
             if cfg.auto_start_core {
-                let state = app.state::<AppState>();
-                let c = state.config.lock().clone();
-                if let Ok(status) = state.core.start(&c) {
-                    *state.last_notified_state.lock() = Some(status.state.clone());
-                    update_tray_visual(app.handle(), &status);
-                }
+                // 核心启动最长要等 30s 健康检查——放到后台线程，
+                // 否则 setup 阻塞、窗口白屏到核心就绪为止。
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let Some(state) = handle.try_state::<AppState>() else {
+                        return;
+                    };
+                    let c = state.config.lock().clone();
+                    match state.core.start(&c) {
+                        Ok(status) => {
+                            *state.last_notified_state.lock() = Some(status.state.clone());
+                            update_tray_visual(&handle, &status);
+                            let _ = handle.emit("core-status", status);
+                        }
+                        Err(e) => eprintln!("[desktop] core start failed: {e}"),
+                    }
+                });
             }
 
             let handle = app.handle().clone();
@@ -596,8 +532,21 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running OmniAPI desktop");
+        .build(tauri::generate_context!())
+        .expect("error while running OmniAPI desktop")
+        .run(|app_handle, event| {
+            // 兜底所有退出路径（关窗退出、app.exit、系统注销等）：
+            // 核心子进程仍在时同步停掉，避免残留 node.exe 占用端口。
+            // stop() 对已停止状态是快速幂等的，托盘退出线程先停过也不会重复付出代价。
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if state.core.has_child() {
+                        let cfg = state.config.lock().clone();
+                        let _ = state.core.stop(&cfg);
+                    }
+                }
+            }
+        });
 }
 
 fn apply_window_icon(app: &AppHandle) {
