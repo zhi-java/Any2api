@@ -228,3 +228,50 @@ test('missing tool-call intent detects plan-only coding responses and builds ret
   assert.match(retryPrompt, new RegExp(promptPlan.triggerSignal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(retryPrompt, /Read/);
 });
+
+test('retry prompts add edit-first guidance only when edit and write tools coexist', () => {
+  const editTool = {
+    type: 'function',
+    function: {
+      name: 'Edit',
+      description: 'Replace a string in a file',
+      parameters: {
+        type: 'object',
+        properties: { file_path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } },
+        required: ['file_path', 'old_string', 'new_string'],
+      },
+    },
+  };
+  const writeTool = {
+    type: 'function',
+    function: {
+      name: 'Write',
+      description: 'Write a file to disk',
+      parameters: {
+        type: 'object',
+        properties: { file_path: { type: 'string' }, content: { type: 'string' } },
+        required: ['file_path', 'content'],
+      },
+    },
+  };
+  const codingTools = [...tools, editTool, writeTool];
+
+  const errorPrompt = getToolErrorRetryPrompt('bad', 'details', '<Function_AB12_Start/>', codingTools);
+  assert.match(errorPrompt, /工具选择提醒/);
+  assert.match(errorPrompt, /必须继续用 Edit 完成同一处精确替换/);
+  assert.match(errorPrompt, /禁止为了绕开格式错误或精确匹配失败而改用 Write 整文件重写/);
+  assert.doesNotMatch(getToolErrorRetryPrompt('bad', 'details', '<Function_AB12_Start/>', tools), /工具选择提醒/);
+
+  const missingPrompt = getMissingToolCallRetryPrompt('我来修改 config.js 里的端口配置。', '<Function_AB12_Start/>', codingTools);
+  assert.match(missingPrompt, /工具选择提醒/);
+  assert.match(missingPrompt, /Write 只用于创建新文件/);
+  assert.doesNotMatch(getMissingToolCallRetryPrompt('我来修改 config.js 里的端口配置。', '<Function_AB12_Start/>', tools), /工具选择提醒/);
+
+  // 截断续写提示：有编辑+写入工具时建议选项 B 改用分段模式重来
+  const continuation = getToolContinuationPrompt('tail', 'missing close', codingTools);
+  assert.match(continuation, /选项 A/);
+  assert.match(continuation, /分段提示/);
+  assert.match(continuation, /续写标记/);
+  assert.match(continuation, /用 Write 写入第一段/);
+  assert.doesNotMatch(getToolContinuationPrompt('tail', 'missing close'), /分段提示/);
+});

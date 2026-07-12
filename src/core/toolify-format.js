@@ -85,6 +85,17 @@ function truncateArgsEcho(toolArguments) {
   return `${text.slice(0, ARGS_ECHO_MAX_CHARS)}…[参数过长已截断，共 ${text.length} 字符]`;
 }
 
+// Read 类工具结果返回后，是模型决定"接下来怎么修改这个文件"的时刻——
+// 真实场景中模型在此最容易错选写入工具整文件重写。这里没有 tools 上下文，
+// 措辞保持通用（不点名工具），具体工具名由系统提示词的硬规则给出，
+// 避免向未暴露编辑工具的客户端推荐不存在的工具名。
+const READ_LIKE_TOOL_RX = /^(?:read|read_file|readfile|read_files|read_many_files|view|view_file|open_file|cat|cat_file|notebook_?read|read_notebook)$/i;
+
+function editFirstNudge(toolName) {
+  if (!READ_LIKE_TOOL_RX.test(String(toolName || '').trim())) return '';
+  return '\n提醒：若下一步要修改刚读取的这个文件——它是已存在文件，必须用编辑类工具做精确替换、只提交需要变更的片段；禁止用写入类工具整文件重写覆盖，任何没有原样复述进参数的内容都会被删除。若改动内容很大（超过约 200 行），拆成多轮小编辑分段完成，不要在一次调用里输出全部内容。';
+}
+
 export function formatToolResultForAI(toolName, toolArguments, resultContent) {
   return `[系统通知] 以下是你调用的工具 \`${toolName}\` 的执行结果。
 
@@ -95,7 +106,7 @@ export function formatToolResultForAI(toolName, toolArguments, resultContent) {
 ${wrapCdata(resultContent ?? '')}
 </tool_result>
 
-请基于以上结果判断任务进度：未完成则按工具调用格式继续调用所需工具（修改后重新 Read 验证、重新运行测试都是正当调用）；全部完成则直接用自然语言总结回复用户，禁止空回复。不要用完全相同的参数重复这一次已返回结果的调用。`;
+请基于以上结果判断任务进度：未完成则按工具调用格式继续调用所需工具（修改后重新 Read 验证、重新运行测试都是正当调用）；全部完成则直接用自然语言总结回复用户，禁止空回复。不要用完全相同的参数重复这一次已返回结果的调用。${editFirstNudge(toolName)}`;
 }
 
 export function preprocessMessagesForToolify(messages = [], triggerSignal, seedToolCallIndex = null) {

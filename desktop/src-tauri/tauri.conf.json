@@ -35,7 +35,10 @@
       "icons/icon.png"
     ],
     "resources": [
-      "resources/*"
+      "resources/core/**/*",
+      "resources/node/**/*",
+      "resources/README.txt",
+      "resources/icon.ico"
     ],
     "windows": {
       "nsis": {

@@ -5,6 +5,7 @@ import {
   buildXmlToolInstructions,
   createPromptPlan,
   createXmlToolCallDetector,
+  detectFileMutationTools,
   generateTriggerSignal,
   parseXmlToolCallsDetailed,
   parseXmlToolCallsFromText,
@@ -72,6 +73,87 @@ test('XML instructions honor tool_choice variants', () => {
     triggerSignal: '<Function_AB12_Start/>',
   });
   assert.match(specific, /只能调用 `Read` 这一个工具/);
+});
+
+const editTool = {
+  type: 'function',
+  function: {
+    name: 'Edit',
+    description: 'Replace a string in a file',
+    parameters: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string' },
+        old_string: { type: 'string' },
+        new_string: { type: 'string' },
+      },
+      required: ['file_path', 'old_string', 'new_string'],
+    },
+  },
+};
+
+const writeTool = {
+  type: 'function',
+  function: {
+    name: 'Write',
+    description: 'Write a file to disk',
+    parameters: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['file_path', 'content'],
+    },
+  },
+};
+
+test('detectFileMutationTools classifies edit-like and write-like tools by name and params', () => {
+  const { editNames, writeNames } = detectFileMutationTools([
+    ...tools,
+    editTool,
+    writeTool,
+    { type: 'function', function: { name: 'NotebookEdit', parameters: { type: 'object', properties: { notebook_path: { type: 'string' }, new_source: { type: 'string' } } } } },
+    { type: 'function', function: { name: 'apply_patch', parameters: { type: 'object', properties: { patch: { type: 'string' } } } } },
+    { type: 'function', function: { name: 'Bash', parameters: { type: 'object', properties: { command: { type: 'string' } } } } },
+    // 名字含 patch 子串但不是编辑工具，精确匹配不应误判
+    { type: 'function', function: { name: 'DispatchEvent', parameters: { type: 'object', properties: { event: { type: 'string' } } } } },
+  ]);
+  assert.deepEqual(editNames, ['Edit', 'NotebookEdit', 'apply_patch']);
+  assert.deepEqual(writeNames, ['Write']);
+});
+
+test('edit-first hard rules are injected only when edit and write tools coexist', () => {
+  const both = buildXmlToolInstructions({ tools: [...tools, editTool, writeTool], toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
+  assert.match(both, /文件修改工具选择（硬规则/);
+  assert.match(both, /必须用 Edit 做精确替换，禁止用 Write 整文件重写/);
+  assert.match(both, /Write 仅限两种场景/);
+  assert.match(both, /编辑铁律/);
+  assert.match(both, /调用 Write 前自检两问/);
+  // 分段写入协议：阈值 + Write 首段留续写标记 + Edit 逐段替换 + 并行规则例外
+  assert.match(both, /大内容分段写入协议/);
+  assert.match(both, /续写标记/);
+  assert.match(both, /禁止用多次 Write 分段/);
+  assert.match(both, /上两条的例外：超过约 200 行/);
+
+  // 只有 Read：不注入任何文件修改选择规则
+  const readOnly = buildXmlToolInstructions({ tools, toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
+  assert.doesNotMatch(readOnly, /文件修改工具选择/);
+  assert.doesNotMatch(readOnly, /编辑铁律/);
+  assert.doesNotMatch(readOnly, /分段写入协议/);
+
+  // 只有 Write（客户端未暴露编辑工具）：不得禁止 Write 改文件，改为覆盖安全规则
+  const writeOnly = buildXmlToolInstructions({ tools: [...tools, writeTool], toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
+  assert.doesNotMatch(writeOnly, /文件修改工具选择（硬规则/);
+  assert.doesNotMatch(writeOnly, /编辑铁律/);
+  assert.doesNotMatch(writeOnly, /分段写入协议/);
+  assert.match(writeOnly, /覆盖已有文件前必须先 Read 其完整内容/);
+
+  // 只有编辑工具（Codex apply_patch 类）：只提示精确修改 + 大补丁拆多轮
+  const editOnly = buildXmlToolInstructions({ tools: [...tools, editTool], toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
+  assert.doesNotMatch(editOnly, /编辑铁律/);
+  assert.match(editOnly, /修改文件一律用 Edit 做精确修改/);
+  assert.match(editOnly, /拆成多个小修改跨多轮完成/);
 });
 
 test('createPromptPlan disables injection using raw JSON prompt', () => {
@@ -570,6 +652,78 @@ test('parseArgsJson repairs invalid Windows path escapes', () => {
   assert.equal(JSON.parse(parsed.toolCalls[0].function.arguments).file_path, 'C:\\Users\\x.js');
 });
 
+const editToolsWithReplaceAll = [{
+  type: 'function',
+  function: {
+    name: 'Edit',
+    description: 'edit file',
+    parameters: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string' },
+        old_string: { type: 'string' },
+        new_string: { type: 'string' },
+        replace_all: { type: 'boolean' },
+      },
+      required: ['file_path', 'old_string', 'new_string'],
+    },
+  },
+}];
+
+test('parseArgsJson repairs premature CDATA-close hallucination inside JSON', () => {
+  const trigger = '<Function_AB12_Start/>';
+  // 真实案例：模型写完 new_string 后误输出 "}]] 提前闭合，又想起 replace_all
+  // 没写，接着输出 , "replace_all": false}} 才真正闭合 CDATA
+  const brokenArgs = '{"file_path":"D:\\\\tools\\\\test\\\\server.js","old_string":"let db = null;","new_string":"let db = null;  // 全局数据库实例"}]], "replace_all": false}}';
+  const parsed = parseXmlToolCallsFromText(
+    `${trigger}\n<function_calls><function_call><tool>Edit</tool><args_json><![CDATA[${brokenArgs}]]></args_json></function_call></function_calls>`,
+    { triggerSignal: trigger, tools: editToolsWithReplaceAll },
+  );
+  assert.equal(parsed.toolCalls.length, 1);
+  const args = JSON.parse(parsed.toolCalls[0].function.arguments);
+  assert.equal(args.file_path, 'D:\\tools\\test\\server.js');
+  assert.equal(args.old_string, 'let db = null;');
+  assert.match(args.new_string, /全局数据库实例/);
+  assert.equal(args.replace_all, false);
+});
+
+test('parseArgsJson merges params leaked outside a prematurely closed CDATA', () => {
+  const trigger = '<Function_AB12_Start/>';
+  // 变体：模型在 JSON 中途输出了完整 ]]>，CDATA 真的提前终止，
+  // 剩余参数泄漏到 CDATA 外，最后又补了一个 ]]>
+  const parsed = parseXmlToolCallsFromText(
+    `${trigger}\n<function_calls><function_call><tool>Edit</tool><args_json><![CDATA[{"file_path":"a.js","old_string":"x","new_string":"y"}]]>, "replace_all": false}}]]></args_json></function_call></function_calls>`,
+    { triggerSignal: trigger, tools: editToolsWithReplaceAll },
+  );
+  assert.equal(parsed.toolCalls.length, 1);
+  const args = JSON.parse(parsed.toolCalls[0].function.arguments);
+  assert.equal(args.file_path, 'a.js');
+  assert.equal(args.new_string, 'y');
+  assert.equal(args.replace_all, false);
+});
+
+test('stray-closer repair does not touch valid nested arrays', () => {
+  const trigger = '<Function_AB12_Start/>';
+  const matrixTools = [{
+    type: 'function',
+    function: {
+      name: 'Data',
+      description: 'data tool',
+      parameters: {
+        type: 'object',
+        properties: { matrix: { type: 'array' } },
+        required: ['matrix'],
+      },
+    },
+  }];
+  const parsed = parseXmlToolCallsFromText(
+    `${trigger}\n<function_calls><function_call><tool>Data</tool><args_json><![CDATA[{"matrix":[[1,2],[3,4]]}]]></args_json></function_call></function_calls>`,
+    { triggerSignal: trigger, tools: matrixTools },
+  );
+  assert.equal(parsed.toolCalls.length, 1);
+  assert.deepEqual(JSON.parse(parsed.toolCalls[0].function.arguments).matrix, [[1, 2], [3, 4]]);
+});
+
 test('XML instructions carry JSON escaping rules and continuation guidance', () => {
   const instructions = buildXmlToolInstructions({ tools, toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
   assert.match(instructions, /禁止在 JSON 字符串里直接换行|字符串内的换行必须写成/);
@@ -579,7 +733,8 @@ test('XML instructions carry JSON escaping rules and continuation guidance', () 
   assert.match(instructions, /任务全部完成后/);
   assert.match(instructions, /修改完成后主动验证/);
   assert.match(instructions, /说了要做，就必须当场调用|将使用\/需要某工具/);
-  assert.match(instructions, /MultiEdit/);
+  // 工具集中不存在的编辑/写入工具名不得被推荐（只读工具集不应出现 MultiEdit）
+  assert.doesNotMatch(instructions, /MultiEdit/);
   assert.match(instructions, /正在启动|我先读取/);
   assert.match(instructions, /工具定义里没有的字段|description\/comment\/note\/justification/);
   assert.match(instructions, /探索项目|我先读取项目/);

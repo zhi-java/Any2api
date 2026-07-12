@@ -142,6 +142,18 @@ test('formatToolResultForAI truncates oversized argument echo but keeps result i
   assert.match(result, /<!\[CDATA\[written\]\]>/);
 });
 
+test('read-like tool results append edit-first nudge; other tools do not', () => {
+  for (const name of ['Read', 'read_file', 'view_file']) {
+    const result = formatToolResultForAI(name, '{"path":"a.js"}', 'content');
+    assert.match(result, /必须用编辑类工具做精确替换/);
+    assert.match(result, /禁止用写入类工具整文件重写覆盖/);
+    assert.match(result, /拆成多轮小编辑分段完成/);
+  }
+  assert.doesNotMatch(formatToolResultForAI('Bash', '{"command":"ls"}', 'ok'), /编辑类工具/);
+  assert.doesNotMatch(formatToolResultForAI('write_file', '{"path":"a.js"}', 'ok'), /编辑类工具/);
+  assert.doesNotMatch(formatToolResultForAI('ReadMcpResource', '{"uri":"x"}', 'ok'), /编辑类工具/);
+});
+
 test('preprocess is a no-op without trigger', () => {
   const messages = [{ role: 'assistant', content: 'x', tool_calls: [readCall] }];
   assert.equal(preprocessMessagesForToolify(messages, null), messages);

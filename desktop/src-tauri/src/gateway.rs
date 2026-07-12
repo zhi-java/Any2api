@@ -539,15 +539,22 @@ fn resolve_launch(repo_root: &Path, resource_dir: Option<PathBuf>) -> Result<Lau
         }
     }
     // Dev convenience: prebuilt under desktop/src-tauri/resources.
-    let dev_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
-    binary_candidates.push(dev_resources.join(core_bin_name()));
-    portable_candidates.push((
-        dev_resources
-            .join("node")
-            .join(if cfg!(windows) { "node.exe" } else { "node" }),
-        dev_resources.join("core").join("src").join("index.js"),
-        dev_resources.join("core"),
-    ));
+    // 仅 debug 构建启用——release 安装包若缺资源必须显式报错，
+    // 不能在开发机上静默回退到仓库路径，掩盖打包缺陷（真实踩坑：
+    // resources/* 单层通配漏掉 core/node 目录，开发机装上能跑、用户机器
+    // ERR_CONNECTION_REFUSED）。
+    #[cfg(debug_assertions)]
+    {
+        let dev_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+        binary_candidates.push(dev_resources.join(core_bin_name()));
+        portable_candidates.push((
+            dev_resources
+                .join("node")
+                .join(if cfg!(windows) { "node.exe" } else { "node" }),
+            dev_resources.join("core").join("src").join("index.js"),
+            dev_resources.join("core"),
+        ));
+    }
 
     for c in binary_candidates {
         if c.exists() {
@@ -570,13 +577,22 @@ fn resolve_launch(repo_root: &Path, resource_dir: Option<PathBuf>) -> Result<Lau
         }
     }
 
-    // 4) Dev fallback: system node + repo entry.
-    let entry = resolve_core_entry(repo_root)?;
-    Ok(LaunchSpec {
-        program: PathBuf::from("node"),
-        args: vec![entry.display().to_string()],
-        cwd: repo_root.to_path_buf(),
-    })
+    // 4) Dev fallback: system node + repo entry（仅 debug 构建）。
+    #[cfg(debug_assertions)]
+    {
+        let entry = resolve_core_entry(repo_root)?;
+        return Ok(LaunchSpec {
+            program: PathBuf::from("node"),
+            args: vec![entry.display().to_string()],
+            cwd: repo_root.to_path_buf(),
+        });
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = repo_root;
+        Err("安装包中未找到 Core 运行资源（resources\\node\\node.exe + resources\\core\\src\\index.js）。安装包可能不完整或被安全软件拦截了部分文件，请用完整安装包重新安装。".to_string())
+    }
 }
 
 fn healthz_sync(cfg: &DesktopConfig) -> Result<bool, String> {
@@ -612,6 +628,7 @@ fn ureq_get(url: &str) -> Result<bool, String> {
         || buf.contains("\"status\":\"ok\""))
 }
 
+#[cfg(debug_assertions)]
 fn resolve_core_entry(repo_root: &Path) -> Result<PathBuf, String> {
     let candidates = [
         repo_root.join("src").join("index.js"),

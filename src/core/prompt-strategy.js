@@ -78,6 +78,39 @@ function appendSchemaSummary(lines, schema, isRequired, indentLevel, depth = 0) 
   }
 }
 
+// 已知的编辑类/写入类工具名（跨客户端变体）。名称用精确匹配而非子串，
+// 避免 dispatch 这类名字被误判为 patch 工具。
+const EDIT_TOOL_NAME_RX = /^(?:multi_?edit|edit(?:_file|_files|_notebook)?|notebook_?edit|str_replace(?:_editor|_based_edit_tool)?|apply_?patch|replace(?:_in_file)?|search_(?:and_)?replace|patch_file)$/;
+const WRITE_TOOL_NAME_RX = /^(?:write|write_?file|write_to_file|create_?file|save_?file)$/;
+
+/**
+ * 识别工具集中"精确编辑类"与"整文件写入类"工具的实际名称。
+ * 编辑类：带 old_string/old_str 参数，或名称命中已知编辑工具变体；
+ * 写入类：名称命中已知写入工具变体，或同时带 content 与 file_path/path 参数。
+ * 真实场景中模型在编辑意图下常错选写入工具整文件重写——只有两类工具
+ * 同时存在时才有混淆风险，提示词按此条件注入 Edit 优先硬规则。
+ */
+export function detectFileMutationTools(tools = []) {
+  const editNames = [];
+  const writeNames = [];
+  for (const tool of normalizeTools(tools)) {
+    const fn = tool.function || tool;
+    const name = String(fn.name || '');
+    if (!name) continue;
+    const lower = name.toLowerCase();
+    const props = Object.keys(fn.parameters?.properties || {});
+    if (props.includes('old_string') || props.includes('old_str') || EDIT_TOOL_NAME_RX.test(lower)) {
+      editNames.push(name);
+    } else if (
+      WRITE_TOOL_NAME_RX.test(lower)
+      || (props.includes('content') && (props.includes('file_path') || props.includes('path')))
+    ) {
+      writeNames.push(name);
+    }
+  }
+  return { editNames, writeNames };
+}
+
 function renderToolList(tools) {
   return tools.map((tool, index) => {
     const fn = tool.function || tool;
@@ -151,18 +184,82 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
   - multiSelect 必须是布尔值 true/false
   - questions 数组至少 1 项；需要多问就放在同一个 questions 数组里，不要拆成多次调用` : '';
 
+  // 真实场景痛点：编辑意图下模型倾向选写入工具整文件重写。检测实际存在的
+  // 编辑类/写入类工具名，两者并存时注入"已存在文件必须精确替换"硬规则；
+  // 只引用工具集中真实存在的名称，避免向客户端推荐不存在的工具。
+  const { editNames, writeNames } = detectFileMutationTools(normalized);
+  const notebookEditNames = editNames.filter(name => /notebook/i.test(name));
+  const textEditNames = editNames.filter(name => !/notebook/i.test(name));
+  const effectiveEditNames = textEditNames.length ? textEditNames : editNames;
+  const editList = effectiveEditNames.join('/');
+  const writeList = writeNames.join('/');
+  const primaryEdit = effectiveEditNames[0] || '';
+  const primaryWrite = writeNames[0] || '';
+  const hasOldStringParam = normalized.some(t => {
+    const props = Object.keys((t.function || t).parameters?.properties || {});
+    return props.includes('old_string') || props.includes('old_str');
+  });
+
+  let fileMutationGuide = '';
+  if (editList && writeList) {
+    fileMutationGuide = `
+
+#### 文件修改工具选择（硬规则：编辑意图下 ${editList} 永远是第一选择）
+
+- **目标文件已存在 → 必须用 ${editList} 做精确替换，禁止用 ${writeList} 整文件重写。** 修改/编辑/调整/优化/修复/重构已有文件的任何一部分，都属于编辑意图；只要你 Read 过该文件、或它出现在 Grep/Glob/目录结果里、或上下文表明它已存在，它就是"已存在文件"
+- ${writeList} 仅限两种场景，其余一律禁用：
+  ① 创建一个当前不存在的新文件
+  ② 用户明确要求"整个文件推倒重写/清空重来"，且你已 Read 过该文件当前的完整内容
+- 为什么这是硬规则：${writeList} 会用你提供的内容**整体替换**目标文件——凡是没有被你原样复述进参数的部分（没读到的、记不全的、以为"没改动就不用写"的）都会被静默删除；整文件重写还要输出大量未改动内容，输出越长越容易中途截断，留下半截损坏的文件
+- 同一文件要改多处：逐处精确替换，多个 ${primaryEdit} 调用放进同一个 <function_calls> 块（若单处改动内容就很大，按下方分段写入协议拆到多轮）；禁止因为"改动多"就整文件重写
+- 不要因为担心精确匹配失败而退回 ${writeList}：匹配失败就重新 Read 相关区段取回准确原文再改；只有精确替换反复失败、且你已 Read 当前完整文件时，才允许整文件重写作为最后手段
+- 调用 ${writeList} 前自检两问：目标文件已存在吗？我只是想改其中一部分吗？——任一答案为"是"，立即换用 ${editList}${notebookEditNames.length ? `
+- Notebook(.ipynb) 文件的修改用 ${notebookEditNames.join('/')}` : ''}
+
+| 场景 | ❌ 错误选择 | ✅ 正确选择 |
+|---|---|---|
+| 修改已有文件中的几行 | ${primaryWrite} 重写整个文件 | ${primaryEdit} 只替换那几行 |
+| 同一文件修改多处 | ${primaryWrite} 全量重写 | 多个 ${primaryEdit} 调用放进同一个 <function_calls> 块 |
+| 创建全新文件 | — | ${primaryWrite} |
+| 新建超过约 200 行的大文件 | 一次 ${primaryWrite} 输出全部内容 | 按分段写入协议：${primaryWrite} 首段 + ${primaryEdit} 逐段续写 |
+| 用户明确要求整文件重写 | 没读过原文就直接 ${primaryWrite} | 先 Read 完整原文，再 ${primaryWrite} |
+
+#### 大内容分段写入协议（防截断、防超时）
+
+- 阈值：单次调用要提交的文件内容（${primaryWrite} 的 content 或 ${primaryEdit} 的替换内容）超过约 200 行时，禁止一次性输出，必须按本协议分段
+- 为什么：单次输出越长，中途截断、JSON 转义出错、客户端等待超时的概率越高；截断一次就要整段重来，分段后单轮失败只损失一小段
+- ${primaryWrite} 没有追加模式，禁止用多次 ${primaryWrite} 分段（每次都会整体重写文件，越写越长）。正确做法：
+  1. 第一轮：${primaryWrite} 写入第一段，结尾单独一行放全文件唯一的续写标记（代码文件用注释语法，如 // <OMNI-CONT-1>）
+  2. 后续每轮：${primaryEdit} 把续写标记整行替换为「下一段内容 + 新标记（编号递增）」
+  3. 最后一轮：${primaryEdit} 把标记整行替换为最后一段（不再留标记），然后 Read 验证文件完整
+- 修改已有文件的大范围改动同理：拆成多个小 ${primaryEdit} 跨多轮执行，每轮只改一到几处，收到结果后再继续下一批
+- 分段边界选在函数/类/配置块等自然结构处，禁止在语句或字符串中间断开
+- 分段过程中某轮失败只重试该段；禁止因为某段失败就回退成整文件一次性重写`;
+  } else if (editList) {
+    fileMutationGuide = `
+- 修改文件一律用 ${editList} 做精确修改，只提交需要变更的片段，不要重写整个文件；单次替换/补丁内容超过约 200 行时，拆成多个小修改跨多轮完成，防止单次输出过长被截断`;
+  } else if (writeList) {
+    fileMutationGuide = `
+- 用 ${writeList} 覆盖已有文件前必须先 Read 其完整内容，重写时必须原样保留所有未改动部分，任何遗漏都会破坏文件`;
+  }
+
+  // "一次响应完成所有工作"的并行激励与分段写入相斥：超大文件内容必须
+  // 拆到多轮，否则截断/转义错误/客户端超时的概率随单次输出长度上升。
+  const largeOutputException = editList && writeList
+    ? `\n- 上两条的例外：超过约 200 行的文件写入/编辑内容不适用"一次发出/一次完成"——必须按「大内容分段写入协议」拆成多轮小调用，禁止为凑一次完成而单次输出超大内容`
+    : '';
+
   const codingGuide = isCodingToolset ? `
 ### 编程场景专用规则
 
-- 先读后改：修改文件前必须 Read 目标文件确认内容，再用 Edit/MultiEdit 做精确替换
-- Read 大文件时分段读取：先用 limit 控制读取量，继续时用 offset 接续
-- 创建新文件用 Write，修改已有文件用 Edit/MultiEdit；Notebook 文件用 NotebookEdit
-- Edit/MultiEdit 的 old_string 必须与文件内容精确匹配，不确定时重新 Read 确认
-- Edit/MultiEdit/Write 参数中的多行内容必须用 \\n 表示换行，不得在 JSON 字符串里直接换行
+- 先读后改：修改文件前必须 Read 目标文件确认内容，再做精确修改
+- Read 大文件时分段读取：先用 limit 控制读取量，继续时用 offset 接续${hasOldStringParam ? `
+- 精确替换的 old_string 必须与文件内容逐字符匹配（含缩进和空白），不确定时重新 Read 确认` : ''}
+- 文件修改参数中的多行内容必须用 \\n 表示换行，不得在 JSON 字符串里直接换行
 - 修改完成后主动验证：重新 Read 关键改动处确认生效，能运行测试/构建时运行确认无回归
 - 搜索文件名用 Glob，搜索内容用 Grep；不要用 Bash 替代这些专用工具
 - Bash 仅用于测试、构建、包管理、git 等需要命令行执行的场景
-- Windows 路径使用完整绝对路径和反斜杠` : '';
+- Windows 路径使用完整绝对路径和反斜杠${fileMutationGuide}` : '';
 
   // 优先挑一个有典型参数的工具做正确示例，避免示例总是 Read 而实际任务是 shell_command
   const exampleTool = normalized.find(t => {
@@ -203,7 +300,7 @@ ${interactiveGuide}
 - 任务全部完成后，才用自然语言总结本轮做了什么、结果如何；禁止以空内容结束
 - 不要用完全相同的参数重复紧邻的上一次调用（它的结果已经在上面给出）
 - 多个独立的工具调用应在一次响应中同时发出，不要分步串行
-- 一次响应中完成所有可预见的工作，避免"调用-等待-再调用"的低效循环
+- 一次响应中完成所有可预见的工作，避免"调用-等待-再调用"的低效循环${largeOutputException}
 ${codingGuide}
 ## 输出格式（唯一合法格式）
 
@@ -266,6 +363,7 @@ ${triggerSignal}
 |---|---|
 | 只有 \`<tool>shell_command</tool>\` 重复多次 | 缺 function_calls / args_json，裸标签不会被执行 |
 | CDATA 结束写成 \`]>\` | 必须是 \`]]>\`，少一个右方括号会让整块 XML 无法闭合 |
+| JSON 写到一半插入 \`]]\` 或 \`]]>\` 再接着写参数，如 \`..."}]], "replace_all": false}}\` | CDATA 被提前闭合、JSON 被切成两半；\`]]>\` 只能在参数 JSON 完整结束后出现一次 |
 | JSON 末尾漏 \`}\`，如 \`{"command":"...ui\\\\"\` | 对象未闭合，args_json 解析失败 |
 | 中文叙述里用 ASCII 双引号夹词：\`"是否允许为"优化样式"创建"\` | 破坏 JSON 字符串边界；叙述引号请用「」或‘’ |
 | 触发信号写错 / 漏写 / 写在 think 块里 | 触发信号必须在 think 外、独占一行、与示例完全一致 |
@@ -295,7 +393,9 @@ ${triggerSignal}
 </function_calls>
 \`\`\`
 
-**一句话铁律：只要说了要调用工具，同一轮回复必须输出“触发信号 + <function_calls>”。只写计划 = 任务死锁。**
+**一句话铁律：只要说了要调用工具，同一轮回复必须输出“触发信号 + <function_calls>”。只写计划 = 任务死锁。**${editList && writeList ? `
+
+**编辑铁律：已存在文件的修改必须用 ${editList} 精确替换；${writeList} 只用于创建新文件，或用户明确要求且你已读过全文的整文件重写。**` : ''}
 
 ## 必须遵守的规则
 
@@ -670,16 +770,87 @@ function repairJsonStringLiterals(text, opts = {}) {
   return out;
 }
 
+/**
+ * 修复"CDATA 提前闭合幻觉"导致的 JSON 结构破坏。真实案例：模型写完
+ * new_string 后误输出 `"}]]`（对象闭合 + CDATA 闭合片段），随后想起还有
+ * 参数没写，接着输出 `, "replace_all": false}}` 才真正闭合。提取出的文本
+ * 形如 `{...}]], "k": v}}`，三处破坏一起修：
+ * - 字符串外、无匹配 `[` 的游离 `]` 连串（含紧跟的 `>`）→ 删除
+ * - 顶层对象已闭合却紧跟 `,` 继续写成员 → 撤销那个提前的 `}` 重新打开对象
+ * - 收尾多余的未匹配 `}` → 删除
+ * 全程感知字符串与转义，合法 JSON（含嵌套数组）不会命中任何分支。
+ * 无改动时返回 null，只作为严格解析失败后的兜底候选。
+ */
+function repairStrayClosersInJson(text) {
+  const source = String(text || '');
+  const out = [];
+  const stack = [];
+  let inString = false;
+  let changed = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (inString) {
+      out.push(char);
+      if (char === '\\') {
+        i++;
+        if (i < source.length) out.push(source[i]);
+        continue;
+      }
+      if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; out.push(char); continue; }
+    if (char === '{' || char === '[') { stack.push(char); out.push(char); continue; }
+    if (char === '}') {
+      if (stack[stack.length - 1] === '{') { stack.pop(); out.push(char); }
+      else changed = true; // 无匹配的 }，丢弃
+      continue;
+    }
+    if (char === ']') {
+      if (stack[stack.length - 1] === '[') { stack.pop(); out.push(char); continue; }
+      // 游离 ] 连串（CDATA 闭合片段），连同紧跟的 > 一起丢弃
+      let j = i;
+      while (j < source.length && source[j] === ']') j++;
+      if (j < source.length && source[j] === '>') j++;
+      changed = true;
+      i = j - 1;
+      continue;
+    }
+    if (char === ',' && !stack.length) {
+      // 顶层已闭合却继续写成员：撤销最近的提前闭合，重新打开对象/数组
+      let m = out.length - 1;
+      while (m >= 0 && /\s/.test(out[m])) m--;
+      if (m >= 0 && (out[m] === '}' || out[m] === ']')) {
+        stack.push(out[m] === '}' ? '{' : '[');
+        out.splice(m, 1);
+        changed = true;
+      }
+      out.push(char);
+      continue;
+    }
+    out.push(char);
+  }
+  return changed ? out.join('') : null;
+}
+
 function parseArgsJson(raw) {
   if (raw == null) return null;
-  const extracted = extractCdata(raw);
-  if (extracted == null) return null;
+  let extracted = extractCdata(raw);
+  if (extracted == null) {
+    // CDATA 标记把内容切开了（典型：模型在 JSON 中途输出 ]]> 提前闭合
+    // CDATA，剩余参数泄漏到 CDATA 外）。剥掉全部标记、内外合并为一份
+    // 候选文本，交给下面的修复流程。
+    const merged = String(raw).replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+    if (!merged) return null;
+    extracted = merged;
+  }
   const text = extracted.trim();
   if (!text) return null;
 
   // 按优先级尝试一组候选修复：CDATA 内容优先当作字面文本解析
   // （Windows 路径里的 \t \n 不能按 JSON 转义处理）；随后回退标准修复、
-  // 去掉尾部多余 `}`、补齐缺失的结尾 `}`（模型常漏写闭合花括号）。
+  // 去掉尾部多余 `}`、补齐缺失的结尾 `}`（模型常漏写闭合花括号）、
+  // 清理 JSON 中途游离的 CDATA 闭合片段（`}]], "k": v}}` 形态）。
   const forceLiteral = repairJsonStringLiterals(text, { forceLiteral: true });
   const candidates = [forceLiteral, repairJsonStringLiterals(text)];
   const trimmed = trimExtraClosingBraces(text);
@@ -688,6 +859,16 @@ function parseArgsJson(raw) {
   if (balanced) {
     candidates.push(repairJsonStringLiterals(balanced, { forceLiteral: true }));
     candidates.push(repairJsonStringLiterals(balanced));
+  }
+  const strayFixed = repairStrayClosersInJson(text);
+  if (strayFixed) {
+    candidates.push(repairJsonStringLiterals(strayFixed, { forceLiteral: true }));
+    candidates.push(repairJsonStringLiterals(strayFixed));
+    const strayBalanced = balanceJsonBraces(strayFixed);
+    if (strayBalanced) {
+      candidates.push(repairJsonStringLiterals(strayBalanced, { forceLiteral: true }));
+      candidates.push(repairJsonStringLiterals(strayBalanced));
+    }
   }
   candidates.push(repairJsonStringLiterals(forceLiteral));
 
