@@ -345,7 +345,4 @@ const icoEntries = [16, 24, 32, 48, 64, 128, 256].map(size => ({
 }));
 writeFileSync(join(iconDir, 'icon.ico'), makeIco(icoEntries));
 
-// Keep the legacy odd path in tauri.conf valid if present.
-writeFileSync(join(iconDir, 'henry.w@example.net'), pngEncode(512, 512, downsample(data, W, H, 512, 512)));
-
 console.log(`[generate-icon] wrote Omni Guardian icons to ${iconDir}`);
