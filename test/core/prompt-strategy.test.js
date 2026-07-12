@@ -130,11 +130,11 @@ test('edit-first hard rules are injected only when edit and write tools coexist'
   assert.match(both, /Write 仅限两种场景/);
   assert.match(both, /编辑铁律/);
   assert.match(both, /调用 Write 前自检两问/);
-  // 分段写入协议：阈值 + Write 首段留续写标记 + Edit 逐段替换 + 并行规则例外
+  // 分段写入协议：阈值 + Write 首段留续写标记 + Edit 逐段替换 + 大内容单调用也须分段
   assert.match(both, /大内容分段写入协议/);
   assert.match(both, /续写标记/);
   assert.match(both, /禁止用多次 Write 分段/);
-  assert.match(both, /上两条的例外：超过约 200 行/);
+  assert.match(both, /补充：超过约 200 行/);
 
   // 只有 Read：不注入任何文件修改选择规则
   const readOnly = buildXmlToolInstructions({ tools, toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
@@ -733,6 +733,9 @@ test('XML instructions carry JSON escaping rules and continuation guidance', () 
   assert.match(instructions, /任务全部完成后/);
   assert.match(instructions, /修改完成后主动验证/);
   assert.match(instructions, /说了要做，就必须当场调用|将使用\/需要某工具/);
+  // 单次回复的工具调用数量上限（决策区 + 自检清单 + 硬规则区都要出现）
+  assert.match(instructions, /单次回复最多 3 个 <function_call>/);
+  assert.match(instructions, /最多只有 3 个 `<function_call>`/);
   // 工具集中不存在的编辑/写入工具名不得被推荐（只读工具集不应出现 MultiEdit）
   assert.doesNotMatch(instructions, /MultiEdit/);
   assert.match(instructions, /正在启动|我先读取/);
