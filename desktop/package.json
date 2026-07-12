@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "tauri build && node scripts/patch-shortcut-icons.mjs",
     "prepare:core": "node scripts/prepare-core.mjs",
     "prepare:core:force": "node scripts/prepare-core.mjs --force",
     "tauri": "tauri"

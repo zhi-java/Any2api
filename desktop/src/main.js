@@ -42,7 +42,7 @@ function mockInvoke(cmd, args = {}) {
       core: base,
     };
   }
-  if (['get_core_status', 'start_core', 'stop_core', 'restart_core'].includes(cmd)) return base;
+  if (cmd === 'get_core_status') return base;
   if (cmd === 'copy_endpoint') return base.endpoint;
   if (cmd === 'get_launch_at_login') return false;
   if (cmd === 'complete_onboarding' || cmd === 'set_admin_api_key' || cmd === 'get_config' || cmd === 'set_launch_at_login' || cmd === 'update_config') {
@@ -423,7 +423,7 @@ function bindWizard() {
       try {
         state.busy = true;
         render();
-        state.core = await invoke('start_core');
+        state.core = await invoke('get_core_status');
       } catch (e) {
         state.error = e?.message || String(e);
       } finally {
@@ -583,7 +583,6 @@ async function doCopyEndpoint() {
 
 function renderHome() {
   const core = state.core || state.info.core;
-  const on = core?.state === 'running' || core?.state === 'degraded' || core?.state === 'starting';
   const launch = state.launchAtLogin;
   return el(`
     <div class="shell">
@@ -596,7 +595,6 @@ function renderHome() {
           </div>
         </div>
         <div class="top-actions">
-          <button type="button" class="btn btn-ghost btn-sm" data-action="restart">重启网关</button>
           <button type="button" class="btn btn-secondary btn-sm" data-action="open-admin">打开控制台</button>
         </div>
       </header>
@@ -608,7 +606,7 @@ function renderHome() {
                 <div class="label">服务状态</div>
                 <div class="status-word ${statusClass(core?.state)}">${statusWord(core?.state, core?.message)}</div>
               </div>
-              <button type="button" class="toggle ${on ? '' : 'is-off'}" data-action="toggle" title="启动 / 停止本机网关" aria-checked="${on}"></button>
+              <span class="chip ${core?.healthOk ? 'ok' : 'warn'}">自动托管</span>
             </div>
             <div class="endpoint-well">
               <code>${esc(core?.endpoint || '')}</code>
@@ -677,28 +675,6 @@ function bindHome() {
       }
     });
   });
-  root.querySelector('[data-action="restart"]')?.addEventListener('click', async () => {
-    try {
-      state.core = await invoke('restart_core');
-      state.note = '正在重启网关…';
-      render();
-    } catch (e) {
-      state.note = e?.message || String(e);
-      render();
-    }
-  });
-  root.querySelector('[data-action="toggle"]')?.addEventListener('click', async () => {
-    try {
-      const core = state.core || state.info.core;
-      const on = core?.state === 'running' || core?.state === 'degraded' || core?.state === 'starting';
-      state.core = on ? await invoke('stop_core') : await invoke('start_core');
-      state.note = on ? '已停止网关' : '正在启动网关…';
-      render();
-    } catch (e) {
-      state.note = e?.message || String(e);
-      render();
-    }
-  });
   root.querySelector('[data-action="toggle-autostart"]')?.addEventListener('click', async () => {
     try {
       const next = !state.launchAtLogin;
@@ -714,17 +690,29 @@ function bindHome() {
   });
 }
 
+function coreStatusSig(c) {
+  if (!c) return '';
+  return [c.state, c.message, c.pid, c.healthOk, c.lastError, c.endpoint].join('|');
+}
+
+let lastCoreSig = '';
+
 async function bootstrap() {
   try {
     state.info = await invoke('get_shell_info');
     state.core = state.info.core;
+    lastCoreSig = coreStatusSig(state.core);
     state.adminKey = state.info.config?.adminApiKey || '';
     state.launchAtLogin = Boolean(
       state.info.launchAtLoginEnabled ?? state.info.config?.launchAtLogin
     );
     render();
     await listen('core-status', (payload) => {
+      const sig = coreStatusSig(payload);
       state.core = payload;
+      // 后端每 3 秒推送一次；状态没变就不重建 DOM，避免打断输入和焦点。
+      if (sig === lastCoreSig) return;
+      lastCoreSig = sig;
       if (state.info?.config?.onboardingCompleted || state.info?.onboardingCompleted) {
         render();
       } else if (state.wizardStep !== 2) {
@@ -738,6 +726,7 @@ async function bootstrap() {
       }
     });
     state.core = await invoke('get_core_status');
+    lastCoreSig = coreStatusSig(state.core);
     render();
   } catch (e) {
     document.getElementById('app').innerHTML = '<div class="boot">启动失败：' + esc(e?.message || e) + '</div>';

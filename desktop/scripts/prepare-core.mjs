@@ -146,14 +146,17 @@ async function stagePortableNode() {
 
 function stageCoreSources() {
   const coreDir = join(resourcesDir, 'core');
-  const marker = join(coreDir, 'src', 'index.js');
-  if (hasFile(marker) && !force) {
-    log('reuse staged core sources', coreDir);
-    return coreDir;
-  }
-
-  log('stage core sources (overwriting src admin)');
   ensureDir(coreDir);
+
+  // core/src 必须每次重新同步：desktop 壳优先运行这份暂存副本，
+  // 一旦允许复用，仓库 src 的修复永远到不了桌面端。
+  log('sync core sources');
+  const srcDest = join(coreDir, 'src');
+  rimraf(srcDest);
+  cpSync(join(repoRoot, 'src'), srcDest, { recursive: true });
+  if (existsSync(join(repoRoot, '.env.example'))) {
+    copyFileSync(join(repoRoot, '.env.example'), join(coreDir, '.env.example'));
+  }
 
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
   const slim = {
@@ -164,17 +167,19 @@ function stageCoreSources() {
     main: 'src/index.js',
     dependencies: pkg.dependencies || {},
   };
-  writeFileSync(join(coreDir, 'package.json'), `${JSON.stringify(slim, null, 2)}\n`);
-  const srcDest = join(coreDir, 'src');
-  if (existsSync(srcDest)) rmSync(srcDest, { recursive: true, force: true });
-  cpSync(join(repoRoot, 'src'), srcDest, { recursive: true });
-  if (existsSync(join(repoRoot, '.env.example'))) {
-    copyFileSync(join(repoRoot, '.env.example'), join(coreDir, '.env.example'));
-  }
+  const pkgPath = join(coreDir, 'package.json');
+  const nextPkg = `${JSON.stringify(slim, null, 2)}\n`;
+  const prevPkg = hasFile(pkgPath) ? readFileSync(pkgPath, 'utf8') : '';
+  writeFileSync(pkgPath, nextPkg);
 
-  run(isWin ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
-    cwd: coreDir,
-  });
+  const needInstall = force || prevPkg !== nextPkg || !existsSync(join(coreDir, 'node_modules'));
+  if (needInstall) {
+    run(isWin ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      cwd: coreDir,
+    });
+  } else {
+    log('reuse node_modules (dependencies unchanged)');
+  }
 
   log('staged', coreDir);
   return coreDir;
@@ -229,6 +234,13 @@ function tryPkgBinary() {
 
 async function main() {
   ensureDir(resourcesDir);
+
+  // 清理历史遗留的下载产物：tauri.conf 的 resources/* 会把它们打进安装包。
+  rimraf(join(resourcesDir, '_node_extract'));
+  for (const f of readdirSync(resourcesDir)) {
+    if (/^node-v.+\.zip$/.test(f)) rmSync(join(resourcesDir, f), { force: true });
+  }
+
   writeFileSync(
     join(resourcesDir, 'README.txt'),
     [

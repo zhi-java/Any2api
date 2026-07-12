@@ -137,7 +137,7 @@ function buildChannels() {
       name: 'GLM',
       configured: glmStatus.auth.configuredRefreshTokens > 0,
       credentialCount: glmStatus.auth.configuredRefreshTokens,
-      availableCount: glmStatus.auth.cached.length || (glmStatus.auth.mode === 'guest' ? 1 : 0),
+      availableCount: glmStatus.auth.configuredRefreshTokens || glmStatus.auth.cached.length || (glmStatus.auth.mode === 'guest' ? 1 : 0),
       activeRequests: glmStatus.auth.pendingRefresh ? 1 : 0,
       capacity: glmStatus.auth.configuredRefreshTokens || 1,
       mode: glmStatus.auth.mode,
@@ -415,14 +415,21 @@ router.post('/api/channels/:channel/test', async (req, res) => {
     if (channel === 'glm') {
       for (const rt of config.glm.refreshTokens || []) {
         try {
-          const accessToken = await glmTokenManager.getAccessToken();
-          results.push({ label: secretLabel(rt), success: Boolean(accessToken), message: accessToken ? '访问令牌获取成功' : '无法获取访问令牌' });
-          if (!accessToken) {
+          // 直接测这一条 refresh token——getAccessToken() 会在 token 失效时
+          // 静默降级访客模式，导致无效凭据也报"成功"。
+          const ok = await glmTokenManager.testRefreshToken(rt);
+          results.push({ label: secretLabel(rt), success: ok, message: ok ? '访问令牌获取成功' : '无法获取访问令牌' });
+          if (!ok) {
             removeChannelCredential('glm', secretId(rt));
           }
         } catch (err) {
-          removeChannelCredential('glm', secretId(rt));
-          results.push({ label: secretLabel(rt), success: false, message: `测试失败，凭据已删除: ${err.message}` });
+          // 仅在上游明确拒绝时删除凭据；网络类错误保留凭据，避免离线点测试把凭据清空。
+          if (/GLM token refresh failed/i.test(err.message)) {
+            removeChannelCredential('glm', secretId(rt));
+            results.push({ label: secretLabel(rt), success: false, message: `凭据无效，已删除: ${err.message}` });
+          } else {
+            results.push({ label: secretLabel(rt), success: false, message: `测试失败（凭据已保留）: ${err.message}` });
+          }
         }
       }
       if (!results.length && config.glm.guestMode) {
