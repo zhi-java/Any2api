@@ -42,7 +42,8 @@
     ],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "./installer-hooks.nsh"
       }
     },
     "shortDescription": "本地 AI 网关桌面控制台",

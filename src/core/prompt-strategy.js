@@ -8,6 +8,10 @@ import {
 
 const TRIGGER_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
+// 单次回复允许的最大工具调用数：上游经提示词注入输出工具调用时，
+// 单次输出越长越容易截断/超时，限额把失败半径压到每轮最多 3 个调用。
+const MAX_CALLS_PER_RESPONSE = 3;
+
 export function generateTriggerSignal(length = 4) {
   let suffix = '';
   for (let i = 0; i < length; i++) {
@@ -211,7 +215,7 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
   ① 创建一个当前不存在的新文件
   ② 用户明确要求"整个文件推倒重写/清空重来"，且你已 Read 过该文件当前的完整内容
 - 为什么这是硬规则：${writeList} 会用你提供的内容**整体替换**目标文件——凡是没有被你原样复述进参数的部分（没读到的、记不全的、以为"没改动就不用写"的）都会被静默删除；整文件重写还要输出大量未改动内容，输出越长越容易中途截断，留下半截损坏的文件
-- 同一文件要改多处：逐处精确替换，多个 ${primaryEdit} 调用放进同一个 <function_calls> 块（若单处改动内容就很大，按下方分段写入协议拆到多轮）；禁止因为"改动多"就整文件重写
+- 同一文件要改多处：逐处精确替换，${primaryEdit} 调用可同块并行但每轮最多 ${MAX_CALLS_PER_RESPONSE} 个，改不完的下一轮继续（若单处改动内容就很大，按下方分段写入协议拆到多轮）；禁止因为"改动多"就整文件重写
 - 不要因为担心精确匹配失败而退回 ${writeList}：匹配失败就重新 Read 相关区段取回准确原文再改；只有精确替换反复失败、且你已 Read 当前完整文件时，才允许整文件重写作为最后手段
 - 调用 ${writeList} 前自检两问：目标文件已存在吗？我只是想改其中一部分吗？——任一答案为"是"，立即换用 ${editList}${notebookEditNames.length ? `
 - Notebook(.ipynb) 文件的修改用 ${notebookEditNames.join('/')}` : ''}
@@ -219,7 +223,7 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
 | 场景 | ❌ 错误选择 | ✅ 正确选择 |
 |---|---|---|
 | 修改已有文件中的几行 | ${primaryWrite} 重写整个文件 | ${primaryEdit} 只替换那几行 |
-| 同一文件修改多处 | ${primaryWrite} 全量重写 | 多个 ${primaryEdit} 调用放进同一个 <function_calls> 块 |
+| 同一文件修改多处 | ${primaryWrite} 全量重写 | 多个 ${primaryEdit} 分批执行，每轮最多 ${MAX_CALLS_PER_RESPONSE} 个 |
 | 创建全新文件 | — | ${primaryWrite} |
 | 新建超过约 200 行的大文件 | 一次 ${primaryWrite} 输出全部内容 | 按分段写入协议：${primaryWrite} 首段 + ${primaryEdit} 逐段续写 |
 | 用户明确要求整文件重写 | 没读过原文就直接 ${primaryWrite} | 先 Read 完整原文，再 ${primaryWrite} |
@@ -232,7 +236,7 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
   1. 第一轮：${primaryWrite} 写入第一段，结尾单独一行放全文件唯一的续写标记（代码文件用注释语法，如 // <OMNI-CONT-1>）
   2. 后续每轮：${primaryEdit} 把续写标记整行替换为「下一段内容 + 新标记（编号递增）」
   3. 最后一轮：${primaryEdit} 把标记整行替换为最后一段（不再留标记），然后 Read 验证文件完整
-- 修改已有文件的大范围改动同理：拆成多个小 ${primaryEdit} 跨多轮执行，每轮只改一到几处，收到结果后再继续下一批
+- 修改已有文件的大范围改动同理：拆成多个小 ${primaryEdit} 跨多轮执行，每轮最多 ${MAX_CALLS_PER_RESPONSE} 个调用，收到结果后再继续下一批
 - 分段边界选在函数/类/配置块等自然结构处，禁止在语句或字符串中间断开
 - 分段过程中某轮失败只重试该段；禁止因为某段失败就回退成整文件一次性重写`;
   } else if (editList) {
@@ -246,7 +250,7 @@ export function buildXmlToolInstructions({ tools = [], toolChoice = 'auto', trig
   // "一次响应完成所有工作"的并行激励与分段写入相斥：超大文件内容必须
   // 拆到多轮，否则截断/转义错误/客户端超时的概率随单次输出长度上升。
   const largeOutputException = editList && writeList
-    ? `\n- 上两条的例外：超过约 200 行的文件写入/编辑内容不适用"一次发出/一次完成"——必须按「大内容分段写入协议」拆成多轮小调用，禁止为凑一次完成而单次输出超大内容`
+    ? `\n- 补充：超过约 200 行的文件写入/编辑内容，即使只是单独一个调用，也必须按「大内容分段写入协议」拆成多轮小调用，禁止单次输出超大内容`
     : '';
 
   const codingGuide = isCodingToolset ? `
@@ -299,8 +303,8 @@ ${interactiveGuide}
 - 工具执行结果返回后（以"[系统通知]"开头的消息），先判断任务是否全部完成：未完成就继续调用下一个所需工具——修改文件后重新 Read 验证、修复后重新运行测试、根据搜索结果继续读取文件，都是正当且推荐的再次调用
 - 任务全部完成后，才用自然语言总结本轮做了什么、结果如何；禁止以空内容结束
 - 不要用完全相同的参数重复紧邻的上一次调用（它的结果已经在上面给出）
-- 多个独立的工具调用应在一次响应中同时发出，不要分步串行
-- 一次响应中完成所有可预见的工作，避免"调用-等待-再调用"的低效循环${largeOutputException}
+- 多个独立的工具调用应在同一次回复中并行发出，不要分步串行；但**单次回复最多 ${MAX_CALLS_PER_RESPONSE} 个 <function_call>**，超出限额的工作放到下一轮，收到结果后继续
+- 单次输出越多越容易截断和超时：在限额内优先安排最关键的调用，剩余工作在后续轮次继续，不要为了"一次做完"塞进过多调用${largeOutputException}
 ${codingGuide}
 ## 输出格式（唯一合法格式）
 
@@ -341,6 +345,7 @@ ${triggerSignal}
 7. 若调用 AskUserQuestion：每个 question 的 options 是否只有 2–4 项？header/label 是否过长？
 8. 中文叙述引号是否用了「」或‘’，而不是在 JSON 字符串值里再嵌未转义的 ASCII "？
 9. \`</function_calls>\` 之后是否没有任何文字？
+10. \`<function_calls>\` 内是否最多只有 ${MAX_CALLS_PER_RESPONSE} 个 \`<function_call>\`？超出则只保留最关键的 ${MAX_CALLS_PER_RESPONSE} 个，其余下一轮再发
 
 ## 🚫 致命错误示范（真实踩坑，整条调用会被丢弃）
 
@@ -405,7 +410,7 @@ ${triggerSignal}
 - 上述"触发信号 + XML"是唯一有效的调用方式；禁止用 工具名({"参数":...}) 伪代码、[调用 工具名] {"参数":...}、[Call Tool] {...}、Action/Action Input、Tool/Input、<ApplyPatch>...</ApplyPatch>、纯 JSON 或自然语言宣称调用——这些格式一律不会被执行
 - **只要你在正文里表达了"我来/我会/接下来/先"去"查看/读取/搜索/探索/分析/运行/修改…项目/文件/目录/代码…"这类意图，就必须在同一次回复里立即输出完整的"触发信号 + <function_calls>"块把它执行掉；禁止只写一句计划或说明然后停下，那样任务会直接死锁**
 - 触发信号后紧跟 <function_calls>（中间可有空白）
-- 所有调用放在一个 <function_calls> 块内，每个工具一个 <function_call>
+- 所有调用放在一个 <function_calls> 块内，每个工具一个 <function_call>，单次回复最多 ${MAX_CALLS_PER_RESPONSE} 个 <function_call>
 - **<tool> 只能出现在 <function_call> 内部，且必须与配套的 <args_json> 一起出现；禁止输出孤立的 <tool>名称</tool>**
 - <tool> 的值必须与上方可用工具列表中的名称完全一致
 - <args_json> 内是一个合法且完整的 JSON 对象（{ 开头、} 结尾），参数名和类型匹配工具定义，字符串值内不得出现字面换行
