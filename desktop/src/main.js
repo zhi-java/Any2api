@@ -234,7 +234,7 @@ function renderWizard() {
     body = `
       <div class="wizard-kicker">首次设置</div>
       <h1>把网页模型变成本地 API</h1>
-      <p>选择渠道 → 添加凭据并测通 → 复制地址给 Cursor 或其他客户端。</p>
+      <p>选择渠道 → 添加凭据并测通 → 复制地址给任意 OpenAI 兼容客户端。</p>
       <div class="protocol-chips" style="margin-bottom:14px">
         <span class="proto-chip">OpenAI <code>/v1/chat/completions</code></span>
         <span class="proto-chip">Anthropic <code>/v1/messages</code></span>
@@ -330,7 +330,7 @@ function renderWizard() {
   } else {
     body = `
       <div class="wizard-kicker">完成</div>
-      <h1>可以去 Cursor 里粘贴 Base URL 了</h1>
+      <h1>可以粘贴 Base URL 到客户端了</h1>
       <p>把下面的地址填到任意 OpenAI 兼容客户端。API Key 使用你在 Admin / 设置中的访问密钥。</p>
       <div class="endpoint-well"><code id="wizard-endpoint">${esc(core?.endpoint || '')}</code></div>
       <div class="protocol-chips" style="margin-bottom:14px">
