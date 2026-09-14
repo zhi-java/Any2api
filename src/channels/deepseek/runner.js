@@ -20,7 +20,14 @@ import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
-import { reportTokenError, reportTokenRateLimited } from '../../services/auth.js';
+import {
+  getIpThrottleRemainingMs,
+  isIpThrottled,
+  noteEmptyReply,
+  noteSuccessfulReply,
+  reportTokenError,
+  reportTokenRateLimited,
+} from '../../services/auth.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -120,6 +127,18 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   const requestId = internalRequest.id;
   const responseId = context.responseId || createInternalId('resp');
   const messageId = createInternalId('msg');
+
+  // IP 级限流冷却期：快速失败并明确报 429，不再打上游。
+  // 实测该限制与账号/凭据无关（3 个不同账号同时受限、14 分钟未恢复），
+  // 继续请求只会加重限流；明确报错让客户端自行退避。
+  if (isIpThrottled()) {
+    const remainingSec = Math.ceil(getIpThrottleRemainingMs() / 1000);
+    throw new InternalAPIError(
+      `上游对当前出口 IP 限流（消息发送过于频繁），约 ${remainingSec} 秒后解除。`
+      + `该限制与账号凭据无关，更换凭据无效；如需立即恢复请更换出口 IP（配置 HTTPS_PROXY）。`,
+      { status: 429, type: 'rate_limit_error', code: 'ip_rate_limited', retryable: true },
+    );
+  }
 
   const openAIMessages = openAIMessagesFromInternal(internalRequest);
   const promptPlan = createPromptPlan({
@@ -480,14 +499,16 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     // 这不是解析问题——上游确实没发正文，只能在代理层续写一次要回正文。
     // 恢复失败则保持原样，绝不伪造正文。
     if (!detectedToolCalls && !pendingToolFailureText && isEmptyAssistantReply({ visibleContent, reasoningContent })) {
-      // 完全没有思考内容时，更可能是该凭据被上游静默限制（实测池中受限
-      // 凭据会返回 200 + 281 字节空流）。记一次错误让池子累积并淘汰它，
-      // 避免后续请求反复命中同一个坏凭据。
+      // 完全空流（无思考无正文）发生在两种情形：
+      //   ① 该凭据被静默限制 → 记错误让池子累积并淘汰它
+      //   ② IP 级限流 → 连续空流由 noteEmptyReply 累积判定，
+      //      达阈值后开启全局冷却（该限制与凭据无关，换凭据无法规避）
       const completelyEmpty = !String(reasoningContent || '').trim();
       // slot 在 releaseSlot() 后会被置空，所以先记录凭据引用。
       const failedToken = slot?.token || null;
       if (completelyEmpty && failedToken) {
         reportTokenError(failedToken);
+        noteEmptyReply();
         console.warn('[DeepSeek] 上游返回完全空流，已记该凭据一次错误');
       }
       releaseSlot();
@@ -540,6 +561,8 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     const totalDuration = Date.now() - requestStart;
     if (context?.recordMetrics && totalDuration > 0) {
       context.recordMetrics(responseModel, usageOutputTokens(usage), totalDuration);
+      // 有正文产出即视为上游正常，清除 IP 限流判定与空流计数。
+      if (String(visibleContent || '').trim()) noteSuccessfulReply();
     }
   } catch (err) {
     if (err.name === 'AbortError') return;

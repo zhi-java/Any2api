@@ -449,6 +449,77 @@ export function clearTokenRateLimit(token) {
   entry.cooldownUntil = 0;
 }
 
+// ============================================================
+// IP 级限流追踪
+//
+// 实测（2026-09-14）：连续长内容生成累计约 1.8MB 后，上游对「出口 IP」
+// 限流，表现为 HTTP 200 + 281 字节空流（仅 role 与 finish_reason），
+// 无任何错误码。对照实验证实与账号/凭据/会话无关——3 个不同账号的凭据
+// 同时被限制，等待 14 分钟仍未恢复。
+//
+// 因此凭据轮换无法规避，继续重试只会加重限流。这里按「短窗口内连续
+// 多次空流」判定为 IP 级限制，进入全局冷却：期间快速失败并明确报 429，
+// 让客户端自行退避，而不是反复无效打上游。
+//
+// 判据只数「连续空流次数」而不要求「不同凭据」：单一凭据场景同样会遭遇
+// IP 限流，若强制要求不同凭据则永远无法识别（实测池中只配一个凭据时
+// 即是如此）。成功一次即清零，因此正常波动不会误判。
+// ============================================================
+
+// 触发判定所需的连续空流次数。单次空流可由续写恢复；连续 3 次说明
+// 并非偶发，而是上游整体不可用（IP 限流或上游故障）。
+const IP_THROTTLE_EMPTY_THRESHOLD = 3;
+// 观测窗口：超过该时长的历史空流不再计入（避免跨时段误累计）。
+const IP_THROTTLE_WINDOW_MS = 5 * 60 * 1000;
+// 冷却时长。实测 14 分钟未恢复，故取较保守值。
+const IP_THROTTLE_COOLDOWN_MS = 15 * 60 * 1000;
+
+/** @type {number[]} 最近若干次空流的时间戳 */
+let recentEmptyReplies = [];
+let ipThrottledUntil = 0;
+
+/**
+ * 记录一次「上游返回空流」。短窗口内连续多次则判定为 IP 级限流
+ * 并开启全局冷却（期间请求快速失败，不再打上游）。
+ */
+export function noteEmptyReply() {
+  const now = Date.now();
+  recentEmptyReplies = recentEmptyReplies.filter(at => now - at <= IP_THROTTLE_WINDOW_MS);
+  recentEmptyReplies.push(now);
+
+  if (recentEmptyReplies.length >= IP_THROTTLE_EMPTY_THRESHOLD && !isIpThrottled()) {
+    ipThrottledUntil = now + IP_THROTTLE_COOLDOWN_MS;
+    console.warn(
+      `[DeepSeek] 连续 ${recentEmptyReplies.length} 次空回复 → 判定为 IP 级限流，`
+      + `全局冷却 ${Math.round(IP_THROTTLE_COOLDOWN_MS / 60000)} 分钟。`
+      + `（该限制与账号凭据无关，换凭据无效；如需立即恢复请更换出口 IP，或等待冷却结束）`,
+    );
+  }
+}
+
+/** 记录一次成功响应：清除 IP 限流状态与空流计数。 */
+export function noteSuccessfulReply() {
+  recentEmptyReplies = [];
+  if (ipThrottledUntil) {
+    console.log('[DeepSeek] 上游已恢复，清除 IP 限流冷却');
+    ipThrottledUntil = 0;
+  }
+}
+
+export function isIpThrottled() {
+  return Date.now() < ipThrottledUntil;
+}
+
+export function getIpThrottleRemainingMs() {
+  return Math.max(0, ipThrottledUntil - Date.now());
+}
+
+/** 仅供测试与人工干预使用。 */
+export function resetIpThrottleState() {
+  recentEmptyReplies = [];
+  ipThrottledUntil = 0;
+}
+
 // Force a token into the dead state regardless of its current errorCount.
 // Used when DeepSeek explicitly mutes/bans an account (biz_code=5, 40004).
 export function markTokenDead(tokenOrEntry) {
