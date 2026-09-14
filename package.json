@@ -7,11 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test",
-    "desktop:dev": "npm --prefix desktop run dev",
-    "desktop:build": "npm --prefix desktop run build",
-    "desktop:prepare-core": "npm --prefix desktop run prepare:core",
-    "pack:core": "npm --prefix desktop run prepare:core:force"
+    "test": "node --test"
   },
   "dependencies": {
     "ali-oss": "^6.23.0",
@@ -20,31 +16,9 @@
     "undici": "^6.21.2"
   },
   "displayName": "OmniAPI",
-  "pkg": {
-    "assets": [
-      "src/admin/**/*",
-      "src/performance/**/*",
-      "src/public/**/*",
-      "src/sha3_wasm_bg.wasm",
-      ".env.example"
-    ],
-    "scripts": [
-      "src/*.js",
-      "src/channels/**/*.js",
-      "src/core/**/*.js",
-      "src/middleware/**/*.js",
-      "src/protocols/**/*.js",
-      "src/routes/**/*.js",
-      "src/services/**/*.js",
-      "src/utils/**/*.js"
-    ]
-  },
   "files": [
     "src",
     "README.md",
     ".env.example"
-  ],
-  "devDependencies": {
-    "@yao-pkg/pkg": "^6.21.0"
-  }
+  ]
 }

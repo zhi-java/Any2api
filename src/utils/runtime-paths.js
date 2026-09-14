@@ -1,22 +1,15 @@
 import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
-function packagedEntrypoint() {
-  return process.pkg?.entrypoint || process.pkg?.defaultEntrypoint || null;
-}
+// 部署形态只有本地与 Docker 两种：源码目录始终随进程一起分发，
+// 因此路径基于模块位置解析，而不是依赖启动时的当前工作目录。
+const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const APP_ROOT = resolve(SRC_DIR, '..');
 
 export function srcPath(...segments) {
-  const entrypoint = packagedEntrypoint();
-  if (entrypoint) {
-    return resolve(dirname(entrypoint), ...segments);
-  }
-
-  return resolve(process.cwd(), 'src', ...segments);
+  return resolve(SRC_DIR, ...segments);
 }
 
 export function appRootPath(...segments) {
-  if (process.pkg) {
-    return resolve(dirname(process.execPath), ...segments);
-  }
-
-  return resolve(process.cwd(), ...segments);
+  return resolve(APP_ROOT, ...segments);
 }
