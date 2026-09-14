@@ -1,6 +1,6 @@
 # OmniAPI
 
-> 多通道 Web-to-API 代理 · 将 DeepSeek、GLM、Qwen、Kimi 等 Web 端统一转换为 OpenAI / Claude 兼容 API
+> 多通道 Web-to-API 代理 · 将 DeepSeek、GLM 等 Web 端统一转换为 OpenAI / Claude 兼容 API
 
 
 ---
@@ -21,7 +21,7 @@
 
 ## 项目简介
 
-**OmniAPI** 是一个多通道 Web-to-API 代理服务，将 DeepSeek、GLM、Qwen、Kimi 等上游 Web 端的对话能力，统一转换为标准的 **OpenAI Chat Completions** 和 **Claude Messages** API 格式。
+**OmniAPI** 是一个多通道 Web-to-API 代理服务，将 DeepSeek、GLM 等上游 Web 端的对话能力，统一转换为标准的 **OpenAI Chat Completions** 和 **Claude Messages** API 格式。
 
 你可以使用任意 OpenAI/Claude SDK 调用这些模型，无需适配各平台的原生 API。
 
@@ -31,7 +31,7 @@
 |------|------|
 | 🔌 **多协议支持** | OpenAI `chat/completions`、Claude `messages`、原生 `responses` |
 | 🚀 **全流式响应** | 所有端点仅支持 SSE 流式输出，实时获取生成内容 |
-| 🧩 **多上游渠道** | DeepSeek、GLM、Qwen、Kimi，统一抽象层 |
+| 🧩 **多上游渠道** | DeepSeek、GLM，统一抽象层 |
 | 🔄 **Token 池管理** | 多账号轮转、自动刷新、并发控制、健康检查 |
 | 🛠️ **工具调用** | 支持 Function Calling，自动注入 XML 格式指令 |
 | ⚙️ **Prompt 注入** | 可开关的兼容性注入，适配不同上游格式 |
@@ -94,23 +94,8 @@ curl http://localhost:3000/v1/models
 |------|---------|---------|
 | **DeepSeek** | 账号密码 / Token 池 | `deepseek-v4-pro`、`deepseek-v4-flash` |
 | **GLM** | Refresh Token / 访客模式 | `glm-5.2` |
-| **Qwen** | Token 池 / 账号密码 | `qwen3.7-plus`、`qwen3.7-max`、`qwen3.6-plus` |
-| **Kimi** | Token 池 | `kimi-k2.6`、`kimi-k2.6-thinking` |
 
-**模型路由优先级**：DeepSeek → GLM → Qwen → Kimi。客户端附加后缀（如 `[1m]`）会被自动剥离。
-
-### 模型名称后缀
-
-各渠道支持的功能后缀：
-
-| 渠道 | 后缀 | 功能 |
-|------|------|------|
-| Qwen | `-thinking` | 思考模式 |
-| Qwen | `-search` | 联网搜索 |
-| Qwen | `-deep-research` | 深度研究 |
-| Qwen | `-image` | 图像生成 |
-| Qwen | `-video` | 视频生成 |
-| Kimi | `-thinking` | 思考模式 |
+**模型路由优先级**：DeepSeek → GLM。客户端附加后缀（如 `[1m]`）会被自动剥离。
 
 ## 配置说明
 
@@ -147,53 +132,17 @@ DS_MAX_QUEUE_SIZE=100
 DEEPSEEK_CONTEXT_FALLBACK=true
 ```
 
-### Qwen 配置
-
-```bash
-# Token 方式
-QWEN_TOKENS="token1,token2"
-
-# 账号密码方式（自动登录刷新）
-QWEN_ACCOUNTS="email:password,email:password"
-
-# 并发与限流（覆盖通用默认值）
-QWEN_MAX_CONCURRENT_PER_TOKEN=5
-QWEN_MAX_QUEUE_SIZE=100
-QWEN_QUEUE_TIMEOUT_MS=30000
-QWEN_ACCOUNT_MIN_INTERVAL_MS=1000
-QWEN_RATE_LIMIT_BASE_COOLDOWN_MS=5000
-QWEN_RATE_LIMIT_MAX_COOLDOWN_MS=60000
-QWEN_MAX_TOKEN_ERRORS=5
-```
-
-> 若同时配置 `QWEN_TOKENS` 和 `QWEN_ACCOUNTS`，两者会合并到同一凭证池。
-
-### Kimi 配置
-
-```bash
-# 单个 Token
-KIMI_AUTH_TOKEN="your-token"
-
-# Token 池（优先于单 Token）
-KIMI_AUTH_TOKENS="token1,token2"
-
-# 长文本附件阈值（字节）
-KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES=450000
-```
-
-> 若未配置任何 Kimi 凭证，Kimi 请求会返回上游不可用错误。
-
 ### GLM 配置
 
 ```bash
-# Refresh Token（推荐）
+# Refresh Token（从智谱清言 Web 端 Cookies 获取）
 GLM_REFRESH_TOKEN="your-refresh-token"
 
-# 或访客模式
-GLM_GUEST_MODE=true
+# 多个 Refresh Token（逗号分隔，优先于单个）
+GLM_REFRESH_TOKENS="token1,token2"
 
-# Cookie（可选）
-GLM_COOKIE="..."
+# 访客模式（无凭据时可用，能力受限）
+GLM_GUEST_MODE=true
 ```
 
 ## 高级功能
@@ -287,7 +236,7 @@ node --test test/channels/deepseek/
 
 ```
 src/
-├── channels/        # 上游渠道实现（deepseek、glm、qwen、kimi）
+├── channels/        # 上游渠道实现（deepseek、glm）
 ├── core/            # 核心逻辑（生成编排、模型解析、Prompt 策略）
 ├── protocols/       # 协议适配器与渲染器
 ├── routes/          # API 路由

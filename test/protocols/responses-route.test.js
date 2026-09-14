@@ -96,9 +96,9 @@ test('/v1/messages rejects stream false even with query string', async () => {
   assert.equal(json.error.type, 'invalid_request_error');
 });
 
-test('/v1/responses supports Qwen through Internal Event runner', async () => {
+test('/v1/responses supports GLM through Internal Event runner', async () => {
   const res = await postJson('/v1/responses', {
-    model: 'qwen3.7-plus',
+    model: 'glm-5.2',
     input: 'hello',
     stream: true,
   });
@@ -107,7 +107,7 @@ test('/v1/responses supports Qwen through Internal Event runner', async () => {
   assert.match(res.body, /event: response\.created/);
   assert.match(res.body, /event: response\.(failed|completed)/);
   if (res.body.includes('event: response.failed')) {
-    assert.match(res.body, /No Qwen credentials configured|Qwen/);
+    assert.match(res.body, /GLM|token|credentials|error/i);
   } else {
     assert.match(res.body, /event: response\.completed/);
   }

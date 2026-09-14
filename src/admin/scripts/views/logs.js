@@ -17,8 +17,6 @@ function render(root, logs) {
           <option value="all">全部渠道</option>
           <option value="deepseek">DeepSeek</option>
           <option value="glm">GLM</option>
-          <option value="qwen">Qwen</option>
-          <option value="kimi">Kimi</option>
         </select>
         <select id="statusFilter" class="select filter-item">
           <option value="all">全部状态</option>
