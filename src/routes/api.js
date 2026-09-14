@@ -17,7 +17,8 @@ import { renderClaudeMessages, writeClaudeProtocolError } from '../protocols/cla
 import { createResponsesRequestAdapter } from '../protocols/responses/request-adapter.js';
 import { renderResponses, writeResponsesError } from '../protocols/responses/renderer.js';
 import { generateInternalEvents, prepareInternalGeneration } from '../core/generation.js';
-import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
+import { DEEPSEEK_MODEL_MAP, toOpenAIModel } from '../channels/deepseek/models.js';
+import { normalizeRequestedModelName } from '../utils/response-utils.js';
 
 const router = express.Router();
 
@@ -102,18 +103,31 @@ router.post('/responses', async (req, res) => {
 
 // ============= 模型列表 - 统一端点（所有渠道的模型） =============
 router.get('/models', (req, res) => {
-  // DeepSeek 模型
-  const deepseekModels = Object.keys(DEEPSEEK_MODEL_MAP).map(id => ({
-    id,
-    object: 'model',
-    created: 1718000000,
-    owned_by: 'deepseek',
-  }));
+  // 每个模型对象都带上上下文长度等元数据，供客户端自动识别能力。
+  const deepseekModels = Object.keys(DEEPSEEK_MODEL_MAP).map(id => toOpenAIModel(id));
 
   res.json({
     object: 'list',
     data: deepseekModels
   });
+});
+
+// 单模型查询：部分客户端（及 OpenAI SDK 的 models.retrieve）会调用此端点，
+// 用于读取上下文长度等能力。缺少它时这些客户端会报 404 或无法识别模型。
+router.get('/models/:model', (req, res) => {
+  const requested = decodeURIComponent(String(req.params.model || ''));
+  const normalized = normalizeRequestedModelName(requested);
+  if (!Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_MAP, normalized)) {
+    return res.status(404).json({
+      error: {
+        message: `The model '${requested}' does not exist`,
+        type: 'invalid_request_error',
+        code: 'model_not_found',
+        param: 'model',
+      },
+    });
+  }
+  res.json(toOpenAIModel(normalized));
 });
 
 export default router;

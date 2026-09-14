@@ -8,6 +8,7 @@
  */
 
 import { normalizeRequestedModelName } from '../../utils/response-utils.js';
+import { getConfig } from '../../services/config-store.js';
 
 /** 对外公开的唯一模型 ID。 */
 export const DEEPSEEK_MODEL = 'deepseek-flash';
@@ -18,6 +19,51 @@ export const DEEPSEEK_MODEL_TYPE = 'default';
 export const DEEPSEEK_MODEL_MAP = {
   [DEEPSEEK_MODEL]: DEEPSEEK_MODEL_TYPE,
 };
+
+/**
+ * 组装 OpenAI 风格的模型对象，并补齐上下文长度等能力元数据。
+ *
+ * 背景：OpenAI 官方 Model 对象不含上下文长度字段，各厂商与客户端自行扩展，
+ * 键名并无统一标准。客户端在自动识别上下文长度时，会依次探测
+ * context_length / context_window / max_context_tokens / max_model_len 等
+ * 不同名称，因此这里一并给出多种常见别名，确保不同客户端都能识别。
+ *
+ * 默认数值取 DeepSeek 官方规格（128K 上下文、8K 输出），可通过
+ * deepseek.contextLength / deepseek.maxOutputTokens 配置调整。
+ */
+export function toOpenAIModel(id, { created = 1718000000, ownedBy = 'deepseek' } = {}) {
+  const { contextLength, maxOutputTokens } = getConfig().deepseek;
+  return {
+    id,
+    object: 'model',
+    created,
+    owned_by: ownedBy,
+    // —— 上下文窗口：不同客户端的探测键名，全部给出以确保兼容 ——
+    context_length: contextLength,
+    context_window: contextLength,
+    max_context_length: contextLength,
+    max_context_tokens: contextLength,
+    max_model_len: contextLength,
+    max_input_tokens: contextLength,
+    // —— 输出上限（与上下文窗口区分，勿混用）——
+    max_output_tokens: maxOutputTokens,
+    max_completion_tokens: maxOutputTokens,
+    // —— 能力声明 ——
+    capabilities: {
+      text: true,
+      thinking: true,
+      document: true,
+      vision: true,
+      tool_calls: true,
+      streaming: true,
+    },
+    // OpenRouter 风格：部分客户端从此嵌套结构读取
+    top_provider: {
+      context_length: contextLength,
+      max_completion_tokens: maxOutputTokens,
+    },
+  };
+}
 
 /**
  * 映射请求模型名到上游 model_type。

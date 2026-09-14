@@ -99,6 +99,10 @@ export interface DeepSeekConfig {
   prewarmSessions: boolean;
   /** 展示用的缓存命中率（0–100），非上游真实缓存统计 */
   reportedCacheHitRate: number;
+  /** 对外上报的上下文窗口（tokens） */
+  contextLength: number;
+  /** 对外上报的单次最大输出（tokens） */
+  maxOutputTokens: number;
 }
 
 export interface PublicConfig {
