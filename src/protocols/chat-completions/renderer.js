@@ -165,6 +165,9 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
         case INTERNAL_EVENT_TYPES.RUN_COMPLETED:
           ensureStarted(event);
           writeSSE(res, { ...base(), choices: [{ index: 0, delta: {}, finish_reason: mapFinishReason(event.finishReason) }] });
+          // OpenAI 规范：流式在 [DONE] 前发一个带 usage 的 chunk（choices 为空数组）。
+          // 客户端据此显示 token 用量、tok/s 等指标；缺失会导致客户端认为"无有效用量"。
+          writeSSE(res, { ...base(), choices: [], usage: usageToOpenAI(event.usage) });
           res.write('data: [DONE]\n\n');
           flushSSE(res);
           safeEnd(res);
@@ -175,6 +178,7 @@ export async function renderChatCompletionsStream(res, events, { model } = {}) {
     if (!res.writableEnded) {
       ensureStarted({});
       writeSSE(res, { ...base(), choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+      writeSSE(res, { ...base(), choices: [], usage: usageToOpenAI({}) });
       res.write('data: [DONE]\n\n');
       flushSSE(res);
       safeEnd(res);

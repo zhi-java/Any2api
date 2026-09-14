@@ -551,11 +551,19 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       for (const event of ensureMessageStarted()) yield event;
       yield createMessageDone({ requestId, responseId, messageId, status: 'completed' });
     }
+    // usage 说明：上游 Web 接口只提供输出 token 数（accumulated_token_usage），
+    // 不提供输入 token 与缓存命中统计。这里对输入做本地估算（与输出同一套
+    // 启发式：约 4 字符/token），使各协议都能给出结构完整的 usage——
+    // 客户端据此显示用量与 tok/s。估算值仅供展示，非计费依据。
+    const estimatedInputTokens = Math.max(0, Math.round(String(fullPrompt || '').length / 4));
     yield createRunCompleted({
       requestId,
       responseId,
       finishReason: detectedToolCalls?.length ? 'tool_calls' : 'stop',
-      usage: { outputTokens: usageOutputTokens(usage) || Math.round((visibleContent.length + reasoningContent.length) / 4) },
+      usage: {
+        inputTokens: estimatedInputTokens,
+        outputTokens: usageOutputTokens(usage) || Math.round((visibleContent.length + reasoningContent.length) / 4),
+      },
     });
 
     const totalDuration = Date.now() - requestStart;
