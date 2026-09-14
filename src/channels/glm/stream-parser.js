@@ -21,6 +21,10 @@ export async function* parseGLMStream(body) {
   let accumulatedThinking = '';
   let lastRawContent = ''; // 完整快照去重
   let accumulatedDeltaContent = '';
+  // 上游在同一流里可能先发增量、再发完整快照（结束态）。一旦确认流是
+  // 增量编码，就不能再用快照差分逻辑，否则结束快照会被当成新增量重复输出。
+  // 该标志在首次出现「不与累积内容重叠」的文本时锁定。
+  let payloadMode = null; // null(未定) | 'delta' | 'snapshot'
 
   /**
    * 从完整文本中分离 <think>...</think> 推理部分
@@ -72,19 +76,31 @@ export async function* parseGLMStream(body) {
       }
     }
 
-    // --- 处理 content delta ---
+    // --- 处理 content ---
     if (text) {
-      // 快照模式：text 以 accumulatedContent 开头，取增量
-      if (accumulatedContent && text.startsWith(accumulatedContent)) {
+      // 首个文本事件两种编码下都等于全部内容，无法区分，先输出并保持未定；
+      // 从第二个文本事件起比较是否以累积内容为前缀：
+      //   是 → 快照编码（上游发完整文本）；否 → 增量编码（上游只发新增片段）。
+      // 一旦锁定为增量，结束阶段的完整快照会与累积内容完全相等而被丢弃，
+      // 避免被当成新增量重复输出。
+      if (payloadMode === null && accumulatedContent) {
+        payloadMode = text.startsWith(accumulatedContent) ? 'snapshot' : 'delta';
+      }
+
+      if (payloadMode === 'delta') {
+        if (text !== accumulatedContent) {
+          accumulatedContent += text;
+          events.push({ type: 'content', content: text });
+        }
+      } else if (accumulatedContent && text.startsWith(accumulatedContent)) {
+        // 快照：以累积内容为前缀，取新增部分
         const delta = text.slice(accumulatedContent.length);
         accumulatedContent = text;
         if (delta) events.push({ type: 'content', content: delta });
       } else if (text !== accumulatedContent) {
-        const delta = accumulatedContent && text.startsWith(accumulatedContent)
-          ? text.slice(accumulatedContent.length)
-          : text;
+        // 未定模式的首个事件（acc 为空）
         accumulatedContent = text;
-        if (delta) events.push({ type: 'content', content: delta });
+        events.push({ type: 'content', content: text });
       }
     }
 

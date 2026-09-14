@@ -62,3 +62,30 @@ test('GLM parser ignores Web search tool finish events before final text', async
 
   assert.deepEqual(chunks, ['GLM_SEARCH_OK']);
 });
+
+// 真实上游（2026-09 实测 chatglm.cn）在同一流里混用两种编码：
+//   流式阶段逐块发【增量】("1" / "." / " HTTP" / "（" ...)，
+//   结束阶段再发【完整快照】(status/part status 均为 finish，重复全文)。
+// 解析器若把每个事件都当快照差分，最终快照会被当成新增量重复输出一遍。
+test('GLM parser handles real mixed delta-then-full-snapshot stream without duplication', async () => {
+  const chunks = await collectTextUntilDone([
+    'data: {"status":"init","parts":[{"status":"init","content":[{"type":"text","text":"1"}]}]}\n\n',
+    'data: {"status":"init","parts":[{"status":"init","content":[{"type":"text","text":"."}]}]}\n\n',
+    'data: {"status":"init","parts":[{"status":"init","content":[{"type":"text","text":" HTTP"}]}]}\n\n',
+    'data: {"status":"init","parts":[{"status":"init","content":[{"type":"text","text":"（超文本传输协议）是通信协议。"}]}]}\n\n',
+    'data: {"status":"init","parts":[{"status":"finish","content":[{"type":"text","text":"1. HTTP（超文本传输协议）是通信协议。"}]}]}\n\n',
+    'data: {"status":"finish","parts":[{"status":"finish","content":[{"type":"text","text":"1. HTTP（超文本传输协议）是通信协议。"}]}]}\n\n',
+  ].join(''));
+
+  assert.equal(chunks.join(''), '1. HTTP（超文本传输协议）是通信协议。');
+});
+
+test('GLM parser treats a genuine full-snapshot stream as snapshot (no duplication)', async () => {
+  const chunks = await collectTextUntilDone([
+    'data: {"status":"init","parts":[{"content":[{"type":"text","text":"1"}]}]}\n\n',
+    'data: {"status":"init","parts":[{"content":[{"type":"text","text":"1."}]}]}\n\n',
+    'data: {"status":"finish","parts":[{"content":[{"type":"text","text":"1. HTTP"}]}]}\n\n',
+  ].join(''));
+
+  assert.equal(chunks.join(''), '1. HTTP');
+});
