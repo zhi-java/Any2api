@@ -22,15 +22,18 @@ function request(messages = [{ role: 'user', content: '我的任务' }], tools =
   });
 }
 
-test('isEmptyAssistantReply detects reasoning-only replies', () => {
+test('isEmptyAssistantReply 以"有无用户可见正文"为唯一判据', () => {
   // 只思考、无正文 → 需要恢复
   assert.equal(isEmptyAssistantReply({ visibleContent: '', reasoningContent: '想清楚了' }), true);
   // 有正文 → 不需要
   assert.equal(isEmptyAssistantReply({ visibleContent: '答案', reasoningContent: '想清楚了' }), false);
-  // 两者都空 → 不触发（可能是正常空回复或工具调用轮）
-  assert.equal(isEmptyAssistantReply({ visibleContent: '', reasoningContent: '' }), false);
+  // 两者都空（上游空流）→ 同样需要恢复
+  assert.equal(isEmptyAssistantReply({ visibleContent: '', reasoningContent: '' }), true);
   // 只有空白字符的正文视为空
   assert.equal(isEmptyAssistantReply({ visibleContent: '   \n ', reasoningContent: '想' }), true);
+  assert.equal(isEmptyAssistantReply({ visibleContent: '   \n ', reasoningContent: '' }), true);
+  // 有正文就不触发，无论有无思考
+  assert.equal(isEmptyAssistantReply({ visibleContent: '答案', reasoningContent: '' }), false);
 });
 
 test('reasoning-only recovery prompt asks for the final answer, not more thinking', () => {
@@ -158,5 +161,31 @@ test('runner stays silent when recovery also yields nothing', async () => {
   // 恢复失败也不应崩溃，不得伪造正文
   const text = events.filter(e => e.type === 'content.text.delta').map(e => e.delta).join('');
   assert.equal(text, '');
+  assert.equal(events.find(e => e.type === 'run.completed').finishReason, 'stop');
+});
+
+test('runner 对完全空流（无思考也无正文）也触发恢复', async () => {
+  const req = request();
+  let retryCalled = 0;
+
+  const events = await collectInternalEvents(runParsedStreamChannel(req, {}, {
+    channelName: 'Test',
+    responseModel: 'test-model',
+    async startStream() {
+      return {
+        streamBody: {},
+        async retryToolRequest() { return ''; },
+        async retryReasoningOnly() { retryCalled += 1; return '恢复出来的正文'; },
+      };
+    },
+    async *parseStream() {
+      // 上游返回 200 + 完全空的流：无 thinking、无 content
+      yield { type: 'done' };
+    },
+  }));
+
+  assert.equal(retryCalled, 1, '完全空流也应触发一次恢复');
+  const text = events.filter(e => e.type === 'content.text.delta').map(e => e.delta).join('');
+  assert.equal(text, '恢复出来的正文');
   assert.equal(events.find(e => e.type === 'run.completed').finishReason, 'stop');
 });

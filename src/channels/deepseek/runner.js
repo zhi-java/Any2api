@@ -20,7 +20,7 @@ import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
-import { reportTokenRateLimited } from '../../services/auth.js';
+import { reportTokenError, reportTokenRateLimited } from '../../services/auth.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -480,6 +480,16 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     // 这不是解析问题——上游确实没发正文，只能在代理层续写一次要回正文。
     // 恢复失败则保持原样，绝不伪造正文。
     if (!detectedToolCalls && !pendingToolFailureText && isEmptyAssistantReply({ visibleContent, reasoningContent })) {
+      // 完全没有思考内容时，更可能是该凭据被上游静默限制（实测池中受限
+      // 凭据会返回 200 + 281 字节空流）。记一次错误让池子累积并淘汰它，
+      // 避免后续请求反复命中同一个坏凭据。
+      const completelyEmpty = !String(reasoningContent || '').trim();
+      // slot 在 releaseSlot() 后会被置空，所以先记录凭据引用。
+      const failedToken = slot?.token || null;
+      if (completelyEmpty && failedToken) {
+        reportTokenError(failedToken);
+        console.warn('[DeepSeek] 上游返回完全空流，已记该凭据一次错误');
+      }
       releaseSlot();
       try {
         const recovered = await retryReasoningOnly({

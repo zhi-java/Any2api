@@ -11,20 +11,24 @@ export function isFcErrorRetryEnabled() {
 const RETRY_LOOP_GUARD = 25;
 
 /**
- * 判定"仅有思考、没有正文"的空回复。
+ * 判定"没有产出任何用户可见内容"的空回复，两种真实形态：
  *
- * 真实场景（2026-09-14 线上日志）：deepseek-flash 在多轮工具调用后，
- * 上游有时只输出 thinking 就 finishReason=stop，完全不给正文。客户端
- * 因此只看到思考、拿不到答案，任务中断。这不是解析问题——上游流里
- * 确实没有 RESPONSE 分片，只能在代理层检测并续写恢复。
+ * 1. 只思考、无正文（2026-09-14 线上日志）：deepseek-flash 在多轮工具
+ *    调用后只输出 thinking 就 finishReason=stop，客户端看得到思考、
+ *    拿不到答案。
+ * 2. 完全空流（2026-09-14 实测）：上游返回 200 + 仅 role 与
+ *    finish_reason 的空流（约 281 字节 / 170ms），思考与正文皆无。
+ *    池中受静默限制的凭据会这样响应。
  *
- * 注意：两者都空时返回 false（不触发恢复）——那更可能是正常的工具
- * 调用轮或空回复，误触发会凭空多打一次上游。
+ * 两种都表现为"客户端拿不到有效回复"，都应交由上层续写恢复。
+ * 调用方均以 !detectedToolCalls && !pendingToolFailureText 守卫，
+ * 因此工具调用轮不会误触发。
  */
 export function isEmptyAssistantReply({ visibleContent = '', reasoningContent = '' } = {}) {
   const hasVisible = String(visibleContent || '').trim().length > 0;
-  const hasReasoning = String(reasoningContent || '').trim().length > 0;
-  return !hasVisible && hasReasoning;
+  // 判据只看"有没有给用户可见的正文"：无论是"只有思考"还是"完全空流"，
+  // 客户端都拿不到有效回复，都需要恢复。思考内容存在与否不影响判定。
+  return !hasVisible;
 }
 
 /**
