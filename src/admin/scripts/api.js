@@ -31,7 +31,7 @@ async function request(url, options = {}) {
     ...options.headers,
   };
 
-  // 如果有旧版 API Key，继续添加到请求头；桌面端优先使用 HttpOnly Cookie 会话。
+  // 如果有旧版 API Key，继续添加到请求头；优先使用 HttpOnly Cookie 会话。
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }

@@ -14,7 +14,7 @@ function clearEnv() {
   ]) delete process.env[key];
 }
 
-test('config store saves desktop config to ZHI2API_CONFIG_PATH and masks secrets', async () => {
+test('config store saves runtime config to ZHI2API_CONFIG_PATH and masks secrets', async () => {
   clearEnv();
   const dir = mkdtempSync(join(tmpdir(), 'omni-config-'));
   process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');

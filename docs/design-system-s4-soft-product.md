@@ -1,7 +1,7 @@
 # OmniAPI Design System — S4 Soft Product
 
 > Status: **Adopted** (2026-07-11)  
-> Product: OmniAPI desktop + admin  
+> Product: OmniAPI admin console  
 > Style: Soft Product — friendly local AI gateway, onboarding-first
 
 ## 1. Positioning
@@ -86,7 +86,7 @@ Numbers in KPIs: `font-variant-numeric: tabular-nums`.
 | `--space-1..6` | 4 / 8 / 12 / 16 / 24 / 32 px |
 
 Cards: white + 1px `--border-subtle` + `--shadow-card`.  
-Avoid heavy glass blur as the main language (light frost only on desktop titlebar if needed).
+Avoid heavy glass blur as the main language.
 
 ## 5. Components
 
@@ -149,12 +149,13 @@ Deep ops visuals (credential honeycomb, heatmaps, trace waterfall) live under **
 - Loading: skeleton on cards, not full-page spinners when >300ms  
 - Respect `prefers-reduced-motion`
 
-## 8. Desktop shell notes
+## 8. Deployment surfaces
 
-- Window chrome light, matches canvas  
-- Close window ≠ stop gateway (confirm on “退出并停止”)  
-- Tray: simple monochrome/indigo mark; green dot when running  
-- Notifications: plain language (“Qwen 渠道需关注” not raw error codes only)
+Admin 控制台同时服务于本地运行与 Docker 部署两种形态，不区分外壳：
+
+- 本地：`npm start` 后浏览器访问 `http://localhost:3000/admin`
+- Docker：容器内同样端口，由 `docker-compose.yml` 映射到宿主机
+- 通知/文案使用平实语言（“GLM 渠道需关注”而非只给原始错误码）
 
 ## 9. Explicit anti-patterns (for S4)
 
@@ -171,15 +172,8 @@ Deep ops visuals (credential honeycomb, heatmaps, trace waterfall) live under **
 |--------|--------|
 | `src/admin/styles/design-system.css` | Replace tokens with S4 light set |
 | Admin pages | Reorder Home toward switch + endpoint + steps |
-| Desktop shell (future) | Wizard + tray follow this doc |
 | Optional skins | S1/S5 later behind Settings → Appearance |
 
 ## 11. Reference preview
 
 Interactive mock: [`docs/style-preview.html`](style-preview.html) → tab **S4 Soft Product**.
-
-## 12. Related product design
-
-- Desktop product design (A+C): [](desktop-product-design-s4.md)
-- Interactive prototype (wizard / main / tray): [](desktop-prototype-s4.html)
-- Style comparison preview: [](style-preview.html)

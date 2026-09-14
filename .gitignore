@@ -59,5 +59,3 @@ volume-backup.tar.gz
 
 # local runtime config — contains real upstream credentials, never commit
 config.json
-# tauri build requires icon pngs despite global *.png rule
-!desktop/src-tauri/icons/*.png
