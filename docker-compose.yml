@@ -19,6 +19,9 @@ services:
       API_KEY: ${API_KEY:-sk-zhi}
       API_KEYS: ${API_KEYS:-}
 
+      # 数据目录：持久化 config.json（后台添加的凭据等）
+      ZHI2API_DATA_DIR: /data
+
       # 代理配置
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
@@ -50,6 +53,8 @@ services:
     volumes:
       # 持久化日志
       - ./logs:/app/logs
+      # 持久化配置（config.json：后台添加的凭据、运行配置）
+      - omni-data:/data
       # 如果需要自定义配置文件，可以挂载 .env
       # - ./.env:/app/.env:ro
 
@@ -69,4 +74,7 @@ networks:
 
 volumes:
   logs:
+    driver: local
+  # 配置数据卷：容器重建后凭据与运行配置不丢失
+  omni-data:
     driver: local

@@ -38,13 +38,17 @@ COPY package*.json ./
 COPY src ./src
 COPY .env.example ./.env.example
 
-# 前端构建产物（Vite base 指向 /admin/，Express 从 src/admin/dist 托管）
-COPY --from=web-builder /web/dist ./src/admin/dist
+# 前端构建产物（Vite base 指向 /admin/，Express 从 src/admin/dist 托管）。
+# vite.config.ts 的 outDir 是 '../src/admin/dist'（相对 web/），
+# 容器内即 /web/../src/admin/dist → /src/admin/dist。
+COPY --from=web-builder /src/admin/dist ./src/admin/dist
 
-# 日志目录与权限
-RUN mkdir -p /app/logs && \
-    chown -R node:node /app && \
-    chmod -R 755 /app
+# 日志与数据目录权限。
+# /app/logs 与 /data 均为挂载点，预创建并设置属主，使命名卷首次挂载时
+# 节点用户（uid 1000）可写，避免运行时 EACCES。
+RUN mkdir -p /app/logs /data && \
+    chown -R node:node /app /data && \
+    chmod -R 755 /app /data
 
 USER node
 
