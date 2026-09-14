@@ -169,13 +169,22 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
           ensureTextBlockStarted(event);
           writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: event.error?.message || 'Internal Server Error' } });
           closeActiveBlock();
-          writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
+          writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 0, output_tokens: 0 } });
           writeClaudeSSE(res, { type: 'message_stop' });
           safeEnd(res);
           return;
         case INTERNAL_EVENT_TYPES.RUN_COMPLETED:
           closeActiveBlock();
-          writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: mapStopReason(event.finishReason), stop_sequence: null }, usage: { output_tokens: event.usage?.outputTokens || 0 } });
+          // message_start 时尚未产生用量，故此处补报 input_tokens 与 output_tokens，
+          // 使客户端能显示完整用量（流式场景下这是最后一次可写 usage 的机会）。
+          writeClaudeSSE(res, {
+            type: 'message_delta',
+            delta: { stop_reason: mapStopReason(event.finishReason), stop_sequence: null },
+            usage: {
+              input_tokens: event.usage?.inputTokens || 0,
+              output_tokens: event.usage?.outputTokens || 0,
+            },
+          });
           writeClaudeSSE(res, { type: 'message_stop' });
           flushSSE(res);
           safeEnd(res);
@@ -186,7 +195,7 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
     if (!res.writableEnded) {
       ensureMessageStarted({});
       closeActiveBlock();
-      writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
+      writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 0, output_tokens: 0 } });
       writeClaudeSSE(res, { type: 'message_stop' });
       safeEnd(res);
     }
@@ -195,7 +204,7 @@ export async function renderClaudeMessagesStream(res, events, { model } = {}) {
     ensureTextBlockStarted({});
     writeClaudeSSE(res, { type: 'content_block_delta', index: activeBlockIndex, delta: { type: 'text_delta', text: err.message || 'Internal Server Error' } });
     closeActiveBlock();
-    writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
+    writeClaudeSSE(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 0, output_tokens: 0 } });
     writeClaudeSSE(res, { type: 'message_stop' });
     safeEnd(res);
   }

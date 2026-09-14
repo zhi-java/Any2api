@@ -139,3 +139,56 @@ test('Chat stream records tool call before completion for clients that omit assi
   }
   await renderChatCompletionsStream(res, interruptedEvents(), { model: 'deepseek-flash' });
 });
+
+test('Chat 流式响应在结束前输出 usage chunk（客户端据此计算用量与 tok/s）', async () => {
+  const requestId = 'req_usage_stream';
+  const responseId = 'resp_usage_stream';
+  const res = streamRes();
+  await renderChatCompletionsStream(res, asyncEvents([
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions' }),
+    createMessageStarted({ requestId, responseId, messageId: 'msg_u' }),
+    createTextDelta({ requestId, responseId, messageId: 'msg_u', delta: '你好' }),
+    createRunCompleted({
+      requestId, responseId, finishReason: 'stop',
+      usage: { inputTokens: 12, outputTokens: 34, reasoningTokens: 5 },
+    }),
+  ]), { model: 'deepseek-flash' });
+
+  const wire = res.chunks.join('');
+  const usageChunks = wire
+    .split('\n')
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trim())
+    .filter(d => d && d !== '[DONE]')
+    .map(d => { try { return JSON.parse(d); } catch { return null; } })
+    .filter(Boolean)
+    .filter(j => j.usage);
+
+  assert.equal(usageChunks.length, 1, '流式应恰好输出一个带 usage 的 chunk');
+  const usage = usageChunks[0].usage;
+  assert.equal(usage.prompt_tokens, 12);
+  assert.equal(usage.completion_tokens, 34);
+  assert.equal(usage.total_tokens, 46);
+  assert.equal(usage.completion_tokens_details.reasoning_tokens, 5);
+
+  // usage chunk 必须出现在 [DONE] 之前，且其 choices 为空数组（OpenAI 规范）
+  const usageAt = wire.indexOf('"usage"');
+  const doneAt = wire.indexOf('[DONE]');
+  assert.ok(usageAt > 0 && usageAt < doneAt, 'usage 必须在 [DONE] 之前');
+  assert.deepEqual(usageChunks[0].choices, [], 'usage chunk 的 choices 应为空数组');
+});
+
+test('Chat 流式在无 usage 事件时也输出 usage chunk（补零，保证客户端字段存在）', async () => {
+  const requestId = 'req_usage_zero';
+  const responseId = 'resp_usage_zero';
+  const res = streamRes();
+  await renderChatCompletionsStream(res, asyncEvents([
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions' }),
+    createMessageStarted({ requestId, responseId, messageId: 'msg_z' }),
+    createTextDelta({ requestId, responseId, messageId: 'msg_z', delta: 'ok' }),
+    createRunCompleted({ requestId, responseId, finishReason: 'stop' }),
+  ]), { model: 'deepseek-flash' });
+
+  const wire = res.chunks.join('');
+  assert.match(wire, /"usage":\{/, '即使无用量也应输出结构完整的 usage 字段');
+});
