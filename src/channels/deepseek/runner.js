@@ -20,6 +20,7 @@ import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
+import { reportTokenRateLimited } from '../../services/auth.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -278,7 +279,20 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       if (clientGone) break;
       if (event.type === 'error') {
         try { await streamBody?.cancel?.(); } catch {}
-        throw new InternalAPIError(event.message || `DeepSeek error ${event.code}`, { status: 502, type: 'api_error', code: event.code || null });
+        // 流中途才报限流：数据已开始下发，本次无法更换凭据，但要让该
+        // 凭据进入冷却，避免后续请求继续撞它。
+        const isRateLimited = event.code === 429 || event.code === 40301;
+        if (slot && isRateLimited) {
+          reportTokenRateLimited(slot.token);
+        }
+        throw new InternalAPIError(event.message || `DeepSeek error ${event.code}`, {
+          // 限流应回报 429 rate_limit_error，客户端据此退避重试；
+          // 其它上游错误按 502 api_error 处理。
+          status: isRateLimited ? 429 : 502,
+          type: isRateLimited ? 'rate_limit_error' : 'api_error',
+          code: event.code || null,
+          retryable: isRateLimited,
+        });
       }
       if (event.messageIds?.responseMessageId) {
         recordResponseMessageId(conversationId, event.messageIds.responseMessageId);
@@ -522,8 +536,10 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     if (err instanceof InternalAPIError) throw err;
     try { await streamBody?.cancel?.(); } catch {}
     throw new InternalAPIError(err.message || 'DeepSeek upstream error', {
-      status: 502,
-      type: 'api_error',
+      // 保留上游错误携带的 HTTP 语义（如限流 429），缺失时才回落 502。
+      status: err.status || 502,
+      type: err.type || 'api_error',
+      retryable: err.retryable || false,
       cause: err,
     });
   } finally {

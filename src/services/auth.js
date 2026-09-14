@@ -114,6 +114,9 @@ function createTokenEntry({ token = null, email = null, password = null, visionC
     errorCount: 0,
     activeRequests: 0,
     dead: false,
+    // 限流冷却：cooldownUntil 为绝对时间戳（0 = 可用）
+    cooldownUntil: 0,
+    rateLimitHits: 0,
   };
 }
 
@@ -358,7 +361,14 @@ export async function initTokenPool() {
 }
 
 export function acquireToken(preferVision = false) {
-  const liveCandidates = tokenPool.filter(t => !t.dead && t.activeRequests < maxConcurrentPerToken() && t.token);
+  const now = Date.now();
+  // 限流冷却中的 token 不参与分配。冷却到期自动恢复可用（无需外部清理）。
+  const liveCandidates = tokenPool.filter(t =>
+    !t.dead
+    && t.token
+    && t.activeRequests < maxConcurrentPerToken()
+    && (t.cooldownUntil || 0) <= now,
+  );
   if (liveCandidates.length === 0) return null;
 
   let candidates = liveCandidates;
@@ -372,7 +382,13 @@ export function acquireToken(preferVision = false) {
   // If the preferred subset is empty, fall back to liveCandidates (don't block
   // a vision request when only non-vision tokens are free, and vice versa).
 
-  candidates.sort((a, b) => a.activeRequests - b.activeRequests);
+  // 先按并发数（负载）排序；并发相同的按 lastUsed 升序轮转（最近最少使用优先）。
+  // 只按 activeRequests 排会在并发未打满时永远选中数组第一个凭据，使多凭据
+  // 退化为"只用第一个"——第一个被限流时整个服务受影响。加入 lastUsed 轮转后，
+  // 请求会均匀分散到各凭据，既降低单凭据被限流的概率，也让限流影响面更小。
+  candidates.sort((a, b) =>
+    (a.activeRequests - b.activeRequests) || ((a.lastUsed || 0) - (b.lastUsed || 0)),
+  );
   const chosen = candidates[0];
   chosen.activeRequests++;
   chosen.lastUsed = Date.now();
@@ -395,6 +411,42 @@ export function reportTokenError(token) {
   if (entry.errorCount >= tokenDeadThreshold()) {
     markTokenDead(entry);
   }
+}
+
+// 限流冷却基础时长（秒）。命中后 token 暂时退出分配，到期自动恢复；
+// 连续命中则按次数递增（指数退避，上限 1 小时），避免持续撞限流。
+const RATE_LIMIT_BASE_COOLDOWN_SECONDS = 60;
+const RATE_LIMIT_MAX_COOLDOWN_SECONDS = 3600;
+
+/**
+ * 上报一次限流命中（HTTP 429 / 上游限流语义）。
+ *
+ * 与 reportTokenError 的区别：限流是**临时**状态，不应累计成"死 token"，
+ * 否则短暂限流会把好凭据永久剔除。这里改为设置冷却窗口——冷却期内该
+ * token 不参与分配，其他凭据接管；到期自动恢复。
+ */
+export function reportTokenRateLimited(token) {
+  const entry = tokenPool.find(t => t.token === token);
+  if (!entry) return { cooldownSeconds: 0 };
+  entry.rateLimitHits = (entry.rateLimitHits || 0) + 1;
+  const cooldownSeconds = Math.min(
+    RATE_LIMIT_BASE_COOLDOWN_SECONDS * 2 ** (entry.rateLimitHits - 1),
+    RATE_LIMIT_MAX_COOLDOWN_SECONDS,
+  );
+  entry.cooldownUntil = Date.now() + cooldownSeconds * 1000;
+  console.warn(
+    `[DeepSeek] Token ${String(entry.token).slice(0, 12)}... 命中限流，冷却 ${cooldownSeconds}s `
+    + `(第 ${entry.rateLimitHits} 次)`,
+  );
+  return { cooldownSeconds, rateLimitHits: entry.rateLimitHits };
+}
+
+/** 上报一次成功，清除限流冷却与计数。 */
+export function clearTokenRateLimit(token) {
+  const entry = tokenPool.find(t => t.token === token);
+  if (!entry) return;
+  entry.rateLimitHits = 0;
+  entry.cooldownUntil = 0;
 }
 
 // Force a token into the dead state regardless of its current errorCount.
@@ -424,6 +476,9 @@ export function reportTokenSuccess(token) {
   if (!entry) return;
   entry.errorCount = 0;
   entry.lastUsed = Date.now();
+  // 成功即视为限流已解除：清冷却与计数，避免残留让 token 长时间闲置。
+  entry.rateLimitHits = 0;
+  entry.cooldownUntil = 0;
   if (entry.dead) {
     entry.dead = false;
     console.log(`Token ${token.slice(0, 12)}... revived (was dead, now working)`);
@@ -642,6 +697,7 @@ export function stopHealthCheck() {
 }
 
 export function getPoolInfo() {
+  const now = Date.now();
   return tokenPool.filter(t => !t.dead).map(t => ({
     token: t.token ? t.token.slice(0, 12) + '...' : 'NONE',
     email: t.email || null,
@@ -650,7 +706,24 @@ export function getPoolInfo() {
     activeRequests: t.activeRequests,
     dead: t.dead,
     maxConcurrent: maxConcurrentPerToken(),
+    // 限流冷却剩余时间（毫秒），0 表示可用
+    cooldownRemainingMs: Math.max(0, (t.cooldownUntil || 0) - now),
+    rateLimitHits: t.rateLimitHits || 0,
   }));
+}
+
+/**
+ * 是否还有其它可用凭据（用于决定限流后要不要换 token 重试）。
+ * excludeToken 传当前失败的 token，避免"换"成同一个。
+ */
+export function hasAlternativeToken(excludeToken = null) {
+  const now = Date.now();
+  return tokenPool.some(t =>
+    !t.dead
+    && t.token
+    && t.token !== excludeToken
+    && (t.cooldownUntil || 0) <= now,
+  );
 }
 
 export function getAliveTokens() {
