@@ -13,10 +13,10 @@ function req(body) {
 }
 
 test('Responses adapter maps string input to one user message', () => {
-  const body = { model: 'deepseek-v4-flash', input: 'hello' };
+  const body = { model: 'deepseek-flash', input: 'hello' };
   const internal = createResponsesRequestAdapter(req(body));
   assert.equal(internal.protocol, 'responses');
-  assert.equal(internal.model.requested, 'deepseek-v4-flash');
+  assert.equal(internal.model.requested, 'deepseek-flash');
   assert.equal(internal.stream, false);
   assert.equal(internal.messages.length, 1);
   assert.equal(internal.messages[0].role, 'user');
@@ -24,7 +24,7 @@ test('Responses adapter maps string input to one user message', () => {
 });
 
 test('Responses adapter maps role/content input array', () => {
-  const body = { model: 'deepseek-v4-flash', input: [{ role: 'user', content: 'hello' }], stream: true };
+  const body = { model: 'deepseek-flash', input: [{ role: 'user', content: 'hello' }], stream: true };
   const internal = createResponsesRequestAdapter(req(body));
   assert.equal(internal.stream, true);
   assert.equal(internal.messages[0].role, 'user');
@@ -33,7 +33,7 @@ test('Responses adapter maps role/content input array', () => {
 
 test('Responses adapter maps typed input_text message items', () => {
   const body = {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'typed hello' }] }],
     instructions: 'be concise',
     previous_response_id: 'resp_previous',
@@ -46,7 +46,7 @@ test('Responses adapter maps typed input_text message items', () => {
 
 test('Responses adapter normalizes tools and tool_choice', () => {
   const body = {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     input: 'hello',
     tools: [{ type: 'function', name: 'Read', description: 'Read file', parameters: { type: 'object', properties: {} } }],
     tool_choice: { type: 'function', function: { name: 'Read' } },
@@ -58,5 +58,5 @@ test('Responses adapter normalizes tools and tool_choice', () => {
 });
 
 test('Responses adapter rejects missing input', () => {
-  assert.throws(() => createResponsesRequestAdapter(req({ model: 'deepseek-v4-flash' })), /input is required/);
+  assert.throws(() => createResponsesRequestAdapter(req({ model: 'deepseek-flash' })), /input is required/);
 });

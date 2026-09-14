@@ -9,9 +9,9 @@ function snapshotEnv() {
   return {
     API_KEY: process.env.API_KEY,
     API_KEYS: process.env.API_KEYS,
-    GLM_REFRESH_TOKEN: process.env.GLM_REFRESH_TOKEN,
-    GLM_REFRESH_TOKENS: process.env.GLM_REFRESH_TOKENS,
-    GLM_GUEST_MODE: process.env.GLM_GUEST_MODE,
+    DS_TOKEN: process.env.DS_TOKEN,
+    DS_TOKENS: process.env.DS_TOKENS,
+    DS_ACCOUNTS: process.env.DS_ACCOUNTS,
     ZHI2API_CONFIG_PATH: process.env.ZHI2API_CONFIG_PATH,
     ZHI2API_DATA_DIR: process.env.ZHI2API_DATA_DIR,
   };
@@ -29,9 +29,9 @@ async function withAdminServer(configure, fn) {
   const dir = mkdtempSync(join(tmpdir(), 'omni-admin-channels-'));
   delete process.env.API_KEY;
   delete process.env.API_KEYS;
-  delete process.env.GLM_REFRESH_TOKEN;
-  delete process.env.GLM_REFRESH_TOKENS;
-  delete process.env.GLM_GUEST_MODE;
+  delete process.env.DS_TOKEN;
+  delete process.env.DS_TOKENS;
+  delete process.env.DS_ACCOUNTS;
   process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');
   delete process.env.ZHI2API_DATA_DIR;
 
@@ -53,21 +53,33 @@ async function withAdminServer(configure, fn) {
   }
 }
 
-test('GLM saved refresh token is reported available after restart before access-token cache is warm', async () => {
+test('DeepSeek 渠道在无凭据时报告为未配置', async () => {
+  await withAdminServer(() => {}, async baseUrl => {
+    const response = await fetch(`${baseUrl}/admin/api/channels`);
+    assert.equal(response.status, 200);
+
+    const body = await response.json();
+    // GLM 渠道已移除，只剩 DeepSeek
+    assert.equal(body.channels.length, 1);
+    const deepseek = body.channels.find(channel => channel.id === 'deepseek');
+    assert.ok(deepseek);
+    assert.equal(deepseek.configured, false);
+    assert.equal(deepseek.status, 'unconfigured');
+  });
+});
+
+test('DeepSeek 已保存 token 时按配置报告为已配置', async () => {
   await withAdminServer(configStore => {
-    configStore.updateConfig({
-      glm: { refreshTokens: ['glm-refresh-token'], guestMode: false },
-    });
+    // 仅写入配置（不触发 token 池同步），验证 configured 判据来自配置本身
+    configStore.updateConfig({ deepseek: { tokens: ['ds-probe-token'] } });
   }, async baseUrl => {
     const response = await fetch(`${baseUrl}/admin/api/channels`);
     assert.equal(response.status, 200);
 
     const body = await response.json();
-    const glm = body.channels.find(channel => channel.id === 'glm');
-    assert.ok(glm);
-    assert.equal(glm.configured, true);
-    assert.equal(glm.credentialCount, 1);
-    assert.equal(glm.availableCount, 1);
-    assert.equal(glm.status, 'healthy');
+    const deepseek = body.channels.find(channel => channel.id === 'deepseek');
+    assert.ok(deepseek);
+    assert.equal(deepseek.configured, true);
+    assert.equal(deepseek.mode, 'token-pool');
   });
 });

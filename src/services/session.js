@@ -108,7 +108,7 @@ export function getSessionInfo() {
   return { count: sessionPool.size, ttl, sessions: entries };
 }
 
-export async function prewarmSessions(tokens, modelTypes = ['default', 'expert']) {
+export async function prewarmSessions(tokens, modelTypes = ['default']) {
   const poolInfo = getPoolInfo();
   const alivePrefixes = poolInfo.filter(t => !t.dead && t.token !== 'NONE').map(t => t.token.replace('...', ''));
 

@@ -6,7 +6,6 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { recordRequest } from './metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
-import { GLM_MODEL_MAP } from '../channels/glm/models.js';
 import { getConfig, getDataDir } from '../services/config-store.js';
 
 const MEMORY_LIMIT = 1000;
@@ -39,7 +38,6 @@ function assertWithinLogDir(targetPath) {
 
 function channelForModel(model) {
   if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_MAP, model)) return 'deepseek';
-  if (Object.prototype.hasOwnProperty.call(GLM_MODEL_MAP, model)) return 'glm';
   return 'unknown';
 }
 

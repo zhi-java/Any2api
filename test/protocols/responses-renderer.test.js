@@ -22,7 +22,7 @@ function events() {
   const responseId = 'resp_test';
   const messageId = 'msg_test';
   return [
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses', created: 123 }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses', created: 123 }),
     createMessageStarted({ requestId, responseId, messageId }),
     createTextDelta({ requestId, responseId, messageId, delta: 'hel' }),
     createTextDelta({ requestId, responseId, messageId, delta: 'lo' }),
@@ -60,7 +60,7 @@ function streamRes() {
 
 test('Responses JSON renderer aggregates output_text and usage', async () => {
   const res = jsonRes();
-  await renderResponsesJSON(res, asyncEvents(events()), { model: 'deepseek-v4-flash' });
+  await renderResponsesJSON(res, asyncEvents(events()), { model: 'deepseek-flash' });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.object, 'response');
   assert.equal(res.body.status, 'completed');
@@ -72,7 +72,7 @@ test('Responses JSON renderer aggregates output_text and usage', async () => {
 
 test('Responses stream renderer emits Responses event names', async () => {
   const res = streamRes();
-  await renderResponsesStream(res, asyncEvents(events()), { model: 'deepseek-v4-flash' });
+  await renderResponsesStream(res, asyncEvents(events()), { model: 'deepseek-flash' });
   const wire = res.chunks.join('');
   assert.match(wire, /event: response\.created/);
   assert.match(wire, /event: response\.output_item\.added/);
@@ -89,10 +89,10 @@ test('Responses stream renderer closes empty text content parts', async () => {
   const messageId = 'msg_empty';
   const res = streamRes();
   await renderResponsesStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses' }),
     createMessageStarted({ requestId, responseId, messageId }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const wire = res.chunks.join('');
   assert.match(wire, /event: response\.content_part\.added/);
   assert.match(wire, /event: response\.output_text\.done/);
@@ -105,13 +105,13 @@ test('Responses stream renderer emits reasoning summary events before text', asy
   const messageId = 'msg_reasoning';
   const res = streamRes();
   await renderResponsesStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses' }),
     createReasoningDelta({ requestId, responseId, messageId, delta: '先分析需求。' }),
     createReasoningDone({ requestId, responseId, messageId, text: '先分析需求。' }),
     createMessageStarted({ requestId, responseId, messageId }),
     createTextDelta({ requestId, responseId, messageId, delta: '结果' }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const wire = res.chunks.join('');
   assert.match(wire, /event: response\.reasoning_summary_part\.added/);
   assert.match(wire, /event: response\.reasoning_summary_text\.delta/);
@@ -129,13 +129,13 @@ test('Responses stream renderer keeps tool call output indices consistent', asyn
   const messageId = 'msg_tool';
   const res = streamRes();
   await renderResponsesStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses' }),
     createMessageStarted({ requestId, responseId, messageId }),
     createToolCallStarted({ requestId, responseId, messageId, toolCallId: 'call_1', index: 0, name: 'Read' }),
     createToolCallArgumentsDelta({ requestId, responseId, messageId, toolCallId: 'call_1', index: 0, delta: '{"file_path"' }),
     createToolCallDone({ requestId, responseId, messageId, toolCallId: 'call_1', index: 0, name: 'Read', arguments: '{"file_path":"README.md"}' }),
     createRunCompleted({ requestId, responseId, finishReason: 'tool_calls' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const payloads = res.chunks.join('').split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
   const added = payloads.find(p => p.type === 'response.output_item.added' && p.item?.type === 'function_call');
   const delta = payloads.find(p => p.type === 'response.function_call_arguments.delta');
@@ -153,11 +153,11 @@ test('Responses stream records tool call before stream completion for immediate 
   const messageId = 'msg_tool_early';
   const res = streamRes();
   async function* interruptedEvents() {
-    yield createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' });
+    yield createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses' });
     yield createToolCallDone({ requestId, responseId, messageId, toolCallId: 'call_early', index: 0, name: 'Read', arguments: '{"file_path":"README.md"}' });
     assert.deepEqual(getResponseToolCallIndex(responseId).get('call_early'), { name: 'Read', arguments: '{"file_path":"README.md"}' });
   }
-  await renderResponsesStream(res, interruptedEvents(), { model: 'deepseek-v4-flash' });
+  await renderResponsesStream(res, interruptedEvents(), { model: 'deepseek-flash' });
 });
 
 test('Responses stream renderer adds fallback tool item for tool_call.done only', async () => {
@@ -166,10 +166,10 @@ test('Responses stream renderer adds fallback tool item for tool_call.done only'
   const messageId = 'msg_tool_done';
   const res = streamRes();
   await renderResponsesStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'responses' }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'responses' }),
     createToolCallDone({ requestId, responseId, messageId, toolCallId: 'call_late', index: 0, name: 'Read', arguments: '{}' }),
     createRunCompleted({ requestId, responseId, finishReason: 'tool_calls' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const payloads = res.chunks.join('').split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
   assert(payloads.some(p => p.type === 'response.output_item.added' && p.item?.id === 'call_late'));
   const completed = payloads.find(p => p.type === 'response.completed');

@@ -51,11 +51,6 @@ services:
       MAX_CONVERSATIONS: ${MAX_CONVERSATIONS:-500}
       ENABLE_FC_ERROR_RETRY: ${ENABLE_FC_ERROR_RETRY:-true}
 
-      # GLM 认证
-      GLM_REFRESH_TOKEN: ${GLM_REFRESH_TOKEN:-}
-      GLM_REFRESH_TOKENS: ${GLM_REFRESH_TOKENS:-}
-      GLM_GUEST_MODE: ${GLM_GUEST_MODE:-true}
-
     volumes:
       # 持久化日志
       - logs:/app/logs

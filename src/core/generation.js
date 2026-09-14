@@ -2,11 +2,9 @@ import { InternalAPIError, toInternalAPIError } from './errors.js';
 import { createRunFailed } from './internal-events.js';
 import { resolveInternalModel } from './model-resolution.js';
 import { runDeepSeek } from '../channels/deepseek/runner.js';
-import { runGLM } from '../channels/glm/runner.js';
 
 const RUNNERS = {
   deepseek: runDeepSeek,
-  glm: runGLM,
 };
 
 export function getChannelRunner(channel) {

@@ -7,8 +7,7 @@ import { createInternalRequest } from '../../src/core/internal-request.js';
 import { runParsedStreamChannel } from '../../src/channels/common-internal-runner.js';
 
 const commonRunnerSource = readFileSync(new URL('../../src/channels/common-internal-runner.js', import.meta.url), 'utf8');
-const glmRunnerSource = readFileSync(new URL('../../src/channels/glm/runner.js', import.meta.url), 'utf8');
-const glmClientSource = readFileSync(new URL('../../src/channels/glm/client.js', import.meta.url), 'utf8');
+const deepseekRunnerSource = readFileSync(new URL('../../src/channels/deepseek/runner.js', import.meta.url), 'utf8');
 
 test('common runner routes active tool parsing and retry through Toolify strategy', () => {
   assert.match(commonRunnerSource, /createPromptPlan/);
@@ -22,19 +21,12 @@ test('common runner routes active tool parsing and retry through Toolify strateg
   assert.doesNotMatch(commonRunnerSource, /parseToolCallsFromText/);
 });
 
-test('GLM runner passes caller-supplied XML tool instructions and retry callbacks', () => {
-  assert.match(glmRunnerSource, /convertMessages\(messages, \{ toolInstructions \}\)/);
-  for (const source of [glmRunnerSource]) {
+test('DeepSeek runner passes caller-supplied XML tool instructions and retry callbacks', () => {
+  for (const source of [deepseekRunnerSource]) {
     assert.match(source, /retryToolRequest/);
     assert.match(source, /currentContent/);
     assert.match(source, /collectParsedStreamContent/);
-  }
-});
-
-test('channel prompt builders no longer generate old tool instructions internally', () => {
-  for (const source of [glmClientSource]) {
     assert.doesNotMatch(source, /buildToolInstructions/);
-    assert.match(source, /toolInstructions/);
     assert.doesNotMatch(source, /必须在 assistant_response 中反馈/);
   }
 });
@@ -42,7 +34,7 @@ test('channel prompt builders no longer generate old tool instructions internall
 test('common runner recovers plan-only tool intent by retrying for XML calls', async () => {
   const request = createInternalRequest({
     protocol: 'chat',
-    model: 'glm-test',
+    model: 'test-model',
     messages: [{ role: 'user', content: '分析项目' }],
     tools: [{ name: 'Read', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }],
   });
@@ -51,7 +43,7 @@ test('common runner recovers plan-only tool intent by retrying for XML calls', a
 
   const events = await collectInternalEvents(runParsedStreamChannel(request, {}, {
     channelName: 'Test',
-    responseModel: 'glm-test',
+    responseModel: 'test-model',
     async startStream({ triggerSignal }) {
       capturedTrigger = triggerSignal;
       return {
@@ -79,7 +71,7 @@ test('common runner recovers plan-only tool intent by retrying for XML calls', a
 test('common runner emits native provider tool_calls events and cancels upstream', async () => {
   const request = createInternalRequest({
     protocol: 'chat',
-    model: 'glm-test',
+    model: 'test-model',
     messages: [{ role: 'user', content: 'call a tool' }],
     tools: [{ name: 'Read', parameters: { type: 'object', properties: {} } }],
   });
@@ -88,7 +80,7 @@ test('common runner emits native provider tool_calls events and cancels upstream
 
   const events = await collectInternalEvents(runParsedStreamChannel(request, {}, {
     channelName: 'Test',
-    responseModel: 'glm-test',
+    responseModel: 'test-model',
     async startStream() { return { streamBody }; },
     async *parseStream() {
       yield {
@@ -110,13 +102,13 @@ test('common runner emits native provider tool_calls events and cancels upstream
 test('common runner streams reasoning deltas before message.started', async () => {
   const request = createInternalRequest({
     protocol: 'responses',
-    model: 'glm-test',
+    model: 'test-model',
     messages: [{ role: 'user', content: 'think then answer' }],
   });
 
   const events = await collectInternalEvents(runParsedStreamChannel(request, {}, {
     channelName: 'Test',
-    responseModel: 'glm-test',
+    responseModel: 'test-model',
     async startStream() { return { streamBody: {} }; },
     async *parseStream() {
       yield { type: 'thinking', content: '思考第一段。' };
@@ -142,14 +134,14 @@ test('common runner streams reasoning deltas before message.started', async () =
 test('common runner does not fabricate end-of-stream reasoning for tool calls', async () => {
   const request = createInternalRequest({
     protocol: 'responses',
-    model: 'glm-test',
+    model: 'test-model',
     messages: [{ role: 'user', content: 'do work' }],
     tools: [{ name: 'Read', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }],
   });
 
   const events = await collectInternalEvents(runParsedStreamChannel(request, {}, {
     channelName: 'Test',
-    responseModel: 'glm-test',
+    responseModel: 'test-model',
     async startStream({ triggerSignal }) {
       return {
         streamBody: {},
@@ -177,14 +169,14 @@ test('common runner does not fabricate end-of-stream reasoning for tool calls', 
 test('common runner keeps pre-tool text as streamed message text, never end-of-stream reasoning', async () => {
   const request = createInternalRequest({
     protocol: 'responses',
-    model: 'glm-test',
+    model: 'test-model',
     messages: [{ role: 'user', content: 'do work' }],
     tools: [{ name: 'Read', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }],
   });
 
   const events = await collectInternalEvents(runParsedStreamChannel(request, {}, {
     channelName: 'Test',
-    responseModel: 'glm-test',
+    responseModel: 'test-model',
     async startStream() { return { streamBody: {} }; },
     async *parseStream() {
       yield { type: 'content', content: '我先看一下项目结构。' };

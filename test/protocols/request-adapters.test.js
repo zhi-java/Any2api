@@ -16,7 +16,7 @@ function req(path, body) {
 
 test('Chat adapter maps messages, tools, and tool_choice directly to Internal Request', () => {
   const internal = createChatCompletionsRequestAdapter(req('/v1/chat/completions', {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     stream: true,
     messages: [{ role: 'user', content: 'hello' }],
     tools: [{ type: 'function', function: { name: 'Read', description: 'Read file', parameters: { type: 'object', properties: {} } } }],
@@ -25,7 +25,7 @@ test('Chat adapter maps messages, tools, and tool_choice directly to Internal Re
   }));
 
   assert.equal(internal.protocol, 'chat_completions');
-  assert.equal(internal.model.requested, 'deepseek-v4-flash');
+  assert.equal(internal.model.requested, 'deepseek-flash');
   assert.equal(internal.stream, true);
   assert.equal(internal.messages[0].role, 'user');
   assert.deepEqual(internal.messages[0].content, [{ type: 'text', text: 'hello' }]);
@@ -36,7 +36,7 @@ test('Chat adapter maps messages, tools, and tool_choice directly to Internal Re
 
 test('Claude adapter maps system, messages, tools, and thinking directly to Internal Request', () => {
   const internal = createClaudeMessagesRequestAdapter(req('/v1/messages', {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     stream: true,
     system: 'be concise',
     max_tokens: 100,
@@ -59,7 +59,7 @@ test('Claude adapter maps system, messages, tools, and thinking directly to Inte
 
 test('Claude image content is preserved as uploadable attachment for upstream channels', () => {
   const internal = createClaudeMessagesRequestAdapter(req('/v1/messages', {
-    model: 'glm-4.5',
+    model: 'deepseek-flash',
     stream: true,
     max_tokens: 100,
     messages: [{

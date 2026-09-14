@@ -74,7 +74,7 @@ test('forced streaming middleware uses path matching so query strings do not byp
 
 test('/v1/chat/completions rejects stream false even with query string', async () => {
   const res = await postJson('/v1/chat/completions?trace=1', {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     messages: [{ role: 'user', content: 'hello' }],
     stream: false,
   });
@@ -85,7 +85,7 @@ test('/v1/chat/completions rejects stream false even with query string', async (
 
 test('/v1/messages rejects stream false even with query string', async () => {
   const res = await postJson('/v1/messages?trace=1', {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     max_tokens: 100,
     messages: [{ role: 'user', content: 'hello' }],
     stream: false,
@@ -96,9 +96,9 @@ test('/v1/messages rejects stream false even with query string', async () => {
   assert.equal(json.error.type, 'invalid_request_error');
 });
 
-test('/v1/responses supports GLM through Internal Event runner', async () => {
+test('/v1/responses supports DeepSeek through Internal Event runner', async () => {
   const res = await postJson('/v1/responses', {
-    model: 'glm-5.2',
+    model: 'deepseek-flash',
     input: 'hello',
     stream: true,
   });
@@ -107,7 +107,7 @@ test('/v1/responses supports GLM through Internal Event runner', async () => {
   assert.match(res.body, /event: response\.created/);
   assert.match(res.body, /event: response\.(failed|completed)/);
   if (res.body.includes('event: response.failed')) {
-    assert.match(res.body, /GLM|token|credentials|error/i);
+    assert.match(res.body, /DeepSeek|token|credentials|error/i);
   } else {
     assert.match(res.body, /event: response\.completed/);
   }

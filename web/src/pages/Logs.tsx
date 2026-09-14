@@ -67,7 +67,6 @@ export function LogsPage() {
           <Select value={channel} onChange={e => setChannel(e.target.value)} aria-label="渠道筛选">
             <option value="all">全部渠道</option>
             <option value="deepseek">DeepSeek</option>
-            <option value="glm">GLM</option>
           </Select>
           <Select value={status} onChange={e => setStatus(e.target.value)} aria-label="状态筛选">
             <option value="all">全部状态</option>

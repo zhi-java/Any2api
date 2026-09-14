@@ -33,10 +33,6 @@ const DEFAULT_CONFIG = Object.freeze({
     validateOnStartup: false,
     prewarmSessions: false,
   },
-  glm: {
-    refreshTokens: [],
-    guestMode: true,
-  },
 });
 
 let loaded = false;
@@ -164,18 +160,12 @@ function normalizeConfig(input) {
   merged.deepseek.validateOnStartup = Boolean(merged.deepseek.validateOnStartup);
   merged.deepseek.prewarmSessions = Boolean(merged.deepseek.prewarmSessions);
 
-  merged.glm.refreshTokens = uniqueStrings(merged.glm.refreshTokens);
-  merged.glm.guestMode = merged.glm.guestMode !== false;
-
   return merged;
 }
 
 function envConfig() {
   const singleDeepSeekToken = process.env.DS_TOKEN ? [process.env.DS_TOKEN] : [];
   const deepseekTokens = process.env.DS_TOKENS ? splitList(process.env.DS_TOKENS) : singleDeepSeekToken;
-  const glmTokens = process.env.GLM_REFRESH_TOKENS
-    ? splitList(process.env.GLM_REFRESH_TOKENS)
-    : splitList(process.env.GLM_REFRESH_TOKEN);
 
   return normalizeConfig({
     server: {
@@ -205,10 +195,6 @@ function envConfig() {
       idleThresholdSeconds: parseIntValue(process.env.IDLE_THRESHOLD, DEFAULT_CONFIG.deepseek.idleThresholdSeconds, 1),
       validateOnStartup: parseBool(process.env.DEEPSEEK_VALIDATE_ON_STARTUP, DEFAULT_CONFIG.deepseek.validateOnStartup),
       prewarmSessions: parseBool(process.env.DEEPSEEK_PREWARM_SESSIONS, DEFAULT_CONFIG.deepseek.prewarmSessions),
-    },
-    glm: {
-      refreshTokens: glmTokens,
-      guestMode: parseBool(process.env.GLM_GUEST_MODE, DEFAULT_CONFIG.glm.guestMode),
     },
   });
 }
@@ -277,9 +263,6 @@ export function applyConfigToProcessEnv() {
   setEnv('IDLE_THRESHOLD', current.deepseek.idleThresholdSeconds);
   setEnv('DEEPSEEK_VALIDATE_ON_STARTUP', current.deepseek.validateOnStartup ? 'true' : 'false');
   setEnv('DEEPSEEK_PREWARM_SESSIONS', current.deepseek.prewarmSessions ? 'true' : 'false');
-
-  setEnv('GLM_REFRESH_TOKENS', current.glm.refreshTokens.join(','));
-  setEnv('GLM_GUEST_MODE', current.glm.guestMode ? 'true' : 'false');
 }
 
 export function getConfig() {
@@ -403,10 +386,6 @@ export function getPublicConfig() {
       validateOnStartup: current.deepseek.validateOnStartup,
       prewarmSessions: current.deepseek.prewarmSessions,
     },
-    glm: {
-      refreshTokens: publicSecrets(current.glm.refreshTokens),
-      guestMode: current.glm.guestMode,
-    },
   };
 }
 
@@ -476,9 +455,6 @@ export function addChannelCredential(channel, payload = {}) {
     } else {
       next.deepseek.tokens.push(payload.token);
     }
-  } else if (channel === 'glm') {
-    next.glm.refreshTokens.push(payload.refreshToken || payload.token);
-    next.glm.guestMode = next.glm.refreshTokens.length === 0;
   } else {
     throw new Error(`Unsupported channel: ${channel}`);
   }
@@ -507,9 +483,6 @@ export function removeChannelCredential(channel, id) {
   if (channel === 'deepseek') {
     next.deepseek.tokens = removeSecret(next.deepseek.tokens);
     next.deepseek.accounts = removeAccount(next.deepseek.accounts);
-  } else if (channel === 'glm') {
-    next.glm.refreshTokens = removeSecret(next.glm.refreshTokens);
-    next.glm.guestMode = next.glm.refreshTokens.length === 0;
   } else {
     throw new Error(`Unsupported channel: ${channel}`);
   }

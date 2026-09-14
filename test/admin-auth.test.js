@@ -61,7 +61,7 @@ test('root endpoint renders guest project introduction page', async () => {
     assert.equal(response.status, 200);
     assert.match(response.contentType, /text\/html/);
     assert.match(response.text, /OmniAPI/);
-    assert.match(response.text, /Multi-channel Web-to-API Proxy/);
+    assert.match(response.text, /Web-to-API Proxy/);
     assert.doesNotMatch(response.text, /"pool"|"queue"|"totalCapacity"/);
   });
 });

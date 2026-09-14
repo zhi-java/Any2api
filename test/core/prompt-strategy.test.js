@@ -157,7 +157,7 @@ test('edit-first hard rules are injected only when edit and write tools coexist'
 
 test('createPromptPlan disables injection using raw JSON prompt', () => {
   const body = {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     messages: [
       { role: 'system', content: 'be precise' },
       { role: 'user', content: 'hello' },
@@ -183,7 +183,7 @@ test('createPromptPlan disables injection using raw JSON prompt', () => {
 
 test('createPromptPlan disables tool injection for title-generation requests', () => {
   const body = {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     system: 'Generate a concise title (3-7 words) for this coding session. Return JSON: {"title": "..."}',
     messages: [{ role: 'user', content: '分析本项目' }],
     tools,
