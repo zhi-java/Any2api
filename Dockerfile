@@ -24,11 +24,15 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY .env.example ./.env.example
 
-# 前端构建产物
-COPY --from=web-builder /web/dist ./src/admin/dist
+# 前端构建产物。
+# vite.config.ts 的 outDir 是 '../src/admin/dist'（相对 web/），
+# 容器内即 /web/../src/admin/dist → /src/admin/dist。
+COPY --from=web-builder /src/admin/dist ./src/admin/dist
 
-RUN mkdir -p /app/logs && \
-    chown -R node:node /app
+# /app/logs 与 /data 均为挂载点。预创建目录本身无法改变命名卷的属主，
+# 因此同时设置挂载点属主（命名卷首次挂载会继承镜像内该路径的权限）。
+RUN mkdir -p /app/logs /data && \
+    chown -R node:node /app /data
 
 USER node
 
