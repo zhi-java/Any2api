@@ -97,6 +97,8 @@ export interface DeepSeekConfig {
   idleThresholdSeconds: number;
   validateOnStartup: boolean;
   prewarmSessions: boolean;
+  /** 展示用的缓存命中率（0–100），非上游真实缓存统计 */
+  reportedCacheHitRate: number;
 }
 
 export interface PublicConfig {

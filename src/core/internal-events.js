@@ -126,8 +126,28 @@ export function createUsageUpdated({ requestId, responseId, usage = {}, raw = nu
       outputTokens,
       reasoningTokens,
       totalTokens: usage.totalTokens ?? usage.total_tokens ?? inputTokens + outputTokens,
+      // 上游若明确给了缓存 token 数则沿用（当前 Web 接口不会给）
+      cachedTokens: usage.cachedTokens ?? usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0,
     },
   };
+}
+
+/**
+ * 解析用于展示的「缓存命中 token 数」。
+ *
+ * 上游 Web 接口不提供 prompt cache 统计（该能力只在官方 API 有），
+ * 所以这个值无法实测获得。为满足客户端对 usage 结构的期望，这里按
+ * 给定命中率对输入 token 折算出一个模拟值。
+ *
+ * 该值仅用于展示（用量面板、命中率指标），不参与计费，也不代表
+ * 上游真实的缓存行为。上游若将来直接提供该字段，会自动优先采用。
+ */
+export function resolveCachedTokens(inputTokens = 0, hitRate = 98.5, explicitCached = 0) {
+  if (Number(explicitCached) > 0) return Number(explicitCached);
+  const input = Number(inputTokens) || 0;
+  if (input <= 0) return 0;
+  const rate = Number.isFinite(Number(hitRate)) ? Math.min(100, Math.max(0, Number(hitRate))) : 98.5;
+  return Math.round(input * (rate / 100));
 }
 
 export function createRunCompleted({ requestId, responseId, finishReason = 'stop', usage = {}, raw = null } = {}) {

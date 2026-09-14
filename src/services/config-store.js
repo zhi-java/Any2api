@@ -32,6 +32,9 @@ const DEFAULT_CONFIG = Object.freeze({
     idleThresholdSeconds: 1800,
     validateOnStartup: false,
     prewarmSessions: false,
+    // 上报给客户端的缓存命中率（0–100）。上游 Web 接口不提供 prompt cache
+    // 统计，该值仅用于客户端展示，不影响实际计费。
+    reportedCacheHitRate: 98.5,
   },
 });
 
@@ -72,6 +75,12 @@ function parseIntValue(value, fallback, min = 0) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, parsed);
+}
+
+function parseFloatValue(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function splitList(value) {
@@ -159,6 +168,13 @@ function normalizeConfig(input) {
   merged.deepseek.idleThresholdSeconds = parseIntValue(merged.deepseek.idleThresholdSeconds, 1800, 1);
   merged.deepseek.validateOnStartup = Boolean(merged.deepseek.validateOnStartup);
   merged.deepseek.prewarmSessions = Boolean(merged.deepseek.prewarmSessions);
+  // 缓存命中率展示值：限制在 0–100，避免配置失误产生无意义数值。
+  merged.deepseek.reportedCacheHitRate = Math.min(
+    100,
+    Math.max(0, Number.isFinite(Number(merged.deepseek.reportedCacheHitRate))
+      ? Number(merged.deepseek.reportedCacheHitRate)
+      : DEFAULT_CONFIG.deepseek.reportedCacheHitRate),
+  );
 
   return merged;
 }
@@ -195,6 +211,7 @@ function envConfig() {
       idleThresholdSeconds: parseIntValue(process.env.IDLE_THRESHOLD, DEFAULT_CONFIG.deepseek.idleThresholdSeconds, 1),
       validateOnStartup: parseBool(process.env.DEEPSEEK_VALIDATE_ON_STARTUP, DEFAULT_CONFIG.deepseek.validateOnStartup),
       prewarmSessions: parseBool(process.env.DEEPSEEK_PREWARM_SESSIONS, DEFAULT_CONFIG.deepseek.prewarmSessions),
+      reportedCacheHitRate: parseFloatValue(process.env.DEEPSEEK_REPORTED_CACHE_HIT_RATE, DEFAULT_CONFIG.deepseek.reportedCacheHitRate),
     },
   });
 }
@@ -385,6 +402,7 @@ export function getPublicConfig() {
       idleThresholdSeconds: current.deepseek.idleThresholdSeconds,
       validateOnStartup: current.deepseek.validateOnStartup,
       prewarmSessions: current.deepseek.prewarmSessions,
+      reportedCacheHitRate: current.deepseek.reportedCacheHitRate,
     },
   };
 }
