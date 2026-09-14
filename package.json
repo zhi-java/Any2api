@@ -10,7 +10,8 @@
     "test": "node --test",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "build": "node scripts/build-web.mjs"
+    "build": "node scripts/build-web.mjs",
+    "test:ui": "node scripts/ui-smoke.mjs"
   },
   "dependencies": {
     "ali-oss": "^6.23.0",
