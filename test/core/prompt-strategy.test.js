@@ -130,11 +130,10 @@ test('edit-first hard rules are injected only when edit and write tools coexist'
   assert.match(both, /Write 仅限两种场景/);
   assert.match(both, /编辑铁律/);
   assert.match(both, /调用 Write 前自检两问/);
-  // 分段写入协议：阈值 + Write 首段留续写标记 + Edit 逐段替换 + 大内容单调用也须分段
-  assert.match(both, /大内容分段写入协议/);
-  assert.match(both, /续写标记/);
-  assert.match(both, /禁止用多次 Write 分段/);
-  assert.match(both, /补充：超过约 200 行/);
+  // 上游能力放开后不再注入"次数/字数/分段"类硬限制
+  assert.doesNotMatch(both, /大内容分段写入协议/);
+  assert.doesNotMatch(both, /超过约 200 行/);
+  assert.doesNotMatch(both, /每轮最多/);
 
   // 只有 Read：不注入任何文件修改选择规则
   const readOnly = buildXmlToolInstructions({ tools, toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
@@ -149,11 +148,11 @@ test('edit-first hard rules are injected only when edit and write tools coexist'
   assert.doesNotMatch(writeOnly, /分段写入协议/);
   assert.match(writeOnly, /覆盖已有文件前必须先 Read 其完整内容/);
 
-  // 只有编辑工具（Codex apply_patch 类）：只提示精确修改 + 大补丁拆多轮
+  // 只有编辑工具（Codex apply_patch 类）：只提示精确修改
   const editOnly = buildXmlToolInstructions({ tools: [...tools, editTool], toolChoice: 'auto', triggerSignal: '<Function_AB12_Start/>' });
   assert.doesNotMatch(editOnly, /编辑铁律/);
   assert.match(editOnly, /修改文件一律用 Edit 做精确修改/);
-  assert.match(editOnly, /拆成多个小修改跨多轮完成/);
+  assert.match(editOnly, /只提交需要变更的片段/);
 });
 
 test('createPromptPlan disables injection using raw JSON prompt', () => {
@@ -733,9 +732,9 @@ test('XML instructions carry JSON escaping rules and continuation guidance', () 
   assert.match(instructions, /任务全部完成后/);
   assert.match(instructions, /修改完成后主动验证/);
   assert.match(instructions, /说了要做，就必须当场调用|将使用\/需要某工具/);
-  // 单次回复的工具调用数量上限（决策区 + 自检清单 + 硬规则区都要出现）
-  assert.match(instructions, /单次回复最多 3 个 <function_call>/);
-  assert.match(instructions, /最多只有 3 个 `<function_call>`/);
+  // 上游能力放开后不再对单次回复的工具调用数量设上限
+  assert.doesNotMatch(instructions, /单次回复最多\s*\d+\s*个/);
+  assert.doesNotMatch(instructions, /最多只有\s*\d+\s*个/);
   // 工具集中不存在的编辑/写入工具名不得被推荐（只读工具集不应出现 MultiEdit）
   assert.doesNotMatch(instructions, /MultiEdit/);
   assert.match(instructions, /正在启动|我先读取/);

@@ -13,15 +13,10 @@ import { attemptToolParseWithRetry, getMissingToolCallRetryPrompt, isMissingTool
 import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
-import {
-  createRuntimeContextFallbackPlan,
-  DEEPSEEK_FLASH_MODEL,
-  isContextFallbackEnabled,
-  isContextLimitError,
-  isDeepSeekProModel,
-  selectContextExecutionPlan,
-} from './context-budget.js';
 import { mapModel } from './models.js';
+
+// Flash 模型是 DeepSeek 侧唯一具备视觉能力的型号，上传型内容需要它。
+const DEEPSEEK_FLASH_MODEL = 'deepseek-v4-flash';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -91,26 +86,6 @@ function getRequestLike(internalRequest, context) {
 function usageOutputTokens(usage) {
   if (typeof usage === 'number') return usage;
   return usage?.output_tokens ?? usage?.completion_tokens ?? usage?.total_tokens ?? 0;
-}
-
-async function completionWithContextFallback(initialPlan, buildArgs) {
-  let plan = initialPlan;
-  try {
-    const result = await completion(buildArgs(plan));
-    return { result, plan };
-  } catch (err) {
-    if (
-      !plan.fallbackReason &&
-      isContextFallbackEnabled() &&
-      isDeepSeekProModel(plan.requestedModel) &&
-      isContextLimitError(err)
-    ) {
-      plan = createRuntimeContextFallbackPlan(plan);
-      const result = await completion(buildArgs(plan));
-      return { result, plan };
-    }
-    throw err;
-  }
 }
 
 function emitToolCallEvents({ requestId, responseId, messageId, toolCalls }) {
@@ -208,15 +183,8 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     responseStream.on('close', onClose);
   }
 
-  let contextPlan = selectContextExecutionPlan({
-    requestedModel,
-    requestedModelType: modelType,
-    // 命中既有会话（>0）或显式会话 ID（-1）大概率走增量；未命中（0）新会话要发全量。
-    promptForBudget: (conversationId && matchedPrefixLength !== 0) ? latestPrompt : fullPrompt,
-  });
-
   let refFileIds = [];
-  if (contextPlan.effectiveModel === DEEPSEEK_FLASH_MODEL && hasUploadableParts(openAIMessages)) {
+  if (requestedModel === DEEPSEEK_FLASH_MODEL && hasUploadableParts(openAIMessages)) {
     const uploadSlot = await enqueueRequest(true);
     try {
       refFileIds = await extractUploads(openAIMessages, uploadSlot.token);
@@ -241,27 +209,26 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       : null;
     const getPrompt = (affinity) => (promptInjectionDisabled || affinity) ? latestPrompt : fullPrompt;
 
-    const completionResult = await completionWithContextFallback(contextPlan, (activePlan) => ({
-      modelType: activePlan.modelType,
+    const completionResult = await completion({
+      modelType,
       prompt: fullPrompt,
       thinkingEnabled,
       searchEnabled,
       refFileIds,
-      preferVision: activePlan.effectiveModel === DEEPSEEK_FLASH_MODEL,
-      resolveSession: makeResolveSession(activePlan.modelType),
+      preferVision: requestedModel === DEEPSEEK_FLASH_MODEL,
+      resolveSession: makeResolveSession(modelType),
       getPrompt,
       signal: abortController.signal,
-    }));
+    });
 
-    contextPlan = completionResult.plan;
-    streamBody = completionResult.result.body;
-    slot = completionResult.result.slot;
+    streamBody = completionResult.body;
+    slot = completionResult.slot;
     if (clientGone || abortController.signal.aborted) {
       try { streamBody.cancel(); } catch {}
       return;
     }
 
-    const responseModel = contextPlan.effectiveModel || requestedModel;
+    const responseModel = requestedModel;
     yield createRunStarted({ requestId, responseId, model: responseModel, protocol: internalRequest.protocol });
 
     const detector = toolCallingEnabled ? promptPlan.createStreamDetector() : null;
@@ -364,19 +331,18 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         { role: 'user', content: [{ type: 'text', text: retryPrompt }] },
       ];
       const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, toolInstructions);
-      const retryResult = await completionWithContextFallback(contextPlan, (activePlan) => ({
-        modelType: activePlan.modelType,
+      const retryResult = await completion({
+        modelType,
         prompt: retryFullPrompt,
         thinkingEnabled,
         searchEnabled: false,
         refFileIds: [],
-        preferVision: activePlan.effectiveModel === DEEPSEEK_FLASH_MODEL,
+        preferVision: requestedModel === DEEPSEEK_FLASH_MODEL,
         signal: signal || abortController.signal,
-      }));
-      contextPlan = retryResult.plan;
-      const retrySlot = retryResult.result.slot;
+      });
+      const retrySlot = retryResult.slot;
       try {
-        return await collectParsedStreamContent(retryResult.result.body, (body) => parseSSEStream(body, { signal: signal || abortController.signal }));
+        return await collectParsedStreamContent(retryResult.body, (body) => parseSSEStream(body, { signal: signal || abortController.signal }));
       } finally {
         retrySlot?.release?.();
         dispatchQueued();

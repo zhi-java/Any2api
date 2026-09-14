@@ -17,13 +17,10 @@ const DEFAULT_CONFIG = Object.freeze({
   },
   runtime: {
     sessionTtlSeconds: 1800,
-    maxRequestsPerSession: 8,
     enableConversationAffinity: false,
     conversationTtlMs: 1800000,
     maxConversations: 500,
-    maxTurnsPerSession: 10,
     enableFcErrorRetry: true,
-    fcErrorRetryMaxAttempts: 3,
     logDir: '',
   },
   deepseek: {
@@ -35,8 +32,6 @@ const DEFAULT_CONFIG = Object.freeze({
     idleThresholdSeconds: 1800,
     validateOnStartup: false,
     prewarmSessions: false,
-    contextFallback: true,
-    proSafeInputTokens: 110000,
   },
   glm: {
     refreshTokens: [],
@@ -154,13 +149,10 @@ function normalizeConfig(input) {
   merged.server.systemFingerprint = String(merged.server.systemFingerprint || 'fp_omni_v1').trim() || 'fp_omni_v1';
 
   merged.runtime.sessionTtlSeconds = parseIntValue(merged.runtime.sessionTtlSeconds, 1800, 1);
-  merged.runtime.maxRequestsPerSession = parseIntValue(merged.runtime.maxRequestsPerSession, 8, 1);
   merged.runtime.enableConversationAffinity = Boolean(merged.runtime.enableConversationAffinity);
   merged.runtime.conversationTtlMs = parseIntValue(merged.runtime.conversationTtlMs, 1800000, 1000);
   merged.runtime.maxConversations = parseIntValue(merged.runtime.maxConversations, 500, 1);
-  merged.runtime.maxTurnsPerSession = parseIntValue(merged.runtime.maxTurnsPerSession, 10, 1);
   merged.runtime.enableFcErrorRetry = merged.runtime.enableFcErrorRetry !== false;
-  merged.runtime.fcErrorRetryMaxAttempts = Math.min(10, parseIntValue(merged.runtime.fcErrorRetryMaxAttempts, 3, 1));
   merged.runtime.logDir = String(merged.runtime.logDir || '').trim();
 
   merged.deepseek.tokens = uniqueStrings(merged.deepseek.tokens);
@@ -171,8 +163,6 @@ function normalizeConfig(input) {
   merged.deepseek.idleThresholdSeconds = parseIntValue(merged.deepseek.idleThresholdSeconds, 1800, 1);
   merged.deepseek.validateOnStartup = Boolean(merged.deepseek.validateOnStartup);
   merged.deepseek.prewarmSessions = Boolean(merged.deepseek.prewarmSessions);
-  merged.deepseek.contextFallback = merged.deepseek.contextFallback !== false;
-  merged.deepseek.proSafeInputTokens = parseIntValue(merged.deepseek.proSafeInputTokens, 110000, 1);
 
   merged.glm.refreshTokens = uniqueStrings(merged.glm.refreshTokens);
   merged.glm.guestMode = merged.glm.guestMode !== false;
@@ -200,13 +190,10 @@ function envConfig() {
     },
     runtime: {
       sessionTtlSeconds: parseIntValue(process.env.SESSION_TTL, DEFAULT_CONFIG.runtime.sessionTtlSeconds, 1),
-      maxRequestsPerSession: parseIntValue(process.env.MAX_REQUESTS_PER_SESSION, DEFAULT_CONFIG.runtime.maxRequestsPerSession, 1),
       enableConversationAffinity: parseBool(process.env.ENABLE_CONVERSATION_AFFINITY, DEFAULT_CONFIG.runtime.enableConversationAffinity),
       conversationTtlMs: parseIntValue(process.env.CONVERSATION_TTL_MS, DEFAULT_CONFIG.runtime.conversationTtlMs, 1000),
       maxConversations: parseIntValue(process.env.MAX_CONVERSATIONS, DEFAULT_CONFIG.runtime.maxConversations, 1),
-      maxTurnsPerSession: parseIntValue(process.env.MAX_TURNS_PER_SESSION, DEFAULT_CONFIG.runtime.maxTurnsPerSession, 1),
       enableFcErrorRetry: parseBool(process.env.ENABLE_FC_ERROR_RETRY, DEFAULT_CONFIG.runtime.enableFcErrorRetry),
-      fcErrorRetryMaxAttempts: parseIntValue(process.env.FC_ERROR_RETRY_MAX_ATTEMPTS, DEFAULT_CONFIG.runtime.fcErrorRetryMaxAttempts, 1),
       logDir: process.env.LOG_DIR || '',
     },
     deepseek: {
@@ -218,8 +205,6 @@ function envConfig() {
       idleThresholdSeconds: parseIntValue(process.env.IDLE_THRESHOLD, DEFAULT_CONFIG.deepseek.idleThresholdSeconds, 1),
       validateOnStartup: parseBool(process.env.DEEPSEEK_VALIDATE_ON_STARTUP, DEFAULT_CONFIG.deepseek.validateOnStartup),
       prewarmSessions: parseBool(process.env.DEEPSEEK_PREWARM_SESSIONS, DEFAULT_CONFIG.deepseek.prewarmSessions),
-      contextFallback: parseBool(process.env.DEEPSEEK_CONTEXT_FALLBACK, DEFAULT_CONFIG.deepseek.contextFallback),
-      proSafeInputTokens: parseIntValue(process.env.DEEPSEEK_PRO_SAFE_INPUT_TOKENS, DEFAULT_CONFIG.deepseek.proSafeInputTokens, 1),
     },
     glm: {
       refreshTokens: glmTokens,
@@ -278,13 +263,10 @@ export function applyConfigToProcessEnv() {
   setEnv('SYSTEM_FINGERPRINT', current.server.systemFingerprint);
 
   setEnv('SESSION_TTL', current.runtime.sessionTtlSeconds);
-  setEnv('MAX_REQUESTS_PER_SESSION', current.runtime.maxRequestsPerSession);
   setEnv('ENABLE_CONVERSATION_AFFINITY', current.runtime.enableConversationAffinity ? 'true' : 'false');
   setEnv('CONVERSATION_TTL_MS', current.runtime.conversationTtlMs);
   setEnv('MAX_CONVERSATIONS', current.runtime.maxConversations);
-  setEnv('MAX_TURNS_PER_SESSION', current.runtime.maxTurnsPerSession);
   setEnv('ENABLE_FC_ERROR_RETRY', current.runtime.enableFcErrorRetry ? 'true' : 'false');
-  setEnv('FC_ERROR_RETRY_MAX_ATTEMPTS', current.runtime.fcErrorRetryMaxAttempts);
   setEnv('LOG_DIR', current.runtime.logDir);
 
   setEnv('DS_TOKENS', current.deepseek.tokens.join(','));
@@ -295,8 +277,6 @@ export function applyConfigToProcessEnv() {
   setEnv('IDLE_THRESHOLD', current.deepseek.idleThresholdSeconds);
   setEnv('DEEPSEEK_VALIDATE_ON_STARTUP', current.deepseek.validateOnStartup ? 'true' : 'false');
   setEnv('DEEPSEEK_PREWARM_SESSIONS', current.deepseek.prewarmSessions ? 'true' : 'false');
-  setEnv('DEEPSEEK_CONTEXT_FALLBACK', current.deepseek.contextFallback ? 'true' : 'false');
-  setEnv('DEEPSEEK_PRO_SAFE_INPUT_TOKENS', current.deepseek.proSafeInputTokens);
 
   setEnv('GLM_REFRESH_TOKENS', current.glm.refreshTokens.join(','));
   setEnv('GLM_GUEST_MODE', current.glm.guestMode ? 'true' : 'false');
@@ -405,13 +385,10 @@ export function getPublicConfig() {
     },
     runtime: {
       sessionTtlSeconds: current.runtime.sessionTtlSeconds,
-      maxRequestsPerSession: current.runtime.maxRequestsPerSession,
       enableConversationAffinity: current.runtime.enableConversationAffinity,
       conversationTtlMs: current.runtime.conversationTtlMs,
       maxConversations: current.runtime.maxConversations,
-      maxTurnsPerSession: current.runtime.maxTurnsPerSession,
       enableFcErrorRetry: current.runtime.enableFcErrorRetry,
-      fcErrorRetryMaxAttempts: current.runtime.fcErrorRetryMaxAttempts,
       logDir: current.runtime.logDir,
     },
     deepseek: {
@@ -425,8 +402,6 @@ export function getPublicConfig() {
       idleThresholdSeconds: current.deepseek.idleThresholdSeconds,
       validateOnStartup: current.deepseek.validateOnStartup,
       prewarmSessions: current.deepseek.prewarmSessions,
-      contextFallback: current.deepseek.contextFallback,
-      proSafeInputTokens: current.deepseek.proSafeInputTokens,
     },
     glm: {
       refreshTokens: publicSecrets(current.glm.refreshTokens),

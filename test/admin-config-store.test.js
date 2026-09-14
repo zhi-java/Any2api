@@ -8,9 +8,9 @@ function clearEnv() {
   for (const key of [
     'ZHI2API_CONFIG_PATH', 'ZHI2API_DATA_DIR', 'API_KEY', 'API_KEYS', 'DS_TOKEN', 'DS_TOKENS', 'DS_ACCOUNTS',
     'GLM_REFRESH_TOKEN', 'GLM_REFRESH_TOKENS',
-    'SESSION_TTL', 'MAX_REQUESTS_PER_SESSION', 'ENABLE_CONVERSATION_AFFINITY', 'CONVERSATION_TTL_MS',
-    'MAX_CONVERSATIONS', 'MAX_TURNS_PER_SESSION', 'ENABLE_FC_ERROR_RETRY', 'FC_ERROR_RETRY_MAX_ATTEMPTS',
-    'LOG_DIR', 'CLIENT_DEBUG_LOG_DIR', 'SYSTEM_FINGERPRINT', 'DEEPSEEK_CONTEXT_FALLBACK', 'DEEPSEEK_PRO_SAFE_INPUT_TOKENS',
+    'SESSION_TTL', 'ENABLE_CONVERSATION_AFFINITY', 'CONVERSATION_TTL_MS',
+    'MAX_CONVERSATIONS', 'ENABLE_FC_ERROR_RETRY',
+    'LOG_DIR', 'CLIENT_DEBUG_LOG_DIR', 'SYSTEM_FINGERPRINT',
   ]) delete process.env[key];
 }
 
@@ -74,45 +74,33 @@ test('config store exposes runtime env settings for admin page editing', async (
   const dir = mkdtempSync(join(tmpdir(), 'omni-runtime-config-'));
   process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');
   process.env.SESSION_TTL = '90';
-  process.env.MAX_REQUESTS_PER_SESSION = '4';
   process.env.ENABLE_CONVERSATION_AFFINITY = 'true';
   process.env.CONVERSATION_TTL_MS = '60000';
   process.env.MAX_CONVERSATIONS = '12';
-  process.env.MAX_TURNS_PER_SESSION = '5';
   process.env.ENABLE_FC_ERROR_RETRY = 'false';
-  process.env.FC_ERROR_RETRY_MAX_ATTEMPTS = '7';
   process.env.LOG_DIR = join(dir, 'runtime-logs');
   process.env.CLIENT_DEBUG_LOG_DIR = join(dir, 'debug-logs');
   process.env.SYSTEM_FINGERPRINT = 'fp_test_runtime';
-  process.env.DEEPSEEK_CONTEXT_FALLBACK = 'false';
-  process.env.DEEPSEEK_PRO_SAFE_INPUT_TOKENS = '12345';
 
   const mod = await import('../src/services/config-store.js');
   mod.loadConfig({ force: true });
   let pub = mod.getPublicConfig();
   assert.equal(pub.runtime.sessionTtlSeconds, 90);
-  assert.equal(pub.runtime.maxRequestsPerSession, 4);
   assert.equal(pub.runtime.enableConversationAffinity, true);
   assert.equal(pub.runtime.enableFcErrorRetry, false);
   assert.equal(pub.server.clientDebugLogDir, join(dir, 'debug-logs'));
   assert.equal(pub.server.systemFingerprint, 'fp_test_runtime');
-  assert.equal(pub.deepseek.contextFallback, false);
-  assert.equal(pub.deepseek.proSafeInputTokens, 12345);
 
   mod.updateConfig({
     server: { systemFingerprint: 'fp_page', clientDebugLogDir: 'page-debug' },
-    runtime: { sessionTtlSeconds: 120, enableFcErrorRetry: true, fcErrorRetryMaxAttempts: 2, logDir: 'page-logs' },
-    deepseek: { contextFallback: true, proSafeInputTokens: 54321 },
+    runtime: { sessionTtlSeconds: 120, enableFcErrorRetry: true, logDir: 'page-logs' },
   });
   pub = mod.getPublicConfig();
   assert.equal(pub.runtime.sessionTtlSeconds, 120);
   assert.equal(process.env.SESSION_TTL, '120');
   assert.equal(process.env.ENABLE_FC_ERROR_RETRY, 'true');
-  assert.equal(process.env.FC_ERROR_RETRY_MAX_ATTEMPTS, '2');
   assert.equal(process.env.LOG_DIR, 'page-logs');
   assert.equal(process.env.SYSTEM_FINGERPRINT, 'fp_page');
-  assert.equal(process.env.DEEPSEEK_CONTEXT_FALLBACK, 'true');
-  assert.equal(process.env.DEEPSEEK_PRO_SAFE_INPUT_TOKENS, '54321');
 
   rmSync(dir, { recursive: true, force: true });
 });

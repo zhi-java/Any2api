@@ -124,12 +124,9 @@ DS_ACCOUNTS="手机号:密码,手机号:密码"
 # Token 方式
 DS_TOKENS="token1,token2"
 
-# 并发控制
-DS_MAX_CONCURRENT_PER_TOKEN=5
-DS_MAX_QUEUE_SIZE=100
-
-# 上下文超限时自动回退到 Flash 模型
-DEEPSEEK_CONTEXT_FALLBACK=true
+# Token 池并发控制
+MAX_CONCURRENT_PER_TOKEN=2
+TOKEN_DEAD_THRESHOLD=5
 ```
 
 ### GLM 配置
