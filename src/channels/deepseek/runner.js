@@ -9,7 +9,13 @@ import {
   latestDeltaStartIndex,
 } from '../../utils/response-utils.js';
 import { createPromptPlan } from '../../core/prompt-strategy.js';
-import { attemptToolParseWithRetry, getMissingToolCallRetryPrompt, isMissingToolCallIntent } from '../../core/tool-retry.js';
+import {
+  attemptToolParseWithRetry,
+  getMissingToolCallRetryPrompt,
+  getReasoningOnlyRetryPrompt,
+  isEmptyAssistantReply,
+  isMissingToolCallIntent,
+} from '../../core/tool-retry.js';
 import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
@@ -138,6 +144,20 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   const promptMessages = promptInjectionDisabled
     ? openAIMessages
     : preprocessMessagesForToolify(openAIMessages, triggerSignal, previousToolCalls);
+
+  // 最后一条 user 文本：用于"只思考未作答"恢复时向模型重述原始请求。
+  const lastUserText = (() => {
+    for (let i = openAIMessages.length - 1; i >= 0; i--) {
+      const message = openAIMessages[i];
+      if (message?.role !== 'user') continue;
+      const content = message.content;
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        return content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n');
+      }
+    }
+    return '';
+  })();
 
   const fullPrompt = promptInjectionDisabled
     ? disabledPrompt
@@ -347,6 +367,35 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       }
     };
 
+    // "只思考未作答"恢复：上游偶发只发 thinking 就 stop。这里带上一轮思考
+    // 内容与原始请求续写一次，把结论要成正文。沿用同一会话（conversationId）
+    // 让上游保有上下文；关闭 thinking 强制直接产出正文，避免再次只思考。
+    const retryReasoningOnly = async ({ retryPrompt, currentContent, messages: retryMessages, signal }) => {
+      const retryMessagesWithPrompt = [
+        ...retryMessages,
+        { role: 'assistant', content: [{ type: 'text', text: currentContent || '' }] },
+        { role: 'user', content: [{ type: 'text', text: retryPrompt }] },
+      ];
+      const retryFullPrompt = promptWithToolInstructions(retryMessagesWithPrompt, '');
+      const retryResult = await completion({
+        modelType,
+        prompt: retryFullPrompt,
+        // 关键：续写阶段关闭 thinking，否则模型可能再次只输出思考。
+        thinkingEnabled: false,
+        searchEnabled: false,
+        refFileIds: [],
+        preferVision: true,
+        signal: signal || abortController.signal,
+      });
+      const retrySlot = retryResult.slot;
+      try {
+        return await collectParsedStreamContent(retryResult.body, (body) => parseSSEStream(body, { signal: signal || abortController.signal }));
+      } finally {
+        retrySlot?.release?.();
+        dispatchQueued();
+      }
+    };
+
     if (pendingToolFailureText && !detectedToolCalls) {
       releaseSlot();
       let retryResult = null;
@@ -409,6 +458,30 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         } catch (err) {
           console.warn(`[DeepSeek] Missing tool-call recovery failed: ${err.message}`);
         }
+      }
+    }
+
+    // 空回复恢复：上游偶发"只思考、不输出正文"（finishReason=stop 但流里
+    // 没有任何 RESPONSE 分片）。客户端只看到思考、拿不到答案，任务中断。
+    // 这不是解析问题——上游确实没发正文，只能在代理层续写一次要回正文。
+    // 恢复失败则保持原样，绝不伪造正文。
+    if (!detectedToolCalls && !pendingToolFailureText && isEmptyAssistantReply({ visibleContent, reasoningContent })) {
+      releaseSlot();
+      try {
+        const recovered = await retryReasoningOnly({
+          retryPrompt: getReasoningOnlyRetryPrompt(lastUserText, reasoningContent),
+          currentContent: reasoningContent,
+          messages: promptMessages,
+          signal: abortController.signal,
+        });
+        const recoveredText = String(recovered || '').trim();
+        if (recoveredText) {
+          for (const deltaEvent of emitText(recoveredText)) yield deltaEvent;
+        } else {
+          console.warn('[DeepSeek] Reasoning-only recovery returned empty; leaving reply as-is');
+        }
+      } catch (err) {
+        console.warn(`[DeepSeek] Reasoning-only recovery failed: ${err.message}`);
       }
     }
 

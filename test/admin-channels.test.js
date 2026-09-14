@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -14,6 +14,7 @@ function snapshotEnv() {
     DS_ACCOUNTS: process.env.DS_ACCOUNTS,
     ZHI2API_CONFIG_PATH: process.env.ZHI2API_CONFIG_PATH,
     ZHI2API_DATA_DIR: process.env.ZHI2API_DATA_DIR,
+    ZHI2API_ENV_PATH: process.env.ZHI2API_ENV_PATH,
   };
 }
 
@@ -34,6 +35,12 @@ async function withAdminServer(configure, fn) {
   delete process.env.DS_ACCOUNTS;
   process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');
   delete process.env.ZHI2API_DATA_DIR;
+  // 隔离宿主机 .env：loadEnvironment() 会按候选路径回退读取，
+  // 若指向不存在的文件它会继续找 cwd/.env，把删掉的 API_KEY 读回来，
+  // 使本测试误判为"需要鉴权"。这里放一个真实的空 env 文件，确保命中即停。
+  const emptyEnvPath = join(dir, 'empty.env');
+  writeFileSync(emptyEnvPath, '');
+  process.env.ZHI2API_ENV_PATH = emptyEnvPath;
 
   const configStore = await import('../src/services/config-store.js');
   configStore.loadConfig({ force: true });

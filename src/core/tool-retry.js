@@ -10,6 +10,46 @@ export function isFcErrorRetryEnabled() {
 // 这是防跑飞的循环护栏，不是对上游能力的限制。
 const RETRY_LOOP_GUARD = 25;
 
+/**
+ * 判定"仅有思考、没有正文"的空回复。
+ *
+ * 真实场景（2026-09-14 线上日志）：deepseek-flash 在多轮工具调用后，
+ * 上游有时只输出 thinking 就 finishReason=stop，完全不给正文。客户端
+ * 因此只看到思考、拿不到答案，任务中断。这不是解析问题——上游流里
+ * 确实没有 RESPONSE 分片，只能在代理层检测并续写恢复。
+ *
+ * 注意：两者都空时返回 false（不触发恢复）——那更可能是正常的工具
+ * 调用轮或空回复，误触发会凭空多打一次上游。
+ */
+export function isEmptyAssistantReply({ visibleContent = '', reasoningContent = '' } = {}) {
+  const hasVisible = String(visibleContent || '').trim().length > 0;
+  const hasReasoning = String(reasoningContent || '').trim().length > 0;
+  return !hasVisible && hasReasoning;
+}
+
+/**
+ * 构造"只思考未作答"的续写提示。
+ *
+ * 关键约束：必须明确禁止再思考并直接要正文。若措辞含糊，模型会重复
+ * 思考一遍仍不输出正文，白白消耗一次上游调用。
+ */
+export function getReasoningOnlyRetryPrompt(userRequest = '', reasoning = '') {
+  const request = String(userRequest || '').trim();
+  const thought = String(reasoning || '').trim();
+  const requestBlock = request ? `\n用户的原始请求：\n\`\`\`\n${request.slice(-1500)}\n\`\`\`\n` : '';
+  const thoughtBlock = thought ? `\n你已经完成的思考（仅供你参考，不要再复述）：\n\`\`\`\n${thought.slice(-2000)}\n\`\`\`\n` : '';
+
+  return `你上一次的回复只输出了思考内容，没有输出任何面向用户的正文，因此任务无法完成。
+${requestBlock}${thoughtBlock}
+现在请直接输出最终回答正文：
+- 不要再输出思考过程或 <think> 标签，也不要重复上述思考内容
+- 直接给出结论、结果或答复本身
+- 保持原有格式要求（列表、表格、章节等）
+- 不要输出任何工具调用
+
+请立即输出正文。`;
+}
+
 export function classifyToolFailure(content, triggerSignal, parseResult = null) {
   if (parseResult?.failureType) return parseResult.failureType;
   if (findLastTriggerSignalOutsideThink(content, triggerSignal) === -1) return 'no_fc';
