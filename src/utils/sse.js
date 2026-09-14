@@ -1,4 +1,12 @@
-import { setRequestToken, reportTokenError, reportTokenSuccess, markTokenDead, getPoolInfo } from '../services/auth.js';
+import {
+  setRequestToken,
+  reportTokenError,
+  reportTokenSuccess,
+  reportTokenRateLimited,
+  hasAlternativeToken,
+  markTokenDead,
+  getPoolInfo,
+} from '../services/auth.js';
 import { solvePowChallengeWithToken } from './pow.js';
 import { getSession, invalidateTokenSessions } from '../services/session.js';
 import { invalidateByTokenPrefix } from '../services/conversation.js';
@@ -6,6 +14,23 @@ import { streamHeaders, proxiedFetch } from './headers.js';
 import { enqueueRequest, dispatchQueued } from '../services/queue.js';
 
 const BASE_URL = 'https://chat.deepseek.com';
+
+// 单次请求最多尝试的凭据数。避免池很大时把每个凭据都撞一遍。
+const CREDENTIAL_FAILOVER_LIMIT = 3;
+
+/**
+ * 判定一个上游错误是否"换一个凭据就可能成功"。
+ *
+ * 集中判定而非逐个函数打标记，避免遗漏：凭据失效（40003 无效、账号封禁、
+ * 会话创建被拒）与凭据被临时限制（429 限流、biz_code=5 禁言、40301 会话限流）
+ * 都属于此类；而参数错误、模型不支持等换了凭据也无用，不应触发转移。
+ */
+export function isCredentialRelatedError(err) {
+  const message = String(err?.message || '');
+  return err?.credentialFailover === true
+    || /token invalid|40003|account banned|40004|banned|requires verification|session create failed/i.test(message)
+    || /rate limit|429|muted|biz_code=5|40301/i.test(message);
+}
 
 function deepSeekErrorMessage(json, fallback = 'DeepSeek error') {
   const biz = json?.data;
@@ -51,7 +76,10 @@ async function throwDeepSeekErrorFromJson(json, slot) {
   }
   if (code === 40301) {
     await invalidateTokenRuntimeState(slot.token);
-    throw new Error('Session rate limited (40301) — sessions rotated');
+    // 上游会话级限流：换一个凭据（新会话）可能即可绕过，标记可故障转移。
+    const err = new Error('Session rate limited (40301) — sessions rotated');
+    err.credentialFailover = true;
+    throw err;
   }
   if (isInvalidChatSessionError(code, message)) {
     await invalidateTokenRuntimeState(slot.token);
@@ -60,12 +88,18 @@ async function throwDeepSeekErrorFromJson(json, slot) {
     throw err;
   }
   if (code === 429) {
-    throw new Error('Rate limited (429)');
+    // 上游限流：给该凭据设置冷却窗口并换其它凭据重试。
+    reportTokenRateLimited(slot.token);
+    const err = new Error('Rate limited (429)');
+    err.credentialFailover = true;
+    throw err;
   }
   if (code === 5 || json?.data?.biz_code === 5) {
     await markTokenUnavailable(slot.token);
     const until = json?.data?.biz_data?.mute_until;
-    throw new Error(`DeepSeek user muted (biz_code=5)${until ? ` until ${until}` : ''}: ${message}`);
+    const err = new Error(`DeepSeek user muted (biz_code=5)${until ? ` until ${until}` : ''}: ${message}`);
+    err.credentialFailover = true;
+    throw err;
   }
 
   throw new Error(`DeepSeek error${code != null ? ` ${code}` : ''}: ${message}`);
@@ -88,9 +122,81 @@ function throwIfAborted(signal) {
 
 export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null }) {
   throwIfAborted(signal);
-  // Step 1: Acquire token slot first — PoW and completion must use the same token
-  const slot = await enqueueRequest(preferVision);
 
+  // 凭据级故障转移：一个凭据被限流/失效时，换池中其它凭据重试，
+  // 而不是把错误直接抛给客户端。多配凭据的价值正在于此。
+  // 最多尝试 CREDENTIAL_FAILOVER_LIMIT 个不同凭据，避免无限循环。
+  const attemptedTokens = new Set();
+  let lastErr = null;
+
+  for (let credentialAttempt = 0; credentialAttempt < CREDENTIAL_FAILOVER_LIMIT; credentialAttempt++) {
+    throwIfAborted(signal);
+
+    // Step 1: Acquire token slot first — PoW and completion must use the same token
+    let slot;
+    try {
+      slot = await enqueueRequest(preferVision);
+    } catch (err) {
+      // 池中已无可分配凭据：若之前有失败记录，把原因一并抛出便于排查。
+      if (lastErr) {
+        throw new Error(`${lastErr.message}（池中已无其它可用凭据）`);
+      }
+      throw err;
+    }
+
+    // 选到的凭据本轮已试过（池中可用凭据少于尝试上限）——不再重复试。
+    if (attemptedTokens.has(slot.token)) {
+      slot.release();
+      dispatchQueued();
+      break;
+    }
+    attemptedTokens.add(slot.token);
+
+    try {
+      const result = await completionWithToken(slot, {
+        modelType, prompt, thinkingEnabled, searchEnabled, parentMessageId,
+        refFileIds, preferVision, resolveSession, getPrompt, signal,
+      });
+      return result;
+    } catch (err) {
+      slot.release();
+      dispatchQueued();
+
+      // 仅"换凭据可能解决"的错误才继续；其它错误（参数错误、模型不支持等）
+      // 换了凭据也无用，直接抛出。判定集中在 isCredentialRelatedError，
+      // 避免某个错误分支漏打标记导致明明还有可用凭据却直接失败。
+      if (isCredentialRelatedError(err) && hasAlternativeToken(slot.token)) {
+        lastErr = err;
+        console.warn(
+          `[DeepSeek] 凭据 ${slot.token.slice(0, 12)}... 不可用（${err.message}），`
+          + `切换到其它凭据重试（第 ${credentialAttempt + 2} 次）`,
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // 所有可用凭据都试过或都在冷却中。给最终错误带上正确的 HTTP 语义，
+  // 便于客户端区分"限流稍后重试"(429) 与"上游故障"(502)。
+  if (lastErr) {
+    if (!lastErr.status) {
+      const limited = /rate limit|429|muted|biz_code=5/i.test(lastErr.message || '');
+      lastErr.status = limited ? 429 : 502;
+      lastErr.type = limited ? 'rate_limit_error' : 'api_error';
+      lastErr.retryable = limited;
+    }
+    throw lastErr;
+  }
+  throw new Error('No usable credential available');
+}
+
+/**
+ * 用单个已获取的 slot 完成一次补全请求。
+ * 内部保留原有的"会话失效重试一次"逻辑（同一凭据内）。
+ * 限流类错误会带上 credentialFailover 标记，交由外层换凭据。
+ */
+async function completionWithToken(slot, { modelType, prompt, thinkingEnabled, searchEnabled, parentMessageId, refFileIds, preferVision, resolveSession, getPrompt, signal }) {
   try {
     throwIfAborted(signal);
     let lastErr;
@@ -235,8 +341,7 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
     throw lastErr;
   } catch (err) {
     setRequestToken(null);
-    slot.release();
-    dispatchQueued();
+    // slot 由外层持有并负责释放，这里只清理请求态。
     throw err;
   }
 }
