@@ -1,4 +1,4 @@
-import { aggregateInternalEvents, collectInternalEvents, INTERNAL_EVENT_TYPES, nowSeconds } from '../../core/internal-events.js';
+import { aggregateInternalEvents, collectInternalEvents, INTERNAL_EVENT_TYPES, nowSeconds, resolveCachedTokens } from '../../core/internal-events.js';
 import { errorToResponseError } from '../../core/errors.js';
 import { getConfig } from '../../services/config-store.js';
 import { recordResponseToolCalls } from '../../services/conversation.js';
@@ -27,7 +27,15 @@ function usageToOpenAI(usage = {}) {
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     total_tokens: usage.totalTokens || promptTokens + completionTokens,
-    prompt_tokens_details: { cached_tokens: 0 },
+    // cached_tokens 为展示值：上游 Web 接口不提供缓存统计，
+    // 按配置命中率对输入 token 折算（见 resolveCachedTokens 说明）。
+    prompt_tokens_details: {
+      cached_tokens: resolveCachedTokens(
+        promptTokens,
+        getConfig().deepseek.reportedCacheHitRate,
+        usage.cachedTokens,
+      ),
+    },
     completion_tokens_details: { reasoning_tokens: usage.reasoningTokens || 0 },
   };
 }

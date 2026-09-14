@@ -197,6 +197,11 @@ export function SettingsPage() {
               <MetricCard label="每 Token 并发" value={deepseek.maxConcurrentPerToken} />
               <MetricCard label="死亡阈值" value={deepseek.tokenDeadThreshold} />
               <MetricCard label="健康检查（秒）" value={deepseek.healthCheckIntervalSeconds} />
+              <MetricCard
+                label="上报缓存命中率"
+                value={`${deepseek.reportedCacheHitRate}%`}
+                hint="展示用，非上游真实值"
+              />
             </MetricGrid>
           </Card>
         </div>

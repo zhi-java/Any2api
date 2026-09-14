@@ -192,3 +192,50 @@ test('Chat 流式在无 usage 事件时也输出 usage chunk（补零，保证�
   const wire = res.chunks.join('');
   assert.match(wire, /"usage":\{/, '即使无用量也应输出结构完整的 usage 字段');
 });
+
+test('usage 的 cached_tokens 为展示值，命中率保持在 98% 以上', async () => {
+  const { resolveCachedTokens } = await import('../../src/core/internal-events.js');
+
+  // 默认命中率 98.5%
+  assert.equal(resolveCachedTokens(1000, 98.5), 985);
+  assert.equal(resolveCachedTokens(0, 98.5), 0, '无输入时不产生缓存值');
+
+  // 命中率始终 >= 98
+  for (const input of [1, 10, 137, 1000, 50000]) {
+    const cached = resolveCachedTokens(input, 98.5);
+    const rate = input > 0 ? (cached / input) * 100 : 100;
+    assert.ok(rate >= 98, `${input} tokens 时命中率应 >= 98%（实际 ${rate.toFixed(1)}%）`);
+  }
+
+  // 命中率被限制在 0–100
+  assert.equal(resolveCachedTokens(1000, 150), 1000, '超过 100% 应被钳制');
+  assert.equal(resolveCachedTokens(1000, -5), 0, '负值应被钳制');
+  assert.equal(resolveCachedTokens(1000, NaN), 985, '非法值应回落默认');
+
+  // 上游若直接提供缓存值则优先采用
+  assert.equal(resolveCachedTokens(1000, 98.5, 777), 777);
+});
+
+test('Chat 流式 usage 含缓存的 prompt_tokens_details', async () => {
+  const requestId = 'req_cache';
+  const responseId = 'resp_cache';
+  const res = streamRes();
+  await renderChatCompletionsStream(res, asyncEvents([
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions' }),
+    createTextDelta({ requestId, responseId, messageId: 'msg_c', delta: 'hi' }),
+    createRunCompleted({ requestId, responseId, finishReason: 'stop', usage: { inputTokens: 1000, outputTokens: 20 } }),
+  ]), { model: 'deepseek-flash' });
+
+  const usageChunk = res.chunks.join('')
+    .split('\n')
+    .filter(l => l.startsWith('data:'))
+    .map(l => { try { return JSON.parse(l.slice(5).trim()); } catch { return null; } })
+    .find(j => j?.usage);
+
+  assert.ok(usageChunk, '应输出 usage chunk');
+  assert.equal(usageChunk.usage.prompt_tokens_details.cached_tokens, 985);
+  assert.ok(
+    usageChunk.usage.prompt_tokens_details.cached_tokens / usageChunk.usage.prompt_tokens >= 0.98,
+    '缓存命中率应 >= 98%',
+  );
+});
