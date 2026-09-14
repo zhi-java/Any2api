@@ -18,7 +18,6 @@ import { createResponsesRequestAdapter } from '../protocols/responses/request-ad
 import { renderResponses, writeResponsesError } from '../protocols/responses/renderer.js';
 import { generateInternalEvents, prepareInternalGeneration } from '../core/generation.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
-import { GLM_MODEL_MAP } from '../channels/glm/index.js';
 
 const router = express.Router();
 
@@ -111,18 +110,9 @@ router.get('/models', (req, res) => {
     owned_by: 'deepseek',
   }));
 
-  // GLM 模型
-  const glmModels = Object.keys(GLM_MODEL_MAP).map(id => ({
-    id,
-    object: 'model',
-    created: 1718000000,
-    owned_by: 'zhipu',
-  }));
-
-  // 合并
   res.json({
     object: 'list',
-    data: [...deepseekModels, ...glmModels]
+    data: deepseekModels
   });
 });
 

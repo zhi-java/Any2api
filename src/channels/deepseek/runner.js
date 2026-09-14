@@ -14,9 +14,6 @@ import { preprocessMessagesForToolify } from '../../core/toolify-format.js';
 import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
-
-// Flash 模型是 DeepSeek 侧唯一具备视觉能力的型号，上传型内容需要它。
-const DEEPSEEK_FLASH_MODEL = 'deepseek-v4-flash';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -183,8 +180,9 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     responseStream.on('close', onClose);
   }
 
+  // 模型合并后唯一模型即具备视觉能力，上传型内容直接走视觉 slot。
   let refFileIds = [];
-  if (requestedModel === DEEPSEEK_FLASH_MODEL && hasUploadableParts(openAIMessages)) {
+  if (hasUploadableParts(openAIMessages)) {
     const uploadSlot = await enqueueRequest(true);
     try {
       refFileIds = await extractUploads(openAIMessages, uploadSlot.token);
@@ -215,7 +213,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       thinkingEnabled,
       searchEnabled,
       refFileIds,
-      preferVision: requestedModel === DEEPSEEK_FLASH_MODEL,
+      preferVision: true,
       resolveSession: makeResolveSession(modelType),
       getPrompt,
       signal: abortController.signal,
@@ -337,7 +335,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         thinkingEnabled,
         searchEnabled: false,
         refFileIds: [],
-        preferVision: requestedModel === DEEPSEEK_FLASH_MODEL,
+        preferVision: true,
         signal: signal || abortController.signal,
       });
       const retrySlot = retryResult.slot;

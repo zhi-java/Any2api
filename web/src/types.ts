@@ -1,7 +1,7 @@
 // 后端公开配置与状态的类型契约。字段与 src/services/config-store.js 的
 // getPublicConfig() / routes/admin.js 的响应保持一致。
 
-export type ChannelId = 'deepseek' | 'glm';
+export type ChannelId = 'deepseek';
 
 export type ChannelStatus = 'healthy' | 'degraded' | 'unconfigured' | 'unavailable';
 
@@ -99,11 +99,6 @@ export interface DeepSeekConfig {
   prewarmSessions: boolean;
 }
 
-export interface GlmConfig {
-  refreshTokens: CredentialSummary[];
-  guestMode: boolean;
-}
-
 export interface PublicConfig {
   version: number;
   paths: {
@@ -116,7 +111,6 @@ export interface PublicConfig {
   server: ServerConfig;
   runtime: RuntimeConfig;
   deepseek: DeepSeekConfig;
-  glm: GlmConfig;
 }
 
 export interface Stats {

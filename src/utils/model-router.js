@@ -1,16 +1,12 @@
 /**
  * 模型路由器
  *
- * 根据模型名称路由到正确的渠道处理器
- * 自动剥离 [1m] 等客户端附加后缀（源自 Claude Code）
+ * 根据模型名称路由到对应的渠道处理器，并自动剥离 [1m] 等客户端附加后缀
+ * （源自 Claude Code）。
  *
- * 路由优先级：
- * 1. DEEPSEEK_MODEL_MAP 精确匹配 → DeepSeek 渠道
- * 2. GLM_MODEL_MAP 精确匹配 → GLM 渠道
- * 3. 未知模型 → 抛出错误
+ * 当前仅支持 DeepSeek 渠道：GLM 渠道因上游策略调整已移除。
  */
 
-import { GLM_MODEL_MAP } from '../channels/glm/models.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { normalizeRequestedModelName } from './response-utils.js';
 
@@ -32,13 +28,8 @@ export function routeModel(modelName) {
     return { channel: 'deepseek', model: normalized };
   }
 
-  // GLM 模型（精确匹配公开模型表）
-  if (Object.prototype.hasOwnProperty.call(GLM_MODEL_MAP, normalized)) {
-    return { channel: 'glm', model: normalized };
-  }
-
   // 未知模型
   throw new Error(
-    `未知模型: ${normalized}。可用模型: ${Object.keys(DEEPSEEK_MODEL_MAP).join(', ')}, ${Object.keys(GLM_MODEL_MAP).join(', ')}`
+    `未知模型: ${normalized}。可用模型: ${Object.keys(DEEPSEEK_MODEL_MAP).join(', ')}`
   );
 }

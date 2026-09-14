@@ -17,11 +17,8 @@ import { getQueueInfo } from '../services/queue.js';
 import { filterLogs, getLogStats, readHistoricalLogs, readChatLogs, readRecentLogs, listLogDates } from '../middleware/logger.js';
 import { getMetrics } from '../middleware/metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
-import { GLM_MODEL_MAP } from '../channels/glm/models.js';
-import { getGLMStatus } from '../channels/glm/index.js';
 import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig, secretId } from '../services/config-store.js';
 import { authStatus, clearAdminSessionCookie, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
-import { glmTokenManager } from '../channels/glm/runner.js';
 
 const router = express.Router();
 
@@ -34,7 +31,6 @@ function envListCount(name) {
 
 function channelForModel(model) {
   if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_MAP, model)) return 'deepseek';
-  if (Object.prototype.hasOwnProperty.call(GLM_MODEL_MAP, model)) return 'glm';
   return 'unknown';
 }
 
@@ -48,19 +44,13 @@ function channelForLogEntry(entry) {
 }
 
 function modelCatalog() {
-  const deepseekModels = Object.keys(DEEPSEEK_MODEL_MAP).map(id => ({
+  // DeepSeek 上游已合并模型能力：单一模型同时具备思考、文档与视觉能力。
+  return Object.keys(DEEPSEEK_MODEL_MAP).map(id => ({
     id,
     channel: 'deepseek',
     owned_by: 'deepseek',
-    capabilities: { text: true, thinking: id.includes('pro'), document: id.includes('flash'), vision: id.includes('flash') },
+    capabilities: { text: true, thinking: true, document: true, vision: true },
   }));
-  const glmModels = Object.entries(GLM_MODEL_MAP).map(([id, config]) => ({
-    id,
-    channel: 'glm',
-    owned_by: 'zhipu',
-    capabilities: { text: true, thinking: true, search: Boolean(config.search), document: true, vision: true, audio: true, video: true },
-  }));
-  return [...deepseekModels, ...glmModels];
 }
 
 function summarizeRecentErrors() {
@@ -98,7 +88,6 @@ function buildChannels() {
   const config = getConfig();
   const deepseekPool = getPoolInfo();
   const deepseekAlive = deepseekPool.filter(item => !item.dead && item.token !== 'NONE').length;
-  const glmStatus = getGLMStatus();
   const errors = summarizeRecentErrors();
   const { byChannel } = summarizeModelMetrics();
 
@@ -115,23 +104,12 @@ function buildChannels() {
       queue: getQueueInfo(),
       detail: deepseekPool,
     },
-    {
-      id: 'glm',
-      name: 'GLM',
-      configured: glmStatus.auth.configuredRefreshTokens > 0,
-      credentialCount: glmStatus.auth.configuredRefreshTokens,
-      availableCount: glmStatus.auth.configuredRefreshTokens || glmStatus.auth.cached.length || (glmStatus.auth.mode === 'guest' ? 1 : 0),
-      activeRequests: glmStatus.auth.pendingRefresh ? 1 : 0,
-      capacity: glmStatus.auth.configuredRefreshTokens || 1,
-      mode: glmStatus.auth.mode,
-      detail: glmStatus.auth,
-    },
   ];
 
   return channels.map(channel => {
     const errorSummary = errors.get(channel.id);
     const usage = byChannel[channel.id] || { requests: 0, errors: 0, rpm: 0, tokenSpeed: 0 };
-    const status = !channel.configured && channel.id !== 'glm'
+    const status = !channel.configured
       ? 'unconfigured'
       : channel.availableCount > 0 ? 'healthy' : 'degraded';
     return {
@@ -168,7 +146,7 @@ function logFiltersFromQuery(query) {
   };
 }
 
-const CHANNEL_IDS = new Set(['deepseek', 'glm']);
+const CHANNEL_IDS = new Set(['deepseek']);
 
 function ensureChannel(channel) {
   if (!CHANNEL_IDS.has(channel)) {
@@ -184,7 +162,6 @@ function applyChannelRuntime(channel) {
     stopHealthCheck();
     startHealthCheck();
   }
-  if (channel === 'glm') glmTokenManager.configure();
 }
 
 function jsonError(res, error, fallbackStatus = 500) {
@@ -238,7 +215,6 @@ router.patch('/api/config', (req, res) => {
     syncTokenPoolFromConfig();
     stopHealthCheck();
     startHealthCheck();
-    glmTokenManager.configure();
     res.json({ success: true, config: getPublicConfig(), saved: Boolean(saved) });
   } catch (error) {
     jsonError(res, error);
@@ -360,32 +336,6 @@ router.post('/api/channels/:channel/test', async (req, res) => {
         }
       }
       return res.json({ success: results.some(r => r.success), channel, results, removed: removedIds.length > 0 });
-    }
-
-    if (channel === 'glm') {
-      for (const rt of config.glm.refreshTokens || []) {
-        try {
-          // 直接测这一条 refresh token——getAccessToken() 会在 token 失效时
-          // 静默降级访客模式，导致无效凭据也报"成功"。
-          const ok = await glmTokenManager.testRefreshToken(rt);
-          results.push({ label: secretLabel(rt), success: ok, message: ok ? '访问令牌获取成功' : '无法获取访问令牌' });
-          if (!ok) {
-            removeChannelCredential('glm', secretId(rt));
-          }
-        } catch (err) {
-          // 仅在上游明确拒绝时删除凭据；网络类错误保留凭据，避免离线点测试把凭据清空。
-          if (/GLM token refresh failed/i.test(err.message)) {
-            removeChannelCredential('glm', secretId(rt));
-            results.push({ label: secretLabel(rt), success: false, message: `凭据无效，已删除: ${err.message}` });
-          } else {
-            results.push({ label: secretLabel(rt), success: false, message: `测试失败（凭据已保留）: ${err.message}` });
-          }
-        }
-      }
-      if (!results.length && config.glm.guestMode) {
-        results.push({ label: '访客模式', success: true, message: '访客模式已启用，无需配置凭据' });
-      }
-      return res.json({ success: results.some(r => r.success), channel, results });
     }
 
     res.json({ success: true, channel, results });

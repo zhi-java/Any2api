@@ -1,6 +1,6 @@
 # OmniAPI
 
-> 多通道 Web-to-API 代理 · 将 DeepSeek、GLM 等 Web 端统一转换为 OpenAI / Claude 兼容 API
+> Web-to-API 代理 · 将 DeepSeek Web 端统一转换为 OpenAI / Claude 兼容 API
 
 
 ---
@@ -21,7 +21,7 @@
 
 ## 项目简介
 
-**OmniAPI** 是一个多通道 Web-to-API 代理服务，将 DeepSeek、GLM 等上游 Web 端的对话能力，统一转换为标准的 **OpenAI Chat Completions** 和 **Claude Messages** API 格式。
+**OmniAPI** 是一个 Web-to-API 代理服务，将 DeepSeek 上游 Web 端的对话能力，统一转换为标准的 **OpenAI Chat Completions** 和 **Claude Messages** API 格式。
 
 你可以使用任意 OpenAI/Claude SDK 调用这些模型，无需适配各平台的原生 API。
 
@@ -31,7 +31,7 @@
 |------|------|
 | 🔌 **多协议支持** | OpenAI `chat/completions`、Claude `messages`、原生 `responses` |
 | 🚀 **全流式响应** | 所有端点仅支持 SSE 流式输出，实时获取生成内容 |
-| 🧩 **多上游渠道** | DeepSeek、GLM，统一抽象层 |
+| 🧩 **上游渠道** | DeepSeek Web 端，统一抽象层 |
 | 🔄 **Token 池管理** | 多账号轮转、自动刷新、并发控制、健康检查 |
 | 🛠️ **工具调用** | 支持 Function Calling，自动注入 XML 格式指令 |
 | ⚙️ **Prompt 注入** | 可开关的兼容性注入，适配不同上游格式 |
@@ -58,7 +58,7 @@ npm start
 # 1. 复制环境配置
 cp .env.docker .env
 
-# 2. 编辑 .env，配置认证信息（至少配置一个渠道）
+# 2. 编辑 .env，配置 DeepSeek 认证信息
 #    例如 DeepSeek: DS_ACCOUNTS=
 #    或 DS_TOKENS=
 
@@ -93,12 +93,12 @@ curl http://localhost:3000/v1/models
 
 ## 渠道与模型支持
 
-| 渠道 | 认证方式 | 模型示例 |
-|------|---------|---------|
-| **DeepSeek** | 账号密码 / Token 池 | `deepseek-v4-pro`、`deepseek-v4-flash` |
-| **GLM** | Refresh Token / 访客模式 | `glm-5.2` |
+| 渠道 | 认证方式 | 模型 |
+|------|---------|------|
+| **DeepSeek** | 账号密码 / Token 池 | `deepseek-flash` |
 
-**模型路由优先级**：DeepSeek → GLM。客户端附加后缀（如 `[1m]`）会被自动剥离。
+> DeepSeek 上游已合并模型能力，不再区分 flash/pro 两档，对外只暴露 `deepseek-flash`。
+> 客户端附加后缀（如 `[1m]`）会被自动剥离。
 
 ## 配置说明
 
@@ -130,19 +130,6 @@ DS_TOKENS=
 # Token 池并发控制
 MAX_CONCURRENT_PER_TOKEN=2
 TOKEN_DEAD_THRESHOLD=5
-```
-
-### GLM 配置
-
-```bash
-# Refresh Token（从智谱清言 Web 端 Cookies 获取）
-GLM_REFRESH_TOKEN="your-refresh-token"
-
-# 多个 Refresh Token（逗号分隔，优先于单个）
-GLM_REFRESH_TOKENS="token1,token2"
-
-# 访客模式（无凭据时可用，能力受限）
-GLM_GUEST_MODE=true
 ```
 
 ## 高级功能
@@ -200,7 +187,7 @@ SSE 响应流
 ```
 
 核心设计理念：
-- **Internal Events 层**：所有渠道输出统一事件序列，由渲染器转换为不同协议格式
+- **Internal Events 层**：渠道输出统一事件序列，由渲染器转换为不同协议格式
 - **Token 池管理**：多账号轮转、自动刷新、并发控制、健康检查、死亡标记
 - **三层配置**：默认值 → 环境变量 → 磁盘配置（管理后台可修改）
 
@@ -243,7 +230,7 @@ node --test test/channels/deepseek/
 
 ```
 src/
-├── channels/        # 上游渠道实现（deepseek、glm）
+├── channels/        # 上游渠道实现（deepseek）
 ├── core/            # 核心逻辑（生成编排、模型解析、Prompt 策略）
 ├── protocols/       # 协议适配器与渲染器
 ├── routes/          # API 路由

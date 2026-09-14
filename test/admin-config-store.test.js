@@ -7,7 +7,6 @@ import { join } from 'node:path';
 function clearEnv() {
   for (const key of [
     'ZHI2API_CONFIG_PATH', 'ZHI2API_DATA_DIR', 'API_KEY', 'API_KEYS', 'DS_TOKEN', 'DS_TOKENS', 'DS_ACCOUNTS',
-    'GLM_REFRESH_TOKEN', 'GLM_REFRESH_TOKENS',
     'SESSION_TTL', 'ENABLE_CONVERSATION_AFFINITY', 'CONVERSATION_TTL_MS',
     'MAX_CONVERSATIONS', 'ENABLE_FC_ERROR_RETRY',
     'LOG_DIR', 'CLIENT_DEBUG_LOG_DIR', 'SYSTEM_FINGERPRINT',
@@ -24,7 +23,6 @@ test('config store saves runtime config to ZHI2API_CONFIG_PATH and masks secrets
   mod.updateConfig({
     server: { apiKey: 'sk-secret' },
     deepseek: { tokens: ['ds-token'], accounts: [{ email: 'u@example.com', password: 'pass' }] },
-    glm: { refreshTokens: ['glm-refresh'], guestMode: false },
   });
 
   const saved = JSON.parse(readFileSync(process.env.ZHI2API_CONFIG_PATH, 'utf8'));

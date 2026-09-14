@@ -10,7 +10,6 @@ import {
   Modal,
   PanelHeader,
   Select,
-  Switch,
   useToast,
 } from '../components/ui';
 import type { ChannelId, ChannelTestResult } from '../types';
@@ -31,15 +30,9 @@ const CHANNEL_META: Record<ChannelId, ChannelMeta> = {
     tokenHint: '来源：Local Storage → userToken',
     accountHint: '账号模式使用上游网页登录账号/密码。如遇验证码或风控，优先使用 Token/Cookie 模式。',
   },
-  glm: {
-    name: 'GLM',
-    modes: ['token'],
-    tokenLabel: 'chatglm_refresh_token',
-    tokenHint: '来源：智谱清言 Cookies → chatglm_refresh_token',
-  },
 };
 
-const CHANNEL_IDS: ChannelId[] = ['deepseek', 'glm'];
+const CHANNEL_IDS: ChannelId[] = ['deepseek'];
 
 interface CredentialRow {
   id: string;
@@ -89,9 +82,6 @@ export function CredentialsPage() {
   async function save(event: React.FormEvent) {
     event.preventDefault();
     try {
-      if (channel === 'glm' && 'guestMode' in config) {
-        await api.updateChannelConfig('glm', { ...config, guestMode: Boolean(config.guestMode) });
-      }
       if (type === 'account') {
         await api.addCredential(channel, { type: 'account', email, password });
         setEmail('');
@@ -102,7 +92,7 @@ export function CredentialsPage() {
           toast('请先填写 Token', 'warning');
           return;
         }
-        await api.addCredential(channel, channel === 'glm' ? { type: 'token', refreshToken: trimmed } : { type: 'token', token: trimmed });
+        await api.addCredential(channel, { type: 'token', token: trimmed });
         setToken('');
       }
       toast('凭据已保存', 'success');
@@ -209,10 +199,7 @@ export function CredentialsPage() {
               </table>
             </div>
           ) : (
-            <EmptyState
-              title={channel === 'glm' && config.guestMode ? '访客模式已启用' : '暂无凭据'}
-              detail={channel === 'glm' && config.guestMode ? '无需配置即可使用，凭据受限' : '在右侧添加'}
-            />
+            <EmptyState title="暂无凭据" detail="在右侧添加" />
           )}
         </Card>
 
@@ -229,7 +216,7 @@ export function CredentialsPage() {
             ) : null}
 
             {type === 'token' ? (
-              <Field label={channel === 'glm' ? 'Refresh Token' : `Token（${meta.tokenLabel}）`} hint={meta.tokenHint}>
+              <Field label={`Token（${meta.tokenLabel}）`} hint={meta.tokenHint}>
                 <Input
                   type="password"
                   autoComplete="off"
@@ -260,14 +247,6 @@ export function CredentialsPage() {
                 </Field>
               </>
             )}
-
-            {channel === 'glm' ? (
-              <Switch
-                checked={Boolean(config.guestMode)}
-                onChange={next => setConfigs(prev => ({ ...prev, glm: { ...prev.glm, guestMode: next } }))}
-                label="启用访客模式"
-              />
-            ) : null}
 
             <Button type="submit">保存</Button>
           </form>

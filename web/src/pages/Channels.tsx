@@ -56,7 +56,6 @@ export function ChannelsPage() {
         >
           <option value="all">全部渠道</option>
           <option value="deepseek">DeepSeek</option>
-          <option value="glm">GLM</option>
         </select>
       </Card>
 

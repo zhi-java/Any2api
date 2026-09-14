@@ -155,7 +155,7 @@ Admin 控制台同时服务于本地运行与 Docker 部署两种形态，不区
 
 - 本地：`npm start` 后浏览器访问 `http://localhost:3000/admin`
 - Docker：容器内同样端口，由 `docker-compose.yml` 映射到宿主机
-- 通知/文案使用平实语言（“GLM 渠道需关注”而非只给原始错误码）
+- 通知/文案使用平实语言（“渠道需关注”而非只给原始错误码）
 
 ## 9. Explicit anti-patterns (for S4)
 

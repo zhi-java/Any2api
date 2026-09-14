@@ -46,11 +46,11 @@ test('Chat renderer emits role, content delta, finish chunk, and DONE', async ()
   const messageId = 'msg_chat';
   const res = streamRes();
   await renderChatCompletionsStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'chat_completions', created: 123 }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions', created: 123 }),
     createMessageStarted({ requestId, responseId, messageId }),
     createTextDelta({ requestId, responseId, messageId, delta: 'hello' }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const wire = res.chunks.join('');
   assert.match(wire, /chat\.completion\.chunk/);
   assert.match(wire, /"role":"assistant"/);
@@ -65,11 +65,11 @@ test('Chat JSON renderer aggregates Internal Events into chat.completion', async
   const messageId = 'msg_chat_json';
   const res = jsonRes();
   await renderChatCompletionsJSON(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'chat_completions', created: 123 }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions', created: 123 }),
     createMessageStarted({ requestId, responseId, messageId }),
     createTextDelta({ requestId, responseId, messageId, delta: 'hello' }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 2 } }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   assert.equal(res.body.object, 'chat.completion');
   assert.equal(res.body.choices[0].message.role, 'assistant');
   assert.equal(res.body.choices[0].message.content, 'hello');
@@ -85,7 +85,7 @@ test('Chat JSON renderer preserves assistant content and reasoning alongside too
   const toolCallId = 'call_patch';
   const res = jsonRes();
   await renderChatCompletionsJSON(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'chat_completions', created: 123 }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions', created: 123 }),
     createMessageStarted({ requestId, responseId, messageId }),
     createTextDelta({ requestId, responseId, messageId, delta: '以下是修改摘要。' }),
     createReasoningDelta({ requestId, responseId, messageId, delta: '以下是修改摘要。' }),
@@ -93,7 +93,7 @@ test('Chat JSON renderer preserves assistant content and reasoning alongside too
     createToolCallArgumentsDelta({ requestId, responseId, messageId, toolCallId, index: 0, delta: '{"patch":"*** Begin Patch"}' }),
     createToolCallDone({ requestId, responseId, messageId, toolCallId, index: 0, name: 'ApplyPatch', arguments: '{"patch":"*** Begin Patch"}' }),
     createRunCompleted({ requestId, responseId, finishReason: 'tool_calls' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const message = res.body.choices[0].message;
   assert.equal(message.content, '以下是修改摘要。');
   assert.equal(message.reasoning_content, '以下是修改摘要。');
@@ -109,13 +109,13 @@ test('Chat stream renderer emits reasoning_content before tool_calls when presen
   const toolCallId = 'call_patch';
   const res = streamRes();
   await renderChatCompletionsStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'chat_completions', created: 123 }),
+    createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions', created: 123 }),
     createMessageStarted({ requestId, responseId, messageId }),
     createReasoningDelta({ requestId, responseId, messageId, delta: '准备修改 README。' }),
     createToolCallStarted({ requestId, responseId, messageId, toolCallId, index: 0, name: 'ApplyPatch' }),
     createToolCallDone({ requestId, responseId, messageId, toolCallId, index: 0, name: 'ApplyPatch', arguments: '{"patch":"*** Begin Patch"}' }),
     createRunCompleted({ requestId, responseId, finishReason: 'tool_calls' }),
-  ]), { model: 'deepseek-v4-flash' });
+  ]), { model: 'deepseek-flash' });
   const wire = res.chunks.join('');
   assert.match(wire, /"reasoning_content":"准备修改 README。"/);
   assert.match(wire, /"tool_calls":\[\{"index":0,"id":"call_patch"/);
@@ -132,10 +132,10 @@ test('Chat stream records tool call before completion for clients that omit assi
   const toolCallId = 'call_chat_early';
   const res = streamRes();
   async function* interruptedEvents() {
-    yield createRunStarted({ requestId, responseId, model: 'deepseek-v4-flash', protocol: 'chat_completions', created: 123 });
+    yield createRunStarted({ requestId, responseId, model: 'deepseek-flash', protocol: 'chat_completions', created: 123 });
     yield createToolCallStarted({ requestId, responseId, messageId, toolCallId, index: 0, name: 'Read' });
     yield createToolCallDone({ requestId, responseId, messageId, toolCallId, index: 0, name: 'Read', arguments: '{"file_path":"README.md"}' });
     assert.deepEqual(getRecentToolCallIndex([toolCallId]).get(toolCallId), { name: 'Read', arguments: '{"file_path":"README.md"}' });
   }
-  await renderChatCompletionsStream(res, interruptedEvents(), { model: 'deepseek-v4-flash' });
+  await renderChatCompletionsStream(res, interruptedEvents(), { model: 'deepseek-flash' });
 });

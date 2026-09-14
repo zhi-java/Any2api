@@ -57,7 +57,7 @@ test('extractAssistantResponse preserves plain text when output is not JSON', ()
 
 test('buildDisabledPrompt returns captured raw JSON metadata', () => {
   const body = {
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     messages: [
       { role: 'system', content: 'be precise' },
       { role: 'user', content: 'hello' },
