@@ -170,8 +170,10 @@ Admin 控制台同时服务于本地运行与 Docker 部署两种形态，不区
 
 | Target | Action |
 |--------|--------|
-| `src/admin/styles/design-system.css` | Replace tokens with S4 light set |
-| Admin pages | Reorder Home toward switch + endpoint + steps |
+| `web/src/index.css` | 以 Tailwind v4 `@theme` 声明 S4 token（唯一色值来源） |
+| `web/src/components/ui.tsx` | 基础组件：Button / Card / Badge / Field / Switch / Modal / Toast |
+| `web/src/pages/` | 首页重新组织为「状态 → 端点 → 引导清单 → KPI → 渠道卡片」 |
+| `src/admin/dist/` | Vite 构建产物，由 Express 托管，不入库 |
 | Optional skins | S1/S5 later behind Settings → Appearance |
 
 ## 11. Reference preview

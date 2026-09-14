@@ -1,61 +1,57 @@
 # 多阶段构建 - 生产环境优化版本
 
-# 构建阶段
-FROM node:22-alpine AS builder
+# ---------- 阶段 1：构建管理后台前端（Vite + React） ----------
+FROM node:22-alpine AS web-builder
 
-WORKDIR /app
+WORKDIR /web
 
-# 复制依赖清单
-COPY package*.json ./
-
-# 安装所有依赖（包括 devDependencies，用于构建）
+# 先装依赖，利用层缓存
+COPY web/package*.json ./
 RUN npm ci
 
-# 复制源码
-COPY . .
+# 再复制源码并构建（输出到 src/admin/dist）
+COPY web/ ./
+RUN npm run build
 
-# 运行构建步骤（如果项目有构建流程）
-# RUN npm run build
 
-# 生产阶段
+# ---------- 阶段 2：安装后端生产依赖 ----------
+FROM node:22-alpine AS deps
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+
+# ---------- 阶段 3：生产运行时 ----------
 FROM node:22-alpine AS production
 
-# 设置工作目录
 WORKDIR /app
 
-# 安装 dumb-init 用于正确处理信号
+# dumb-init 正确处理 SIGTERM
 RUN apk add --no-cache dumb-init
 
-# 设置环境变量
 ENV NODE_ENV=production \
     PORT=3000
 
-# 复制 package.json
+COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
+COPY src ./src
+COPY .env.example ./.env.example
 
-# 仅安装生产依赖
-RUN npm ci --only=production && \
-    npm cache clean --force
+# 前端构建产物（Vite base 指向 /admin/，Express 从 src/admin/dist 托管）
+COPY --from=web-builder /web/dist ./src/admin/dist
 
-# 从构建阶段复制应用代码
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/.env.example ./.env.example
-
-# 创建日志目录并设置权限
+# 日志目录与权限
 RUN mkdir -p /app/logs && \
     chown -R node:node /app && \
     chmod -R 755 /app
 
-# 切换到非 root 用户
 USER node
 
-# 暴露端口
 EXPOSE 3000
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+    CMD node -e "require('http').get('http://localhost:3000/healthz', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-# 使用 dumb-init 启动应用（正确处理 SIGTERM）
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "src/index.js"]

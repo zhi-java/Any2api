@@ -45,6 +45,9 @@
 # 安装依赖
 npm install
 
+# 构建管理后台前端（首次或前端有改动时）
+npm run build
+
 # 启动服务（默认端口 3000）
 npm start
 ```
@@ -214,7 +217,14 @@ SSE 响应流
 npm start          # 启动服务
 npm run dev        # 开发模式（文件变更自动重启）
 npm test           # 运行所有测试
+
+npm run build      # 构建管理后台前端（Vite + React → src/admin/dist）
+npm run web:dev    # 前端热更新开发（需另开服务端，默认代理到 3000）
 ```
+
+> 管理后台前端位于 `web/`（Vite + React + TypeScript + Tailwind）。
+> `src/admin/dist/` 为构建产物，不入库；本地运行前需先执行一次 `npm run build`，
+> Docker 部署则由 Dockerfile 多阶段构建自动完成。
 
 ### 运行测试
 
@@ -240,8 +250,15 @@ src/
 ├── middleware/      # 认证、日志、错误处理
 ├── services/        # Token 池、配置持久化、会话管理
 ├── utils/           # 工具函数
-├── admin/           # 管理面板前端
 └── index.js         # 入口
+
+web/                 # 管理后台前端（Vite + React + TS + Tailwind）
+├── src/
+│   ├── pages/       # 首页 / 渠道 / 凭据 / API Keys / 设置 / 日志 / 监控
+│   ├── components/  # 设计系统组件与外壳
+│   ├── lib/         # API 客户端、轮询 hooks、格式化
+│   └── index.css    # S4 Soft Product 设计 token
+└── vite.config.ts   # 产物输出到 src/admin/dist
 ```
 
 ### 添加新渠道
