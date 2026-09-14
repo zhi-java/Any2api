@@ -93,28 +93,29 @@ test('unknown api route keeps JSON 404 after authentication', async () => {
   });
 });
 
-test('admin static stylesheets require authentication', async () => {
+test('admin SPA shell is served unauthenticated (login page lives in the bundle)', async () => {
   await withServer(async baseUrl => {
-    const response = await get(baseUrl, '/admin/styles/design-system.css');
-    assert.equal(response.status, 401);
-    assert.match(response.text, /Authentication required|Invalid API key|Unauthorized/i);
-    assert.doesNotMatch(response.text, /--accent|--bg-canvas/);
-  });
-});
-
-test('admin scripts require authentication', async () => {
-  await withServer(async baseUrl => {
-    const response = await get(baseUrl, '/admin/scripts/api.js');
-    assert.equal(response.status, 401);
-    assert.doesNotMatch(response.text, /const API|async function request/);
-  });
-});
-
-test('admin static assets load with bearer authentication', async () => {
-  await withServer(async baseUrl => {
-    const response = await get(baseUrl, '/admin/scripts/api.js', { Authorization: 'Bearer test-admin-key' });
+    const response = await get(baseUrl, '/admin');
     assert.equal(response.status, 200);
-    assert.match(response.text, /const API|async function request/);
+    assert.match(response.text, /OmniAPI 控制台|id="root"/);
+    // bundle 内不得内联任何上游凭据或 API Key
+    assert.doesNotMatch(response.text, /sk-[A-Za-z0-9]{20,}/);
+  });
+});
+
+test('admin data APIs require authentication', async () => {
+  await withServer(async baseUrl => {
+    for (const path of ['/admin/api/config', '/admin/api/channels', '/admin/api/stats']) {
+      const response = await get(baseUrl, path);
+      assert.equal(response.status, 401, `${path} must require auth`);
+    }
+  });
+});
+
+test('admin data APIs respond with bearer authentication', async () => {
+  await withServer(async baseUrl => {
+    const response = await get(baseUrl, '/admin/api/auth/status', { Authorization: 'Bearer test-admin-key' });
+    assert.equal(response.status, 200);
   });
 });
 

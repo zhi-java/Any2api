@@ -1,5 +1,8 @@
 # 依赖
 node_modules
+web/node_modules
+web/dist
+src/admin/dist
 npm-debug.log
 yarn-error.log
 

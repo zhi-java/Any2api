@@ -20,7 +20,7 @@ import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { GLM_MODEL_MAP } from '../channels/glm/models.js';
 import { getGLMStatus } from '../channels/glm/index.js';
 import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig, secretId } from '../services/config-store.js';
-import { authStatus, clearAdminSessionCookie, hasValidAdminAuth, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
+import { authStatus, clearAdminSessionCookie, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
 import { glmTokenManager } from '../channels/glm/runner.js';
 
 const router = express.Router();
@@ -191,23 +191,18 @@ function jsonError(res, error, fallbackStatus = 500) {
   res.status(error.statusCode || fallbackStatus).json({ error: { message: error.message } });
 }
 
-function requireAdminPageAuth(req, res, next) {
-  if (hasValidAdminAuth(req)) return next();
-  return res.status(401).json({ error: { message: 'Authentication required' } });
-}
-
 // ============= 静态资源服务 =============
 
-// 静态资源（CSS, JS, 页面等）
-router.use('/styles', requireAdminPageAuth, express.static(srcPath('admin', 'styles')));
-router.use('/scripts', requireAdminPageAuth, express.static(srcPath('admin', 'scripts')));
-router.use('/assets', requireAdminPageAuth, express.static(srcPath('admin', 'assets')));
-router.use('/vendor', requireAdminPageAuth, express.static(srcPath('admin', 'vendor')));
+// SPA 构建产物（Vite 输出 src/admin/dist）。前端 bundle 本身不含机密，
+// 登录页就在其中，因此静态资源免鉴权；真正的数据保护在 /admin/api/* 与
+// /performance/api/* 的鉴权中间件上（见 server.js）。
+router.use('/assets', express.static(srcPath('admin', 'dist', 'assets')));
 
 // ============= Admin 面板 UI =============
 
+// 前端使用 hash 路由（#dashboard / #channels ...），服务端只需返回入口。
 router.get('/', (req, res) => {
-  res.sendFile(srcPath('admin', 'index.html'));
+  res.sendFile(srcPath('admin', 'dist', 'index.html'));
 });
 
 // ============= 鉴权与配置 API =============
