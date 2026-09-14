@@ -75,14 +75,9 @@ export function formatAssistantToolCallsForAI(toolCalls = [], triggerSignal) {
   return `${triggerSignal}\n<function_calls>\n${xmlCalls}\n</function_calls>`;
 }
 
-// 参数回显只用于帮模型把结果对应回调用（并行调用时靠它区分），
-// 截断以免 Write/Edit 的大参数在历史里出现两遍（XML 一遍、回显一遍）。
-const ARGS_ECHO_MAX_CHARS = 200;
-
-function truncateArgsEcho(toolArguments) {
-  const text = String(toolArguments || '{}');
-  if (text.length <= ARGS_ECHO_MAX_CHARS) return text;
-  return `${text.slice(0, ARGS_ECHO_MAX_CHARS)}…[参数过长已截断，共 ${text.length} 字符]`;
+// 参数回显用于帮模型把结果对应回调用（并行调用时靠它区分），原样回显不做截断。
+function argsEcho(toolArguments) {
+  return String(toolArguments || '{}');
 }
 
 // Read 类工具结果返回后，是模型决定"接下来怎么修改这个文件"的时刻——
@@ -93,14 +88,14 @@ const READ_LIKE_TOOL_RX = /^(?:read|read_file|readfile|read_files|read_many_file
 
 function editFirstNudge(toolName) {
   if (!READ_LIKE_TOOL_RX.test(String(toolName || '').trim())) return '';
-  return '\n提醒：若下一步要修改刚读取的这个文件——它是已存在文件，必须用编辑类工具做精确替换、只提交需要变更的片段；禁止用写入类工具整文件重写覆盖，任何没有原样复述进参数的内容都会被删除。若改动内容很大（超过约 200 行），拆成多轮小编辑分段完成，不要在一次调用里输出全部内容。';
+  return '\n提醒：若下一步要修改刚读取的这个文件——它是已存在文件，必须用编辑类工具做精确替换、只提交需要变更的片段；禁止用写入类工具整文件重写覆盖，任何没有原样复述进参数的内容都会被删除。';
 }
 
 export function formatToolResultForAI(toolName, toolArguments, resultContent) {
   return `[系统通知] 以下是你调用的工具 \`${toolName}\` 的执行结果。
 
 工具名称：${toolName}
-调用参数：${truncateArgsEcho(toolArguments)}
+调用参数：${argsEcho(toolArguments)}
 执行结果：
 <tool_result>
 ${wrapCdata(resultContent ?? '')}

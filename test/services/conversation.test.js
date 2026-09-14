@@ -8,7 +8,7 @@ process.env.ZHI2API_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'omni-conversa
 
 const { loadConfig, updateConfig } = await import('../../src/services/config-store.js');
 loadConfig({ force: true });
-updateConfig({ runtime: { enableConversationAffinity: true, maxTurnsPerSession: 10 } });
+updateConfig({ runtime: { enableConversationAffinity: true } });
 
 const {
   getConversationBinding,
@@ -71,24 +71,22 @@ test('identical resend matches its own full hash without creating a new session'
   assert.equal(r2.promptMode, 'latest');
 });
 
-test('session rotation reseeds with full history', async () => {
-  updateConfig({ runtime: { maxTurnsPerSession: 1 } });
-  try {
-    const turn1 = [{ role: 'user', content: 'rotation-case' }];
-    const b1 = getConversationBinding(reqWithHeaders(), turn1);
-    const r1 = await resolveConversation({ conversationId: b1.conversationId, modelType: 'default', token: TOKEN, createSessionFn: stubSession('rot-1') });
-    assert.equal(r1.promptMode, 'full');
-    recordResponseMessageId(b1.conversationId, 'rot-msg-1');
+test('session persists across many turns without turn-count rotation', async () => {
+  const turn1 = [{ role: 'user', content: 'persist-case' }];
+  const b1 = getConversationBinding(reqWithHeaders(), turn1);
+  const r1 = await resolveConversation({ conversationId: b1.conversationId, modelType: 'default', token: TOKEN, createSessionFn: stubSession('persist-1') });
+  assert.equal(r1.promptMode, 'full');
+  recordResponseMessageId(b1.conversationId, 'persist-msg-1');
 
-    const turn2 = [...turn1, { role: 'assistant', content: 'answer' }, { role: 'user', content: 'follow-up' }];
-    const b2 = getConversationBinding(reqWithHeaders(), turn2);
-    assert.equal(b2.matchedPrefixLength, 1);
-    const r2 = await resolveConversation({ conversationId: b2.conversationId, modelType: 'default', token: TOKEN, createSessionFn: stubSession('rot-2') });
-    // 轮换出的新会话同样没有历史，也必须整体播种
-    assert.equal(r2.promptMode, 'full');
-    assert.equal(r2.sessionId, 'rot-2');
-  } finally {
-    updateConfig({ runtime: { maxTurnsPerSession: 10 } });
+  // 连续多轮续接：不再有轮数上限，会话应一直复用而不轮换。
+  let turn = turn1;
+  for (let i = 2; i <= 12; i++) {
+    turn = [...turn, { role: 'assistant', content: `answer-${i}` }, { role: 'user', content: `follow-up-${i}` }];
+    const binding = getConversationBinding(reqWithHeaders(), turn);
+    const resolved = await resolveConversation({ conversationId: binding.conversationId, modelType: 'default', token: TOKEN, createSessionFn: stubSession('persist-should-not-be-used') });
+    assert.equal(resolved.sessionId, 'persist-1', `turn ${i} should keep the original session`);
+    assert.equal(resolved.promptMode, 'latest');
+    recordResponseMessageId(binding.conversationId, `persist-msg-${i}`);
   }
 });
 

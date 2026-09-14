@@ -5,9 +5,10 @@ export function isFcErrorRetryEnabled() {
   return getConfig().runtime.enableFcErrorRetry;
 }
 
-export function getFcErrorRetryMaxAttempts() {
-  return getConfig().runtime.fcErrorRetryMaxAttempts;
-}
+// 上游能力放开后不再限制纠错重试次数，只保留一个防御性上限：
+// 防止模型在永远无法产出合法 XML 时把重试循环变成无限上游调用。
+// 这是防跑飞的循环护栏，不是对上游能力的限制。
+const RETRY_LOOP_GUARD = 25;
 
 export function classifyToolFailure(content, triggerSignal, parseResult = null) {
   if (parseResult?.failureType) return parseResult.failureType;
@@ -169,12 +170,6 @@ ${toolListText}
 
 export function getToolContinuationPrompt(truncatedContent, errorDetails, tools = []) {
   const tail = String(truncatedContent || '').slice(-1500);
-  // 截断最常发生在超大 content/new_string 里。有编辑+写入工具时提示改用
-  // 分段模式重来，避免"重发全量 → 再次截断"的循环。
-  const { editNames, writeNames } = detectFileMutationTools(tools);
-  const segmentNote = editNames.length && writeNames.length
-    ? `\n\n分段提示：如果这次截断发生在很长的文件内容参数里，说明单次输出过大。选择选项 B 重来时禁止再一次性输出全部内容——新建文件先用 ${writeNames[0]} 写入第一段并在结尾留一行全文件唯一的续写标记，后续轮次用 ${editNames[0]} 把标记替换为下一段；修改已有文件则拆成多个小 ${editNames[0]}，跨多轮完成。`
-    : '';
   return `你上一次的输出在工具调用 XML 完成前被截断了。
 
 被截断的输出：
@@ -198,7 +193,7 @@ ${errorDetails}
 选项 B（仅当你认为之前的输出有错误时）：
 从头开始，输出完整的函数调用。先输出触发信号独占一行，然后完整输出 function_calls 块。
 
-请选择选项 A，除非你确信之前的输出包含需要纠正的错误。${segmentNote}`;
+请选择选项 A，除非你确信之前的输出包含需要纠正的错误。`;
 }
 
 export function isContinuationResponse(retryContent, triggerSignal) {
@@ -220,13 +215,13 @@ export async function attemptToolParseWithRetry({
   retryToolRequest,
   signal,
   retryEnabled = isFcErrorRetryEnabled(),
-  maxAttempts = getFcErrorRetryMaxAttempts(),
+  maxAttempts = RETRY_LOOP_GUARD,
 } = {}) {
   if (!promptPlan?.toolCallingEnabled || promptPlan.promptInjectionDisabled) {
     return { toolCalls: null, content: null, failureType: 'disabled', attempts: 1, originalContent: content };
   }
 
-  const safeMaxAttempts = Math.min(10, Math.max(1, Number.parseInt(maxAttempts, 10) || 1));
+  const safeMaxAttempts = Math.max(1, Number.parseInt(maxAttempts, 10) || RETRY_LOOP_GUARD);
   let currentContent = String(content || '');
   let lastResult = null;
 

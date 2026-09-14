@@ -67,11 +67,9 @@ function render(root, config) {
             <div class="panel-header"><h2>会话与多轮</h2><span>runtime</span></div>
             <div class="form-stack">
               ${numberField('sessionTtlSeconds', 'DeepSeek 会话 TTL（秒）', runtime.sessionTtlSeconds, 1)}
-              ${numberField('maxRequestsPerSession', '单会话最大请求数', runtime.maxRequestsPerSession, 1)}
               ${switchField('enableConversationAffinity', '启用对话亲和', runtime.enableConversationAffinity)}
               ${numberField('conversationTtlMs', '对话空闲回收时间（毫秒）', runtime.conversationTtlMs, 1000)}
               ${numberField('maxConversations', '最大对话数', runtime.maxConversations, 1)}
-              ${numberField('maxTurnsPerSession', '单会话续接轮数上限', runtime.maxTurnsPerSession, 1)}
             </div>
           </section>
           <div class="toolbar settings-save-row"><button class="btn btn-primary" type="submit">保存运行配置</button></div>
@@ -82,9 +80,6 @@ function render(root, config) {
             <div class="panel-header"><h2>工具与上下文</h2><span>generation</span></div>
             <div class="form-stack">
               ${switchField('enableFcErrorRetry', '工具调用格式错误自动重试', runtime.enableFcErrorRetry)}
-              ${numberField('fcErrorRetryMaxAttempts', '工具调用重试次数', runtime.fcErrorRetryMaxAttempts, 1)}
-              ${switchField('deepseekContextFallback', 'DeepSeek Pro 超上下文自动回退 Flash', deepseek.contextFallback)}
-              ${numberField('deepseekProSafeInputTokens', 'DeepSeek Pro 安全输入 Token', deepseek.proSafeInputTokens, 1)}
             </div>
           </section>
           <div class="toolbar settings-save-row"><button class="btn btn-primary" type="submit">保存运行配置</button></div>
@@ -149,17 +144,10 @@ export async function renderSettings(root, { API }) {
         runtime: {
           logDir: data.get('logDir'),
           sessionTtlSeconds: numeric(data, 'sessionTtlSeconds'),
-          maxRequestsPerSession: numeric(data, 'maxRequestsPerSession'),
           enableConversationAffinity: data.get('enableConversationAffinity') === 'on',
           conversationTtlMs: numeric(data, 'conversationTtlMs'),
           maxConversations: numeric(data, 'maxConversations'),
-          maxTurnsPerSession: numeric(data, 'maxTurnsPerSession'),
           enableFcErrorRetry: data.get('enableFcErrorRetry') === 'on',
-          fcErrorRetryMaxAttempts: numeric(data, 'fcErrorRetryMaxAttempts'),
-        },
-        deepseek: {
-          contextFallback: data.get('deepseekContextFallback') === 'on',
-          proSafeInputTokens: numeric(data, 'deepseekProSafeInputTokens'),
         },
       };
       try {

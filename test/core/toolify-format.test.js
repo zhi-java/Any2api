@@ -134,11 +134,11 @@ test('formatToolResultForAI emits escaped Toolify block directly', () => {
   assert.match(result, /<!\[CDATA\[ok <\/tool_result> \]\]\]\]><!\[CDATA\[>\]\]>/);
 });
 
-test('formatToolResultForAI truncates oversized argument echo but keeps result intact', () => {
+test('formatToolResultForAI echoes oversized arguments in full without truncation', () => {
   const bigArgs = JSON.stringify({ path: 'big.txt', content: 'x'.repeat(600) });
   const result = formatToolResultForAI('write_file', bigArgs, 'written');
-  assert.match(result, /参数过长已截断，共 \d+ 字符/);
-  assert.doesNotMatch(result, /x{300}/);
+  assert.doesNotMatch(result, /参数过长已截断/);
+  assert.match(result, /调用参数：\{"path":"big\.txt","content":"x{600}"\}/);
   assert.match(result, /<!\[CDATA\[written\]\]>/);
 });
 
@@ -147,7 +147,7 @@ test('read-like tool results append edit-first nudge; other tools do not', () =>
     const result = formatToolResultForAI(name, '{"path":"a.js"}', 'content');
     assert.match(result, /必须用编辑类工具做精确替换/);
     assert.match(result, /禁止用写入类工具整文件重写覆盖/);
-    assert.match(result, /拆成多轮小编辑分段完成/);
+    assert.doesNotMatch(result, /分段完成|超过约 200 行/);
   }
   assert.doesNotMatch(formatToolResultForAI('Bash', '{"command":"ls"}', 'ok'), /编辑类工具/);
   assert.doesNotMatch(formatToolResultForAI('write_file', '{"path":"a.js"}', 'ok'), /编辑类工具/);

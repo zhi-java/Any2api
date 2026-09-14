@@ -5,16 +5,9 @@ import { recordSessionHit } from '../middleware/metrics.js';
 
 const BASE_URL = 'https://chat.deepseek.com';
 
-// DeepSeek has tightened limits on edit/regenerate per session:
-//   expert (pro): 3 times, flash (default): 6 times
-// To avoid hitting these limits, we rotate sessions frequently.
 // SESSION_TTL controls how long a cached session is reused before creating a new one.
 function sessionTtlSeconds() {
   return getConfig().runtime.sessionTtlSeconds;
-}
-
-function maxRequestsPerSession() {
-  return getConfig().runtime.maxRequestsPerSession;
 }
 
 const SESSIONS_PER_TOKEN_PER_MODEL = 2; // match MAX_CONCURRENT_PER_TOKEN
@@ -50,14 +43,13 @@ export async function getSession(token, modelType) {
   const now = Date.now() / 1000;
 
   const ttl = sessionTtlSeconds();
-  const maxRequests = maxRequestsPerSession();
 
   // Find an available session slot for this token+modelType
   for (let slot = 0; slot < SESSIONS_PER_TOKEN_PER_MODEL; slot++) {
     const cacheKey = `${tokenPrefix}:${modelType}:${slot}`;
     const cached = sessionPool.get(cacheKey);
 
-    if (cached && (now - cached.createdAt) < ttl && (cached.requestCount || 0) < maxRequests) {
+    if (cached && (now - cached.createdAt) < ttl) {
       cached.requestCount = (cached.requestCount || 0) + 1;
       recordSessionHit(true);
       return cached;
@@ -71,12 +63,12 @@ export async function getSession(token, modelType) {
   session.token = token;
   session.requestCount = 1;
 
-  // Find first available slot (expired, over-limit, or empty)
+  // Find first available slot (expired or empty)
   let placed = false;
   for (let slot = 0; slot < SESSIONS_PER_TOKEN_PER_MODEL; slot++) {
     const cacheKey = `${tokenPrefix}:${modelType}:${slot}`;
     const cached = sessionPool.get(cacheKey);
-    if (!cached || (now - cached.createdAt) >= ttl || (cached.requestCount || 0) >= maxRequests) {
+    if (!cached || (now - cached.createdAt) >= ttl) {
       sessionPool.set(cacheKey, session);
       placed = true;
       break;
@@ -113,7 +105,7 @@ export function getSessionInfo() {
       requestCount: val.requestCount || 0,
     });
   }
-  return { count: sessionPool.size, ttl, maxRequestsPerSession: maxRequestsPerSession(), sessions: entries };
+  return { count: sessionPool.size, ttl, sessions: entries };
 }
 
 export async function prewarmSessions(tokens, modelTypes = ['default', 'expert']) {

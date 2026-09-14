@@ -150,8 +150,7 @@ export async function resolveConversation({ conversationId, modelType, token, cr
   const tokenPrefix = token.slice(0, 12);
   const existing = store.get(conversationId);
   const fresh = !existing
-    || existing.tokenPrefix !== tokenPrefix   // landed on a different token -> new session
-    || existing.turns >= current.maxTurnsPerSession; // rotate to avoid degradation
+    || existing.tokenPrefix !== tokenPrefix;  // landed on a different token -> new session
 
   if (fresh) {
     // Lazily create a DeepSeek session bound to this token. Failure bubbles up
@@ -253,6 +252,5 @@ export function getConversationInfo() {
     active: store.size,
     maxConversations: current.maxConversations,
     ttlMs: current.conversationTtlMs,
-    maxTurnsPerSession: current.maxTurnsPerSession,
   };
 }

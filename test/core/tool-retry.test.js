@@ -8,7 +8,6 @@ import { createPromptPlan } from '../../src/core/prompt-strategy.js';
 import {
   attemptToolParseWithRetry,
   classifyToolFailure,
-  getFcErrorRetryMaxAttempts,
   getMissingToolCallRetryPrompt,
   getToolContinuationPrompt,
   getToolErrorRetryPrompt,
@@ -49,7 +48,7 @@ function validXml(trigger, path = 'README.md') {
   return `${trigger}\n<function_calls><function_call><tool>Read</tool><args_json>{"file_path":"${path}"}</args_json></function_call></function_calls>`;
 }
 
-test('retry configuration reads runtime config and clamps values', async () => {
+test('retry enablement reads runtime config', async () => {
   const oldPath = process.env.ZHI2API_CONFIG_PATH;
   const dir = mkdtempSync(join(tmpdir(), 'omni-tool-retry-'));
   process.env.ZHI2API_CONFIG_PATH = join(dir, 'config.json');
@@ -57,17 +56,12 @@ test('retry configuration reads runtime config and clamps values', async () => {
     const { loadConfig, updateConfig } = await import('../../src/services/config-store.js');
     loadConfig({ force: true });
     assert.equal(isFcErrorRetryEnabled(), true);
-    assert.equal(getFcErrorRetryMaxAttempts(), 3);
 
-    updateConfig({ runtime: { enableFcErrorRetry: false, fcErrorRetryMaxAttempts: 100 } });
+    updateConfig({ runtime: { enableFcErrorRetry: false } });
     assert.equal(isFcErrorRetryEnabled(), false);
-    assert.equal(getFcErrorRetryMaxAttempts(), 10);
-
-    updateConfig({ runtime: { fcErrorRetryMaxAttempts: 0 } });
-    assert.equal(getFcErrorRetryMaxAttempts(), 1);
   } finally {
     const { updateConfig } = await import('../../src/services/config-store.js');
-    updateConfig({ runtime: { enableFcErrorRetry: true, fcErrorRetryMaxAttempts: 3 } });
+    updateConfig({ runtime: { enableFcErrorRetry: true } });
     if (oldPath == null) delete process.env.ZHI2API_CONFIG_PATH;
     else process.env.ZHI2API_CONFIG_PATH = oldPath;
     rmSync(dir, { recursive: true, force: true });
@@ -267,11 +261,10 @@ test('retry prompts add edit-first guidance only when edit and write tools coexi
   assert.match(missingPrompt, /Write 只用于创建新文件/);
   assert.doesNotMatch(getMissingToolCallRetryPrompt('我来修改 config.js 里的端口配置。', '<Function_AB12_Start/>', tools), /工具选择提醒/);
 
-  // 截断续写提示：有编辑+写入工具时建议选项 B 改用分段模式重来
+  // 截断续写提示：只保留续写/重写两个选项，不再强加分段协议
   const continuation = getToolContinuationPrompt('tail', 'missing close', codingTools);
   assert.match(continuation, /选项 A/);
-  assert.match(continuation, /分段提示/);
-  assert.match(continuation, /续写标记/);
-  assert.match(continuation, /用 Write 写入第一段/);
-  assert.doesNotMatch(getToolContinuationPrompt('tail', 'missing close'), /分段提示/);
+  assert.match(continuation, /选项 B/);
+  assert.doesNotMatch(continuation, /分段提示/);
+  assert.doesNotMatch(continuation, /续写标记/);
 });
