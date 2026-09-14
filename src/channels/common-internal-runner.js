@@ -1,5 +1,11 @@
 import { createPromptPlan } from '../core/prompt-strategy.js';
-import { attemptToolParseWithRetry, getMissingToolCallRetryPrompt, isMissingToolCallIntent } from '../core/tool-retry.js';
+import {
+  attemptToolParseWithRetry,
+  getMissingToolCallRetryPrompt,
+  getReasoningOnlyRetryPrompt,
+  isEmptyAssistantReply,
+  isMissingToolCallIntent,
+} from '../core/tool-retry.js';
 import { preprocessMessagesForToolify } from '../core/toolify-format.js';
 import { getRecentToolCallIndex, getResponseToolCallIndex } from '../services/conversation.js';
 import {
@@ -165,6 +171,22 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
     streamBody = started?.streamBody || started;
     cleanup = started?.cleanup || null;
     const retryToolRequest = started?.retryToolRequest || null;
+    // 上游空回复恢复回调：由各渠道在自己的 startStream 里提供。
+    // 未提供时该恢复路径自动跳过（不影响既有行为）。
+    const retryReasoningOnly = started?.retryReasoningOnly || null;
+    // 取最后一条 user 文本，作为"只思考未作答"续写时的原始请求上下文。
+    const lastUserText = (() => {
+      for (let i = openAIMessages.length - 1; i >= 0; i--) {
+        const message = openAIMessages[i];
+        if (message?.role !== 'user') continue;
+        const content = message.content;
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+          return content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n');
+        }
+      }
+      return '';
+    })();
 
     if (clientGone || abortController.signal.aborted) {
       try { streamBody?.cancel?.(); } catch {}
@@ -348,6 +370,38 @@ export async function* runParsedStreamChannel(internalRequest, context = {}, opt
         } catch (err) {
           console.warn(`[${channelName}] Missing tool-call recovery failed: ${err.message}`);
         }
+      }
+    }
+
+    // 空回复恢复：上游偶发"只思考、不输出正文"（finishReason=stop 但流里
+    // 没有任何 RESPONSE 分片）。此时客户端只看到思考、拿不到答案，任务中断。
+    // 这不是解析问题——上游确实没发正文，只能在代理层用已积累的思考内容
+    // 续写一次，把结论要成正文。恢复失败则保持原样，绝不伪造正文。
+    if (
+      !detectedToolCalls
+      && !pendingToolFailureText
+      && isEmptyAssistantReply({ visibleContent, reasoningContent })
+      && typeof retryReasoningOnly === 'function'
+    ) {
+      if (cleanup) {
+        cleanup();
+        cleanup = null;
+      }
+      try {
+        const recovered = await retryReasoningOnly({
+          retryPrompt: getReasoningOnlyRetryPrompt(lastUserText, reasoningContent),
+          currentContent: reasoningContent,
+          messages: promptMessages,
+          signal: abortController.signal,
+        });
+        const recoveredText = String(recovered || '').trim();
+        if (recoveredText) {
+          for (const deltaEvent of emitDelta(recoveredText)) yield deltaEvent;
+        } else {
+          console.warn(`[${channelName}] Reasoning-only recovery returned empty; leaving reply as-is`);
+        }
+      } catch (err) {
+        console.warn(`[${channelName}] Reasoning-only recovery failed: ${err.message}`);
       }
     }
 
