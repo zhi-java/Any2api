@@ -35,6 +35,10 @@ const DEFAULT_CONFIG = Object.freeze({
     // 上报给客户端的缓存命中率（0–100）。上游 Web 接口不提供 prompt cache
     // 统计，该值仅用于客户端展示，不影响实际计费。
     reportedCacheHitRate: 98.5,
+    // 对外上报的上下文窗口与输出上限（tokens）。默认取 DeepSeek 官方规格
+    // （128K 上下文 / 8K 输出），客户端据此自动识别模型能力。
+    contextLength: 131072,
+    maxOutputTokens: 8192,
   },
 });
 
@@ -175,6 +179,16 @@ function normalizeConfig(input) {
       ? Number(merged.deepseek.reportedCacheHitRate)
       : DEFAULT_CONFIG.deepseek.reportedCacheHitRate),
   );
+  merged.deepseek.contextLength = parseIntValue(
+    merged.deepseek.contextLength,
+    DEFAULT_CONFIG.deepseek.contextLength,
+    1,
+  );
+  merged.deepseek.maxOutputTokens = parseIntValue(
+    merged.deepseek.maxOutputTokens,
+    DEFAULT_CONFIG.deepseek.maxOutputTokens,
+    1,
+  );
 
   return merged;
 }
@@ -212,6 +226,8 @@ function envConfig() {
       validateOnStartup: parseBool(process.env.DEEPSEEK_VALIDATE_ON_STARTUP, DEFAULT_CONFIG.deepseek.validateOnStartup),
       prewarmSessions: parseBool(process.env.DEEPSEEK_PREWARM_SESSIONS, DEFAULT_CONFIG.deepseek.prewarmSessions),
       reportedCacheHitRate: parseFloatValue(process.env.DEEPSEEK_REPORTED_CACHE_HIT_RATE, DEFAULT_CONFIG.deepseek.reportedCacheHitRate),
+      contextLength: parseIntValue(process.env.DEEPSEEK_CONTEXT_LENGTH, DEFAULT_CONFIG.deepseek.contextLength, 1),
+      maxOutputTokens: parseIntValue(process.env.DEEPSEEK_MAX_OUTPUT_TOKENS, DEFAULT_CONFIG.deepseek.maxOutputTokens, 1),
     },
   });
 }
@@ -403,6 +419,8 @@ export function getPublicConfig() {
       validateOnStartup: current.deepseek.validateOnStartup,
       prewarmSessions: current.deepseek.prewarmSessions,
       reportedCacheHitRate: current.deepseek.reportedCacheHitRate,
+      contextLength: current.deepseek.contextLength,
+      maxOutputTokens: current.deepseek.maxOutputTokens,
     },
   };
 }

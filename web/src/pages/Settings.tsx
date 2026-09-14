@@ -198,6 +198,16 @@ export function SettingsPage() {
               <MetricCard label="死亡阈值" value={deepseek.tokenDeadThreshold} />
               <MetricCard label="健康检查（秒）" value={deepseek.healthCheckIntervalSeconds} />
               <MetricCard
+                label="上报上下文长度"
+                value={`${(deepseek.contextLength / 1024).toFixed(0)}K`}
+                hint={`${deepseek.contextLength} tokens`}
+              />
+              <MetricCard
+                label="上报最大输出"
+                value={deepseek.maxOutputTokens}
+                hint="tokens"
+              />
+              <MetricCard
                 label="上报缓存命中率"
                 value={`${deepseek.reportedCacheHitRate}%`}
                 hint="展示用，非上游真实值"
