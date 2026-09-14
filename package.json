@@ -10,7 +10,7 @@
     "test": "node --test",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "build": "npm --prefix web install && npm --prefix web run build"
+    "build": "node scripts/build-web.mjs"
   },
   "dependencies": {
     "ali-oss": "^6.23.0",
