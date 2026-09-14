@@ -18,17 +18,10 @@ import { filterLogs, getLogStats, readHistoricalLogs, readChatLogs, readRecentLo
 import { getMetrics } from '../middleware/metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { GLM_MODEL_MAP } from '../channels/glm/models.js';
-import { QWEN_MODEL_MAP, listQwenModels } from '../channels/qwen/models.js';
-import { qwenSettings } from '../channels/qwen/config.js';
-import { KIMI_MODEL_MAP, listKimiModels } from '../channels/kimi/models.js';
-import { getQwenStatus } from '../channels/qwen/index.js';
-import { getKimiStatus } from '../channels/kimi/index.js';
 import { getGLMStatus } from '../channels/glm/index.js';
 import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig, secretId } from '../services/config-store.js';
 import { authStatus, clearAdminSessionCookie, hasValidAdminAuth, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
 import { glmTokenManager } from '../channels/glm/runner.js';
-import { qwenTokenManager } from '../channels/qwen/runner.js';
-import { kimiTokenManager } from '../channels/kimi/runner.js';
 
 const router = express.Router();
 
@@ -42,8 +35,6 @@ function envListCount(name) {
 function channelForModel(model) {
   if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_MAP, model)) return 'deepseek';
   if (Object.prototype.hasOwnProperty.call(GLM_MODEL_MAP, model)) return 'glm';
-  if (Object.prototype.hasOwnProperty.call(QWEN_MODEL_MAP, model)) return 'qwen';
-  if (Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, model)) return 'kimi';
   return 'unknown';
 }
 
@@ -69,13 +60,7 @@ function modelCatalog() {
     owned_by: 'zhipu',
     capabilities: { text: true, thinking: true, search: Boolean(config.search), document: true, vision: true, audio: true, video: true },
   }));
-  const qwenModels = listQwenModels().map(model => ({ ...model, channel: 'qwen' }));
-  const kimiModels = listKimiModels().map(model => ({
-    ...model,
-    channel: 'kimi',
-    capabilities: { ...model.capabilities, document: true, vision: true, audio: true, video: true },
-  }));
-  return [...deepseekModels, ...glmModels, ...qwenModels, ...kimiModels];
+  return [...deepseekModels, ...glmModels];
 }
 
 function summarizeRecentErrors() {
@@ -113,8 +98,6 @@ function buildChannels() {
   const config = getConfig();
   const deepseekPool = getPoolInfo();
   const deepseekAlive = deepseekPool.filter(item => !item.dead && item.token !== 'NONE').length;
-  const qwenStatus = getQwenStatus();
-  const kimiStatus = getKimiStatus();
   const glmStatus = getGLMStatus();
   const errors = summarizeRecentErrors();
   const { byChannel } = summarizeModelMetrics();
@@ -142,29 +125,6 @@ function buildChannels() {
       capacity: glmStatus.auth.configuredRefreshTokens || 1,
       mode: glmStatus.auth.mode,
       detail: glmStatus.auth,
-    },
-    {
-      id: 'qwen',
-      name: 'Qwen',
-      configured: qwenStatus.pool.length > 0,
-      credentialCount: qwenStatus.pool.length,
-      availableCount: qwenStatus.pool.filter(item => item.errorCount < qwenSettings.maxTokenErrors && item.cooldownRemainingMs === 0).length,
-      activeRequests: qwenStatus.pool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
-      capacity: qwenStatus.pool.reduce((sum, item) => sum + (item.maxConcurrent || 0), 0),
-      mode: config.qwen.accounts.length > 0 ? 'account-pool' : 'token-pool',
-      queue: qwenStatus.queue,
-      detail: qwenStatus.pool,
-    },
-    {
-      id: 'kimi',
-      name: 'Kimi',
-      configured: kimiStatus.pool.length > 0,
-      credentialCount: kimiStatus.pool.length,
-      availableCount: kimiStatus.pool.filter(item => item.errorCount < 3).length,
-      activeRequests: kimiStatus.pool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
-      capacity: kimiStatus.pool.length,
-      mode: 'token-pool',
-      detail: kimiStatus.pool,
     },
   ];
 
@@ -208,7 +168,7 @@ function logFiltersFromQuery(query) {
   };
 }
 
-const CHANNEL_IDS = new Set(['deepseek', 'glm', 'qwen', 'kimi']);
+const CHANNEL_IDS = new Set(['deepseek', 'glm']);
 
 function ensureChannel(channel) {
   if (!CHANNEL_IDS.has(channel)) {
@@ -225,8 +185,6 @@ function applyChannelRuntime(channel) {
     startHealthCheck();
   }
   if (channel === 'glm') glmTokenManager.configure();
-  if (channel === 'qwen') qwenTokenManager.configure();
-  if (channel === 'kimi') kimiTokenManager.configure();
 }
 
 function jsonError(res, error, fallbackStatus = 500) {
@@ -243,7 +201,6 @@ function requireAdminPageAuth(req, res, next) {
 // 静态资源（CSS, JS, 页面等）
 router.use('/styles', requireAdminPageAuth, express.static(srcPath('admin', 'styles')));
 router.use('/scripts', requireAdminPageAuth, express.static(srcPath('admin', 'scripts')));
-router.use('/pages', requireAdminPageAuth, express.static(srcPath('admin', 'pages')));
 router.use('/assets', requireAdminPageAuth, express.static(srcPath('admin', 'assets')));
 router.use('/vendor', requireAdminPageAuth, express.static(srcPath('admin', 'vendor')));
 
@@ -287,8 +244,6 @@ router.patch('/api/config', (req, res) => {
     stopHealthCheck();
     startHealthCheck();
     glmTokenManager.configure();
-    qwenTokenManager.configure();
-    kimiTokenManager.configure();
     res.json({ success: true, config: getPublicConfig(), saved: Boolean(saved) });
   } catch (error) {
     jsonError(res, error);
@@ -434,47 +389,6 @@ router.post('/api/channels/:channel/test', async (req, res) => {
       }
       if (!results.length && config.glm.guestMode) {
         results.push({ label: '访客模式', success: true, message: '访客模式已启用，无需配置凭据' });
-      }
-      return res.json({ success: results.some(r => r.success), channel, results });
-    }
-
-    if (channel === 'qwen') {
-      const entries = [...(config.qwen.tokens || []).map(t => ({ type: 'token', value: t })), ...(config.qwen.accounts || []).map(a => ({ type: 'account', value: a.email, password: a.password }))];
-      for (const entry of entries) {
-        try {
-          const slot = await qwenTokenManager.acquireToken();
-          if (!slot) {
-            const id = entry.type === 'token' ? secretId(entry.value) : secretId(String(entry.value) + ':' + String(entry.password));
-            removeChannelCredential('qwen', id);
-            results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: false, message: '凭据不可用，已删除' });
-          } else {
-            slot.release();
-            results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: true, message: '凭据可用' });
-          }
-        } catch (err) {
-          const id = entry.type === 'token' ? secretId(entry.value) : secretId(String(entry.value) + ':' + String(entry.password));
-          removeChannelCredential('qwen', id);
-          results.push({ label: entry.type === 'token' ? secretLabel(entry.value) : entry.value, success: false, message: `测试失败，凭据已删除: ${err.message}` });
-        }
-      }
-      return res.json({ success: results.some(r => r.success), channel, results });
-    }
-
-    if (channel === 'kimi') {
-      for (const token of config.kimi.authTokens || []) {
-        try {
-          const slot = kimiTokenManager.acquireToken();
-          if (!slot) {
-            removeChannelCredential('kimi', secretId(token));
-            results.push({ label: secretLabel(token), success: false, message: 'Token 不可用，已删除' });
-          } else {
-            slot.release();
-            results.push({ label: secretLabel(token), success: true, message: 'Token 已加载且未过期' });
-          }
-        } catch (err) {
-          removeChannelCredential('kimi', secretId(token));
-          results.push({ label: secretLabel(token), success: false, message: `测试失败，凭据已删除: ${err.message}` });
-        }
       }
       return res.json({ success: results.some(r => r.success), channel, results });
     }

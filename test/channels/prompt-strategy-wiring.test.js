@@ -8,11 +8,7 @@ import { runParsedStreamChannel } from '../../src/channels/common-internal-runne
 
 const commonRunnerSource = readFileSync(new URL('../../src/channels/common-internal-runner.js', import.meta.url), 'utf8');
 const glmRunnerSource = readFileSync(new URL('../../src/channels/glm/runner.js', import.meta.url), 'utf8');
-const kimiRunnerSource = readFileSync(new URL('../../src/channels/kimi/runner.js', import.meta.url), 'utf8');
-const qwenRunnerSource = readFileSync(new URL('../../src/channels/qwen/runner.js', import.meta.url), 'utf8');
 const glmClientSource = readFileSync(new URL('../../src/channels/glm/client.js', import.meta.url), 'utf8');
-const kimiClientSource = readFileSync(new URL('../../src/channels/kimi/client.js', import.meta.url), 'utf8');
-const qwenClientSource = readFileSync(new URL('../../src/channels/qwen/client.js', import.meta.url), 'utf8');
 
 test('common runner routes active tool parsing and retry through Toolify strategy', () => {
   assert.match(commonRunnerSource, /createPromptPlan/);
@@ -26,11 +22,9 @@ test('common runner routes active tool parsing and retry through Toolify strateg
   assert.doesNotMatch(commonRunnerSource, /parseToolCallsFromText/);
 });
 
-test('GLM Kimi and Qwen runners pass caller-supplied XML tool instructions and retry callbacks', () => {
+test('GLM runner passes caller-supplied XML tool instructions and retry callbacks', () => {
   assert.match(glmRunnerSource, /convertMessages\(messages, \{ toolInstructions \}\)/);
-  assert.match(kimiRunnerSource, /buildKimiMessages\(messages, \{ toolInstructions \}\)/);
-  assert.match(qwenRunnerSource, /buildQwenMessages\(messages, \{ toolInstructions \}\)/);
-  for (const source of [glmRunnerSource, kimiRunnerSource, qwenRunnerSource]) {
+  for (const source of [glmRunnerSource]) {
     assert.match(source, /retryToolRequest/);
     assert.match(source, /currentContent/);
     assert.match(source, /collectParsedStreamContent/);
@@ -38,7 +32,7 @@ test('GLM Kimi and Qwen runners pass caller-supplied XML tool instructions and r
 });
 
 test('channel prompt builders no longer generate old tool instructions internally', () => {
-  for (const source of [glmClientSource, kimiClientSource, qwenClientSource]) {
+  for (const source of [glmClientSource]) {
     assert.doesNotMatch(source, /buildToolInstructions/);
     assert.match(source, /toolInstructions/);
     assert.doesNotMatch(source, /必须在 assistant_response 中反馈/);

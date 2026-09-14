@@ -67,12 +67,12 @@ test('Claude stream renderer emits upstream reasoning as thinking deltas', async
   const messageId = 'msg_claude_thinking_stream';
   const res = streamRes();
   await renderClaudeMessagesStream(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'qwen3.7-plus-thinking', protocol: 'claude_messages' }),
+    createRunStarted({ requestId, responseId, model: 'glm-5.2', protocol: 'claude_messages' }),
     createMessageStarted({ requestId, responseId, messageId }),
     createReasoningDelta({ requestId, responseId, messageId, delta: '先分析需求。' }),
     createTextDelta({ requestId, responseId, messageId, delta: '最终回答。' }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop', usage: { outputTokens: 2 } }),
-  ]), { model: 'qwen3.7-plus-thinking' });
+  ]), { model: 'glm-5.2' });
   const wire = res.chunks.join('');
   assert.match(wire, /"content_block":\{"type":"thinking","thinking":""\}/);
   assert.match(wire, /"delta":\{"type":"thinking_delta","thinking":"先分析需求。"\}/);
@@ -106,12 +106,12 @@ test('Claude JSON renderer emits upstream reasoning as thinking block before tex
   const messageId = 'msg_claude_thinking_json';
   const res = jsonRes();
   await renderClaudeMessagesJSON(res, asyncEvents([
-    createRunStarted({ requestId, responseId, model: 'qwen3.7-plus-thinking', protocol: 'claude_messages' }),
+    createRunStarted({ requestId, responseId, model: 'glm-5.2', protocol: 'claude_messages' }),
     createMessageStarted({ requestId, responseId, messageId }),
     createReasoningDelta({ requestId, responseId, messageId, delta: '先分析需求。' }),
     createTextDelta({ requestId, responseId, messageId, delta: '最终回答。' }),
     createRunCompleted({ requestId, responseId, finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 3 } }),
-  ]), { model: 'qwen3.7-plus-thinking' });
+  ]), { model: 'glm-5.2' });
   assert.equal(res.body.content[0].type, 'thinking');
   assert.equal(res.body.content[0].thinking, '先分析需求。');
   assert.equal(res.body.content[1].type, 'text');

@@ -14,19 +14,6 @@ const channelMeta = {
     tokenLabel: 'chatglm_refresh_token',
     tokenHint: '来源：智谱清言 Cookies → chatglm_refresh_token',
   },
-  qwen: {
-    name: 'Qwen',
-    modes: ['token', 'account'],
-    tokenLabel: 'token',
-    tokenHint: '来源：Qwen Studio Cookies → token',
-    accountHint: '账号模式使用上游网页登录账号/密码。如遇验证码或风控，优先使用 Token/Cookie 模式。',
-  },
-  kimi: {
-    name: 'Kimi',
-    modes: ['token'],
-    tokenLabel: 'access_token',
-    tokenHint: '来源：Local Storage → access_token',
-  },
 };
 
 let activeChannel = 'deepseek';
@@ -34,8 +21,6 @@ let activeChannel = 'deepseek';
 function credentialsFor(channel, config) {
   if (channel === 'deepseek') return [...(config.tokens || []), ...(config.accounts || [])];
   if (channel === 'glm') return config.refreshTokens || [];
-  if (channel === 'qwen') return [...(config.tokens || []), ...(config.accounts || [])];
-  if (channel === 'kimi') return config.authTokens || [];
   return [];
 }
 

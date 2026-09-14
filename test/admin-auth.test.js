@@ -93,12 +93,12 @@ test('unknown api route keeps JSON 404 after authentication', async () => {
   });
 });
 
-test('admin static pages require authentication', async () => {
+test('admin static stylesheets require authentication', async () => {
   await withServer(async baseUrl => {
-    const response = await get(baseUrl, '/admin/pages/dashboard.html');
+    const response = await get(baseUrl, '/admin/styles/design-system.css');
     assert.equal(response.status, 401);
     assert.match(response.text, /Authentication required|Invalid API key|Unauthorized/i);
-    assert.doesNotMatch(response.text, /请求总数|渠道状态|Dashboard/);
+    assert.doesNotMatch(response.text, /--accent|--bg-canvas/);
   });
 });
 

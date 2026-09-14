@@ -42,21 +42,6 @@ const DEFAULT_CONFIG = Object.freeze({
     refreshTokens: [],
     guestMode: true,
   },
-  qwen: {
-    tokens: [],
-    accounts: [],
-    maxConcurrentPerToken: 1,
-    maxQueueSize: 100,
-    queueTimeoutMs: 30000,
-    accountMinIntervalMs: 1200,
-    rateLimitBaseCooldownMs: 600000,
-    rateLimitMaxCooldownMs: 3600000,
-    maxTokenErrors: 3,
-  },
-  kimi: {
-    authTokens: [],
-    textAttachmentThresholdBytes: 450000,
-  },
 });
 
 let loaded = false;
@@ -192,19 +177,6 @@ function normalizeConfig(input) {
   merged.glm.refreshTokens = uniqueStrings(merged.glm.refreshTokens);
   merged.glm.guestMode = merged.glm.guestMode !== false;
 
-  merged.qwen.tokens = uniqueStrings(merged.qwen.tokens);
-  merged.qwen.accounts = normalizeAccounts(merged.qwen.accounts);
-  merged.qwen.maxConcurrentPerToken = parseIntValue(merged.qwen.maxConcurrentPerToken, 1, 1);
-  merged.qwen.maxQueueSize = parseIntValue(merged.qwen.maxQueueSize, 100, 0);
-  merged.qwen.queueTimeoutMs = parseIntValue(merged.qwen.queueTimeoutMs, 30000, 1000);
-  merged.qwen.accountMinIntervalMs = parseIntValue(merged.qwen.accountMinIntervalMs, 1200, 0);
-  merged.qwen.rateLimitBaseCooldownMs = parseIntValue(merged.qwen.rateLimitBaseCooldownMs, 600000, 1000);
-  merged.qwen.rateLimitMaxCooldownMs = parseIntValue(merged.qwen.rateLimitMaxCooldownMs, 3600000, 1000);
-  merged.qwen.maxTokenErrors = parseIntValue(merged.qwen.maxTokenErrors, 3, 1);
-
-  merged.kimi.authTokens = uniqueStrings(merged.kimi.authTokens);
-  merged.kimi.textAttachmentThresholdBytes = parseIntValue(merged.kimi.textAttachmentThresholdBytes, 450000, 1);
-
   return merged;
 }
 
@@ -214,9 +186,6 @@ function envConfig() {
   const glmTokens = process.env.GLM_REFRESH_TOKENS
     ? splitList(process.env.GLM_REFRESH_TOKENS)
     : splitList(process.env.GLM_REFRESH_TOKEN);
-  const kimiTokens = process.env.KIMI_AUTH_TOKENS
-    ? splitList(process.env.KIMI_AUTH_TOKENS)
-    : splitList(process.env.KIMI_AUTH_TOKEN);
 
   return normalizeConfig({
     server: {
@@ -255,21 +224,6 @@ function envConfig() {
     glm: {
       refreshTokens: glmTokens,
       guestMode: parseBool(process.env.GLM_GUEST_MODE, DEFAULT_CONFIG.glm.guestMode),
-    },
-    qwen: {
-      tokens: splitList(process.env.QWEN_TOKENS),
-      accounts: parseAccounts(process.env.QWEN_ACCOUNTS),
-      maxConcurrentPerToken: parseIntValue(process.env.QWEN_MAX_CONCURRENT_PER_TOKEN || process.env.MAX_CONCURRENT_PER_TOKEN, DEFAULT_CONFIG.qwen.maxConcurrentPerToken, 1),
-      maxQueueSize: parseIntValue(process.env.QWEN_MAX_QUEUE_SIZE || process.env.MAX_QUEUE_SIZE, DEFAULT_CONFIG.qwen.maxQueueSize, 0),
-      queueTimeoutMs: parseIntValue(process.env.QWEN_QUEUE_TIMEOUT_MS || process.env.QUEUE_TIMEOUT_MS, DEFAULT_CONFIG.qwen.queueTimeoutMs, 1000),
-      accountMinIntervalMs: parseIntValue(process.env.QWEN_ACCOUNT_MIN_INTERVAL_MS || process.env.ACCOUNT_MIN_INTERVAL_MS, DEFAULT_CONFIG.qwen.accountMinIntervalMs, 0),
-      rateLimitBaseCooldownMs: parseIntValue(process.env.QWEN_RATE_LIMIT_BASE_COOLDOWN_MS || process.env.RATE_LIMIT_BASE_COOLDOWN_MS, DEFAULT_CONFIG.qwen.rateLimitBaseCooldownMs, 1000),
-      rateLimitMaxCooldownMs: parseIntValue(process.env.QWEN_RATE_LIMIT_MAX_COOLDOWN_MS || process.env.RATE_LIMIT_MAX_COOLDOWN_MS, DEFAULT_CONFIG.qwen.rateLimitMaxCooldownMs, 1000),
-      maxTokenErrors: parseIntValue(process.env.QWEN_MAX_TOKEN_ERRORS || process.env.MAX_TOKEN_ERRORS, DEFAULT_CONFIG.qwen.maxTokenErrors, 1),
-    },
-    kimi: {
-      authTokens: kimiTokens,
-      textAttachmentThresholdBytes: parseIntValue(process.env.KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES, DEFAULT_CONFIG.kimi.textAttachmentThresholdBytes, 1),
     },
   });
 }
@@ -346,19 +300,6 @@ export function applyConfigToProcessEnv() {
 
   setEnv('GLM_REFRESH_TOKENS', current.glm.refreshTokens.join(','));
   setEnv('GLM_GUEST_MODE', current.glm.guestMode ? 'true' : 'false');
-
-  setEnv('QWEN_TOKENS', current.qwen.tokens.join(','));
-  setEnv('QWEN_ACCOUNTS', serializeAccounts(current.qwen.accounts));
-  setEnv('QWEN_MAX_CONCURRENT_PER_TOKEN', current.qwen.maxConcurrentPerToken);
-  setEnv('QWEN_MAX_QUEUE_SIZE', current.qwen.maxQueueSize);
-  setEnv('QWEN_QUEUE_TIMEOUT_MS', current.qwen.queueTimeoutMs);
-  setEnv('QWEN_ACCOUNT_MIN_INTERVAL_MS', current.qwen.accountMinIntervalMs);
-  setEnv('QWEN_RATE_LIMIT_BASE_COOLDOWN_MS', current.qwen.rateLimitBaseCooldownMs);
-  setEnv('QWEN_RATE_LIMIT_MAX_COOLDOWN_MS', current.qwen.rateLimitMaxCooldownMs);
-  setEnv('QWEN_MAX_TOKEN_ERRORS', current.qwen.maxTokenErrors);
-
-  setEnv('KIMI_AUTH_TOKENS', current.kimi.authTokens.join(','));
-  setEnv('KIMI_TEXT_ATTACHMENT_THRESHOLD_BYTES', current.kimi.textAttachmentThresholdBytes);
 }
 
 export function getConfig() {
@@ -491,21 +432,6 @@ export function getPublicConfig() {
       refreshTokens: publicSecrets(current.glm.refreshTokens),
       guestMode: current.glm.guestMode,
     },
-    qwen: {
-      tokens: publicSecrets(current.qwen.tokens),
-      accounts: publicAccounts(current.qwen.accounts),
-      maxConcurrentPerToken: current.qwen.maxConcurrentPerToken,
-      maxQueueSize: current.qwen.maxQueueSize,
-      queueTimeoutMs: current.qwen.queueTimeoutMs,
-      accountMinIntervalMs: current.qwen.accountMinIntervalMs,
-      rateLimitBaseCooldownMs: current.qwen.rateLimitBaseCooldownMs,
-      rateLimitMaxCooldownMs: current.qwen.rateLimitMaxCooldownMs,
-      maxTokenErrors: current.qwen.maxTokenErrors,
-    },
-    kimi: {
-      authTokens: publicSecrets(current.kimi.authTokens),
-      textAttachmentThresholdBytes: current.kimi.textAttachmentThresholdBytes,
-    },
   };
 }
 
@@ -578,14 +504,6 @@ export function addChannelCredential(channel, payload = {}) {
   } else if (channel === 'glm') {
     next.glm.refreshTokens.push(payload.refreshToken || payload.token);
     next.glm.guestMode = next.glm.refreshTokens.length === 0;
-  } else if (channel === 'qwen') {
-    if (payload.type === 'account') {
-      next.qwen.accounts.push({ email: payload.email, password: payload.password });
-    } else {
-      next.qwen.tokens.push(payload.token);
-    }
-  } else if (channel === 'kimi') {
-    next.kimi.authTokens.push(payload.token);
   } else {
     throw new Error(`Unsupported channel: ${channel}`);
   }
@@ -617,11 +535,6 @@ export function removeChannelCredential(channel, id) {
   } else if (channel === 'glm') {
     next.glm.refreshTokens = removeSecret(next.glm.refreshTokens);
     next.glm.guestMode = next.glm.refreshTokens.length === 0;
-  } else if (channel === 'qwen') {
-    next.qwen.tokens = removeSecret(next.qwen.tokens);
-    next.qwen.accounts = removeAccount(next.qwen.accounts);
-  } else if (channel === 'kimi') {
-    next.kimi.authTokens = removeSecret(next.kimi.authTokens);
   } else {
     throw new Error(`Unsupported channel: ${channel}`);
   }

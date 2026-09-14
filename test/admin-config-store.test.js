@@ -7,7 +7,7 @@ import { join } from 'node:path';
 function clearEnv() {
   for (const key of [
     'ZHI2API_CONFIG_PATH', 'ZHI2API_DATA_DIR', 'API_KEY', 'API_KEYS', 'DS_TOKEN', 'DS_TOKENS', 'DS_ACCOUNTS',
-    'GLM_REFRESH_TOKEN', 'GLM_REFRESH_TOKENS', 'QWEN_TOKENS', 'QWEN_ACCOUNTS', 'KIMI_AUTH_TOKEN', 'KIMI_AUTH_TOKENS',
+    'GLM_REFRESH_TOKEN', 'GLM_REFRESH_TOKENS',
     'SESSION_TTL', 'MAX_REQUESTS_PER_SESSION', 'ENABLE_CONVERSATION_AFFINITY', 'CONVERSATION_TTL_MS',
     'MAX_CONVERSATIONS', 'MAX_TURNS_PER_SESSION', 'ENABLE_FC_ERROR_RETRY', 'FC_ERROR_RETRY_MAX_ATTEMPTS',
     'LOG_DIR', 'CLIENT_DEBUG_LOG_DIR', 'SYSTEM_FINGERPRINT', 'DEEPSEEK_CONTEXT_FALLBACK', 'DEEPSEEK_PRO_SAFE_INPUT_TOKENS',
@@ -25,8 +25,6 @@ test('config store saves runtime config to ZHI2API_CONFIG_PATH and masks secrets
     server: { apiKey: 'sk-secret' },
     deepseek: { tokens: ['ds-token'], accounts: [{ email: 'u@example.com', password: 'pass' }] },
     glm: { refreshTokens: ['glm-refresh'], guestMode: false },
-    qwen: { tokens: ['qwen-token'] },
-    kimi: { authTokens: ['kimi-token'] },
   });
 
   const saved = JSON.parse(readFileSync(process.env.ZHI2API_CONFIG_PATH, 'utf8'));

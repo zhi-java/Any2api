@@ -19,8 +19,6 @@ import { renderResponses, writeResponsesError } from '../protocols/responses/ren
 import { generateInternalEvents, prepareInternalGeneration } from '../core/generation.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { GLM_MODEL_MAP } from '../channels/glm/index.js';
-import { listQwenModels } from '../channels/qwen/index.js';
-import { listKimiModels } from '../channels/kimi/index.js';
 
 const router = express.Router();
 
@@ -121,16 +119,10 @@ router.get('/models', (req, res) => {
     owned_by: 'zhipu',
   }));
 
-  // Qwen 模型（本地页面模型快照，不实时请求上游）
-  const qwenModels = listQwenModels();
-
-  // Kimi 模型（本地页面模型快照，不实时请求上游）
-  const kimiModels = listKimiModels();
-
   // 合并
   res.json({
     object: 'list',
-    data: [...deepseekModels, ...glmModels, ...qwenModels, ...kimiModels]
+    data: [...deepseekModels, ...glmModels]
   });
 });
 

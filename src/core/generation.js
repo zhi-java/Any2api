@@ -3,14 +3,10 @@ import { createRunFailed } from './internal-events.js';
 import { resolveInternalModel } from './model-resolution.js';
 import { runDeepSeek } from '../channels/deepseek/runner.js';
 import { runGLM } from '../channels/glm/runner.js';
-import { runKimi } from '../channels/kimi/runner.js';
-import { runQwen } from '../channels/qwen/runner.js';
 
 const RUNNERS = {
   deepseek: runDeepSeek,
   glm: runGLM,
-  kimi: runKimi,
-  qwen: runQwen,
 };
 
 export function getChannelRunner(channel) {

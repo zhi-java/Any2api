@@ -10,40 +10,50 @@ async function collect(iterable) {
   return out;
 }
 
-test('generation core has runners for all migrated channels', () => {
+test('generation core has runners for the supported channels only', () => {
   assert.equal(isChannelRunnerAvailable('deepseek'), true);
   assert.equal(isChannelRunnerAvailable('glm'), true);
-  assert.equal(isChannelRunnerAvailable('qwen'), true);
-  assert.equal(isChannelRunnerAvailable('kimi'), true);
+  assert.equal(isChannelRunnerAvailable('qwen'), false);
+  assert.equal(isChannelRunnerAvailable('kimi'), false);
 });
 
-test('generation core surfaces migrated channel upstream result or error events', async () => {
+test('generation core surfaces supported channel upstream result or error events', async () => {
   const request = createInternalRequest({
     protocol: 'responses',
-    model: 'qwen3.7-plus',
+    model: 'glm-5.2',
     stream: false,
     messages: [{ role: 'user', content: 'hello' }],
   });
   const events = await collect(generateInternalEvents(request, {}));
   const failed = events.find(event => event.type === 'run.failed');
   if (failed) {
-    assert.match(failed.error.message, /Qwen|credentials|token/i);
+    assert.match(failed.error.message, /GLM|credentials|token|error/i);
   } else {
     assert.ok(events.some(event => event.type === 'run.started'));
     assert.ok(events.some(event => event.type === 'run.completed'));
   }
 });
 
-test('prepareInternalGeneration resolves migrated Qwen runner before streaming', () => {
+test('prepareInternalGeneration resolves the GLM runner before streaming', () => {
+  const request = createInternalRequest({
+    protocol: 'responses',
+    model: 'glm-5.2',
+    stream: true,
+    messages: [{ role: 'user', content: 'hello' }],
+  });
+  const prepared = prepareInternalGeneration(request);
+  assert.equal(prepared.resolvedRequest.model.channel, 'glm');
+  assert.equal(typeof prepared.runner, 'function');
+});
+
+test('prepareInternalGeneration rejects removed channels before streaming', () => {
   const request = createInternalRequest({
     protocol: 'responses',
     model: 'qwen3.7-plus',
     stream: true,
     messages: [{ role: 'user', content: 'hello' }],
   });
-  const prepared = prepareInternalGeneration(request);
-  assert.equal(prepared.resolvedRequest.model.channel, 'qwen');
-  assert.equal(typeof prepared.runner, 'function');
+  assert.throws(() => prepareInternalGeneration(request), /未知模型|Unknown model|Unsupported model/);
 });
 
 test('prepareInternalGeneration still rejects unknown models before streaming', () => {
