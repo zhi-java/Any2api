@@ -35,10 +35,11 @@ const DEFAULT_CONFIG = Object.freeze({
     // 上报给客户端的缓存命中率（0–100）。上游 Web 接口不提供 prompt cache
     // 统计，该值仅用于客户端展示，不影响实际计费。
     reportedCacheHitRate: 98.5,
-    // 对外上报的上下文窗口与输出上限（tokens）。默认取 DeepSeek 官方规格
-    // （128K 上下文 / 8K 输出），客户端据此自动识别模型能力。
-    contextLength: 131072,
-    maxOutputTokens: 8192,
+    // 对外上报的上下文窗口与输出上限（tokens），客户端据此自动识别模型能力。
+    // 按 DeepSeek 官方 1M 规范：上下文 1M（1048576 tokens）。
+    // 上游 Web 端实测的历史+文件累计上限为 890880，与 1M 量级一致。
+    contextLength: 1048576,
+    maxOutputTokens: 65536,
   },
 });
 

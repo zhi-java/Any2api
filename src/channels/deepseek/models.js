@@ -28,7 +28,7 @@ export const DEEPSEEK_MODEL_MAP = {
  * context_length / context_window / max_context_tokens / max_model_len 等
  * 不同名称，因此这里一并给出多种常见别名，确保不同客户端都能识别。
  *
- * 默认数值取 DeepSeek 官方规格（128K 上下文、8K 输出），可通过
+ * 默认数值取 DeepSeek 官方 1M 规范（1M 上下文），可通过
  * deepseek.contextLength / deepseek.maxOutputTokens 配置调整。
  */
 export function toOpenAIModel(id, { created = 1718000000, ownedBy = 'deepseek' } = {}) {
