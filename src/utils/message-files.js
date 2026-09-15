@@ -22,7 +22,7 @@ const MIME_BY_EXT = {
   m4a: 'audio/mp4',
 };
 
-function extensionFromName(name = '') {
+export function extensionFromName(name = '') {
   const match = String(name).toLowerCase().match(/\.([a-z0-9]+)(?:[?#].*)?$/);
   return match?.[1] || '';
 }
@@ -88,18 +88,42 @@ function descriptorFromFilePart(part) {
   };
 }
 
+export const EXT_BY_MIME = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+};
+
 function descriptorFromImageUrl(part) {
   const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
   if (!url) return null;
   const data = parseDataUrl(url);
-  const mimeType = data?.mimeType || guessMimeType(filenameFromUrl(url, 'image.png'), 'image/png');
-  const ext = extensionFromName(filenameFromUrl(url, '')) || mimeType.split('/')[1] || 'png';
+
+  // data URL 必须由 mimeType 推导文件名：new URL('data:...') 会把整段
+  // base64 当作 pathname，据此"提取"出的文件名形如
+  // "png;base64,iVBORw0KGgo..."，上游按扩展名判类型时会以
+  // biz_code=9 unsupported file type 拒绝。普通 URL 才从路径取文件名。
+  if (data) {
+    const ext = EXT_BY_MIME[data.mimeType] || data.mimeType.split('/')[1] || 'png';
+    return {
+      kind: 'image',
+      filename: `image.${ext}`,
+      mimeType: data.mimeType,
+      data: url,
+    };
+  }
+
+  const mimeType = guessMimeType(filenameFromUrl(url, 'image.png'), 'image/png');
+  const ext = extensionFromName(filenameFromUrl(url, '')) || EXT_BY_MIME[mimeType] || 'png';
   return {
     kind: 'image',
-    filename: filenameFromUrl(url, `image.${ext === 'jpeg' ? 'jpg' : ext}`),
+    filename: filenameFromUrl(url, `image.${ext}`),
     mimeType,
-    data: data ? url : undefined,
-    url: data ? undefined : url,
+    url,
   };
 }
 

@@ -1,7 +1,7 @@
 import { pickToken, setRequestToken } from './auth.js';
 import { solvePowChallengeForUpload } from '../utils/pow.js';
 import { apiHeaders, getHeaders, proxiedFetch } from '../utils/headers.js';
-import { resolveUploadableBytes } from '../utils/message-files.js';
+import { EXT_BY_MIME, extensionFromName, resolveUploadableBytes } from '../utils/message-files.js';
 
 const BASE_URL = 'https://chat.deepseek.com';
 
@@ -121,12 +121,27 @@ export async function resolveImageToRefId(imageUrl, token) {
   return uploadImageFromFile(buffer, filename, mimeType, token);
 }
 
+/**
+ * 确保文件名带扩展名。
+ *
+ * 上游按扩展名判定文件类型，无扩展名会直接返回
+ * biz_code=9 unsupported file type。因此这里兜底补一个与 mimeType
+ * 匹配的扩展名，避免上游因文件名问题拒收。
+ */
+function ensureExtension(filename, mimeType) {
+  const name = String(filename || '').trim();
+  if (extensionFromName(name)) return name;
+  const ext = EXT_BY_MIME[String(mimeType || '').toLowerCase()] || 'bin';
+  return `${name || 'uploaded'}.${ext}`;
+}
+
 export async function resolveUploadableToRefId(file, token) {
   const { buffer, mimeType } = await resolveUploadableBytes(file, proxiedFetch);
+  const resolvedMime = mimeType || file.mimeType || 'application/octet-stream';
   return uploadRefFile(
     buffer,
-    file.filename || 'uploaded-file',
-    mimeType || file.mimeType || 'application/octet-stream',
+    ensureExtension(file.filename, resolvedMime),
+    resolvedMime,
     token,
   );
 }

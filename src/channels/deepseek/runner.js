@@ -222,14 +222,21 @@ export async function* runDeepSeek(internalRequest, context = {}) {
   }
 
   // 模型合并后唯一模型即具备视觉能力，上传型内容直接走视觉 slot。
+  //
+  // 关键：上传与补全必须用同一个凭据。上游的 file_id 绑定账号，若上传用
+  // A 而补全取到 B，会报 "invalid ref file id"。因此这里不释放 slot，
+  // 而是把它交给 completion 继续使用（用完由 completion 负责释放）。
   let refFileIds = [];
+  let uploadSlot = null;
   if (hasUploadableParts(openAIMessages)) {
-    const uploadSlot = await enqueueRequest(true);
+    uploadSlot = await enqueueRequest(true);
     try {
       refFileIds = await extractUploads(openAIMessages, uploadSlot.token);
-    } finally {
+    } catch (err) {
       uploadSlot.release();
       dispatchQueued();
+      uploadSlot = null;
+      throw err;
     }
   }
 
@@ -258,7 +265,11 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       resolveSession: makeResolveSession(modelType),
       getPrompt,
       signal: abortController.signal,
+      // 有附件时沿用上传用的凭据，保证 file_id 归属一致。
+      initialSlot: uploadSlot,
     });
+    // completion 已接管该 slot 的释放（见 sse.js），此处不再持有。
+    uploadSlot = null;
 
     streamBody = completionResult.body;
     slot = completionResult.slot;
@@ -608,6 +619,12 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     if (responseStream?.off && onClose) responseStream.off('close', onClose);
     if (slot) {
       slot.release();
+      dispatchQueued();
+    }
+    // 附件上传的 slot 若因异常未被 completion 接管，在此兜底释放，
+    // 避免并发额度泄漏（表现为后续请求排队等待）。
+    if (uploadSlot) {
+      uploadSlot.release();
       dispatchQueued();
     }
   }
