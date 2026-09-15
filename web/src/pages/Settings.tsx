@@ -199,7 +199,9 @@ export function SettingsPage() {
               <MetricCard label="健康检查（秒）" value={deepseek.healthCheckIntervalSeconds} />
               <MetricCard
                 label="上报上下文长度"
-                value={`${(deepseek.contextLength / 1024).toFixed(0)}K`}
+                value={deepseek.contextLength >= 1048576
+                  ? `${(deepseek.contextLength / 1048576).toFixed(0)}M`
+                  : `${(deepseek.contextLength / 1024).toFixed(0)}K`}
                 hint={`${deepseek.contextLength} tokens`}
               />
               <MetricCard

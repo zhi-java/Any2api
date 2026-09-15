@@ -60,16 +60,16 @@ test('/v1/models 为每个模型给出多种上下文长度字段别名', async 
     ];
     for (const key of CONTEXT_KEYS) {
       assert.equal(typeof model[key], 'number', `${key} 应为数字`);
-      assert.equal(model[key], 131072, `${key} 应为 128K`);
+      assert.equal(model[key], 1048576, `${key} 应为 1M`);
     }
 
     // 输出上限单独给出，且不应与上下文窗口混同
-    assert.equal(model.max_output_tokens, 8192);
-    assert.equal(model.max_completion_tokens, 8192);
+    assert.equal(model.max_output_tokens, 65536);
+    assert.equal(model.max_completion_tokens, 65536);
 
     // OpenRouter 风格的嵌套字段
-    assert.equal(model.top_provider.context_length, 131072);
-    assert.equal(model.top_provider.max_completion_tokens, 8192);
+    assert.equal(model.top_provider.context_length, 1048576);
+    assert.equal(model.top_provider.max_completion_tokens, 65536);
 
     // OpenAI 基础字段保持兼容
     assert.equal(model.object, 'model');
@@ -84,8 +84,8 @@ test('/v1/models/:id 单模型查询返回同样的元数据', async () => {
     assert.equal(res.status, 200);
     const model = await res.json();
     assert.equal(model.id, 'deepseek-flash');
-    assert.equal(model.context_length, 131072);
-    assert.equal(model.max_output_tokens, 8192);
+    assert.equal(model.context_length, 1048576);
+    assert.equal(model.max_output_tokens, 65536);
   });
 });
 
