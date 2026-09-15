@@ -2,7 +2,7 @@ import { loadEnvironment } from './utils/env.js';
 loadEnvironment();
 
 import express from 'express';
-import { srcPath } from './utils/runtime-paths.js';
+import { appVersion, srcPath } from './utils/runtime-paths.js';
 import {
   initTokenPool,
   getAliveTokens,
@@ -37,7 +37,7 @@ export function createApp() {
   app.get('/healthz', (_req, res) => {
     res.json({
       status: 'ok',
-      version: '1.0.0',
+      version: appVersion(),
     });
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "omni",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OmniAPI multi-channel web-to-API proxy",
   "main": "src/index.js",
   "type": "module",

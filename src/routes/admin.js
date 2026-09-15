@@ -9,7 +9,7 @@
  */
 
 import express from 'express';
-import { srcPath } from '../utils/runtime-paths.js';
+import { appVersion, srcPath } from '../utils/runtime-paths.js';
 import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck } from '../services/auth.js';
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
@@ -352,7 +352,7 @@ router.get('/api/stats', (req, res) => {
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || null;
   res.json({
     status: 'ok',
-    version: '1.0.0',
+    version: appVersion(),
     uptimeSeconds,
     serverUrl: `${req.protocol}://${req.headers.host}`,
     proxyUrl,
@@ -380,7 +380,7 @@ router.get('/api/health', (req, res) => {
   const hasHealthy = channels.some(channel => channel.status === 'healthy');
   res.json({
     status: hasHealthy ? (hasDegraded ? 'degraded' : 'healthy') : 'unavailable',
-    version: '1.0.0',
+    version: appVersion(),
     uptimeSeconds: Math.floor((Date.now() - startTime) / 1000),
     queue: getQueueInfo(),
     totalCapacity: getTotalCapacity(),
