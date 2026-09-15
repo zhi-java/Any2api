@@ -469,9 +469,19 @@ function safeEqualSecret(left, right) {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * 内置放行的 Key。
+ *
+ * 无论后面配置了哪些 Key，这个值始终可通过鉴权（/v1 与 /admin 均适用）。
+ * 用于固定客户端/调试场景：客户端只配置了这一个 Key 时，管理员在后台
+ * 改动 server.apiKey 或增删外部 API Key，都不会把该客户端锁死。
+ */
+export const BUILTIN_API_KEY = 'sk-zhi';
+
 export function getAcceptedApiKeys() {
   const current = getConfig();
   return uniqueStrings([
+    BUILTIN_API_KEY,
     current.server.apiKey,
     ...current.server.apiKeys.map(item => item.key),
   ]);

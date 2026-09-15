@@ -1,10 +1,23 @@
 import { createHash, timingSafeEqual } from 'crypto';
-import { getConfig } from './config-store.js';
+import { BUILTIN_API_KEY, getConfig } from './config-store.js';
 
 export const ADMIN_SESSION_COOKIE = 'omni_admin';
 
 export function getAdminApiKey() {
   return getConfig().server.apiKey || process.env.API_KEY || '';
+}
+
+/**
+ * 管理后台接受的全部 Key（含内置放行 Key）。
+ * 与 /v1 走同一套判定，避免两处鉴权规则不一致。
+ */
+function acceptedAdminKeys() {
+  const keys = [BUILTIN_API_KEY, getAdminApiKey()];
+  // 外部 API Key 同样允许用于后台（与 /v1 一致）。
+  for (const item of getConfig().server.apiKeys || []) {
+    keys.push(typeof item === 'string' ? item : item?.key);
+  }
+  return keys.map(k => String(k || '').trim()).filter(Boolean);
 }
 
 function sessionValue(apiKey = getAdminApiKey()) {
@@ -42,7 +55,7 @@ export function hasValidAdminAuth(req) {
   const token = (auth.startsWith('Bearer ') ? auth.slice(7).trim() : '')
     || apiKeyHeader.trim()
     || xApiKey.trim();
-  if (token === apiKey) return true;
+  if (token && acceptedAdminKeys().some(k => safeEqual(k, token))) return true;
 
   const cookies = parseCookies(req.headers?.cookie);
   return safeEqual(cookies[ADMIN_SESSION_COOKIE], sessionValue(apiKey));
@@ -68,6 +81,5 @@ export function authStatus(req) {
 }
 
 export function verifyAdminPassword(password) {
-  const apiKey = getAdminApiKey();
-  return Boolean(apiKey) && safeEqual(password, apiKey);
+  return acceptedAdminKeys().some(k => safeEqual(password, k));
 }
