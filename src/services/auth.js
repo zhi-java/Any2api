@@ -281,12 +281,73 @@ async function refreshToken(entry) {
   }
 }
 
+/**
+ * 把池中「无归属」的 token 归到对应账号名下，避免同一账号重复占用池位。
+ *
+ * 背景：config.json 可以同时存有 tokens 与 accounts。同步时 tokens 先建成
+ * 无 email 的条目，accounts 再建成无 token 的条目，两者各占一个池位；
+ * 启动时账号登录又会产出新 token，于是同一账号出现两条（旧 token + 新
+ * token），旧的那条必然报错，既浪费并发额度也让池统计虚高。
+ *
+ * 做法：登录前先向 /users/current 查证每个无归属 token 的真实邮箱，
+ * 若能对应到某个尚未持有 token 的账号，就把 token 并到该账号条目上并
+ * 删掉多余条目。查不到归属的 token 保持原样（宁可留着也不误删）。
+ *
+ * 返回被合并掉的条目数。
+ */
+async function linkUnownedTokensToAccounts() {
+  let merged = 0;
+  // 倒序遍历：合并过程中会删除条目，避免索引错位。
+  for (let i = tokenPool.length - 1; i >= 0; i--) {
+    const tokenEntry = tokenPool[i];
+    if (!tokenEntry.token || tokenEntry.email) continue;
+
+    let owner = null;
+    try {
+      const res = await proxiedFetch(`${BASE_URL}/api/v0/users/current`, {
+        headers: await getHeaders(tokenEntry.token),
+      });
+      const json = await res.json();
+      if (json.code === 0 && json.data?.biz_code === 0) {
+        owner = json.data?.biz_data?.email || null;
+      }
+    } catch { /* 网络异常：保持原样，不误删 */ }
+
+    if (!owner) continue;
+
+    const accountEntry = tokenPool.find(
+      t => t !== tokenEntry && t.email && t.email === owner && !t.token,
+    );
+    if (accountEntry) {
+      // 账号条目接管该 token 及其元数据，多余的 token 条目移除。
+      accountEntry.token = tokenEntry.token;
+      accountEntry.visionCapable = tokenEntry.visionCapable;
+      accountEntry.errorCount = tokenEntry.errorCount;
+      tokenPool.splice(i, 1);
+      merged++;
+      console.log(`  Linked existing token ${tokenEntry.token.slice(0, 12)}... to ${owner}`);
+    } else {
+      // 没有对应账号条目：至少记下归属，让它不再是"孤儿"。
+      tokenEntry.email = owner;
+    }
+  }
+  return merged;
+}
+
 export async function initTokenPool() {
   syncTokenPoolFromConfig();
   const config = getConfig().deepseek;
   console.log(`Token pool: ${tokenPool.length} entries (${config.tokens.length} tokens + ${config.accounts.length} accounts), max ${maxConcurrentPerToken()} concurrent each`);
   if (config.tokens.length === 0 && config.accounts.length === 0) {
     console.warn('No DeepSeek credentials configured; requests will fail until configured from the admin UI or config file.');
+  }
+
+  // 先把池中无归属的 token 归到对应账号，再决定哪些账号需要登录。
+  // 顺序很关键：若先登录，账号会各自换出新 token，与旧 token 并列为两条，
+  // 造成同一账号重复占用池位（实测 9 个账号出现 17 条池记录）。
+  const merged = await linkUnownedTokensToAccounts();
+  if (merged > 0) {
+    console.log(`  Deduplicated ${merged} token(s) already linked to accounts`);
   }
 
   // Always log in accounts that have no token yet — startup must produce usable tokens.
@@ -679,12 +740,28 @@ export function upsertEnvValues(content, updates) {
 
 function persistTokensToConfig() {
   const { dsTokens } = buildPersistedTokenEnv(tokenPool);
+  // 只持久化「无账号归属」的 token。
+  //
+  // 有账号归属的 token 不需要单独存：accounts 会在下次启动时重新登录取得
+  // 新 token（上游每次登录都会轮换）。若把它们也写进 tokens，下次启动就
+  // 会同时存在「旧 token 条目」与「账号登录产出的新 token 条目」，
+  // 同一账号占据两个池位、旧的那个必然报错，且随每次重启不断累积
+  // （实测 9 个账号一度涨到 17 条池记录）。
+  const accounts = tokenPool
+    .filter(entry => entry.email && entry.password)
+    .map(entry => ({ email: entry.email, password: entry.password }));
+  const accountEmails = new Set(accounts.map(a => a.email));
+  const orphanTokens = dsTokens.filter(token => {
+    const entry = tokenPool.find(t => t.token === token);
+    // 保留两类：无账号归属的 token，以及「有账号但该账号没有密码」的 token
+    // （后者无法靠重新登录取回，若丢弃就永久失去这份凭据）。
+    return !entry?.email || !accountEmails.has(entry.email);
+  });
+
   updateChannelConfig('deepseek', {
     ...getConfig().deepseek,
-    tokens: dsTokens,
-    accounts: tokenPool
-      .filter(entry => entry.email && entry.password)
-      .map(entry => ({ email: entry.email, password: entry.password })),
+    tokens: orphanTokens,
+    accounts,
   });
 }
 
