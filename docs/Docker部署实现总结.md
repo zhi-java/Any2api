@@ -4,22 +4,19 @@
 
 ### 1. Docker 镜像配置
 
-#### 标准 Dockerfile
+#### Dockerfile（唯一）
 - **文件：** `Dockerfile`
 - **特点：**
   - 基于 Node.js 22 Alpine
-  - 单阶段构建
+  - 三阶段构建：前端构建 → 生产依赖 → 运行时
   - 使用非 root 用户运行
-  - 内置健康检查
-  - 镜像大小约 150-200 MB
-
-#### 生产环境 Dockerfile
-- **文件：** `Dockerfile.production`
-- **特点：**
-  - 多阶段构建优化
+  - 内置健康检查（`/healthz`）
   - 使用 dumb-init 处理信号
-  - 更小的镜像体积
-  - 生产环境最佳实践
+  - 已移除 npm/npx/corepack，仅保留 Node 运行时
+
+> 早期版本另有 `Dockerfile.production`，造成「本地 compose 构建」与
+> 「CI 发布镜像」使用不同定义。现已合并为单一 `Dockerfile`，
+> CI 与本地构建结果一致。
 
 ### 2. Docker Compose 配置
 
@@ -217,9 +214,8 @@
 
 ```
 OmniAPI/
-├── Dockerfile                          # 标准 Dockerfile
-├── Dockerfile.production               # 生产环境 Dockerfile
-├── docker-compose.yml                  # 开发环境 Compose 配置
+├── Dockerfile                          # 唯一的 Dockerfile（CI 与本地共用）
+├── docker-compose.yml                  # 默认 Compose 配置（拉取发布镜像）
 ├── docker-compose.prod.yml             # 生产环境 Compose 配置
 ├── .dockerignore                       # Docker 构建忽略文件
 ├── .env.docker                         # 环境变量模板
@@ -299,7 +295,7 @@ OmniAPI/
 
 已为 OmniAPI 项目完整实现 Docker 部署功能，包括：
 
-- ✅ **2 个 Dockerfile**（标准版 + 生产优化版）
+- ✅ **单一 Dockerfile**（CI 发布镜像与本地构建共用同一份定义）
 - ✅ **2 个 Docker Compose 配置**（开发 + 生产）
 - ✅ **4 个部署脚本**（Windows + Linux/macOS，标准部署 + 快速启动）
 - ✅ **1 个 Makefile**（12+ 运维命令）

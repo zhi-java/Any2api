@@ -1,8 +1,13 @@
 services:
   omni:
+    # 默认直接使用已发布的通用镜像，用户无需本地构建即可运行。
+    # 需要在本地从源码构建时，用：
+    #   docker compose up -d --build
+    image: ghcr.io/zhi-java/any2api:latest
     build:
       context: .
       dockerfile: Dockerfile
+    pull_policy: missing
     container_name: omni
     restart: unless-stopped
     ports:
