@@ -120,7 +120,7 @@ function throwIfAborted(signal) {
   throw err;
 }
 
-export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null }) {
+export async function completion({ modelType, prompt, thinkingEnabled = false, searchEnabled = false, parentMessageId = null, refFileIds = [], preferVision = false, resolveSession = null, getPrompt = null, signal = null, initialSlot = null }) {
   throwIfAborted(signal);
 
   // 凭据级故障转移：一个凭据被限流/失效时，换池中其它凭据重试，
@@ -134,14 +134,22 @@ export async function completion({ modelType, prompt, thinkingEnabled = false, s
 
     // Step 1: Acquire token slot first — PoW and completion must use the same token
     let slot;
-    try {
-      slot = await enqueueRequest(preferVision);
-    } catch (err) {
-      // 池中已无可分配凭据：若之前有失败记录，把原因一并抛出便于排查。
-      if (lastErr) {
-        throw new Error(`${lastErr.message}（池中已无其它可用凭据）`);
+    if (initialSlot) {
+      // 调用方已持有 slot（例如附件上传已用该凭据取得 file_id）。
+      // 上游的 file_id 与账号绑定，上传与补全必须同一凭据，否则报
+      // "invalid ref file id"。这里只消费一次，后续轮次正常取池。
+      slot = initialSlot;
+      initialSlot = null;
+    } else {
+      try {
+        slot = await enqueueRequest(preferVision);
+      } catch (err) {
+        // 池中已无可分配凭据：若之前有失败记录，把原因一并抛出便于排查。
+        if (lastErr) {
+          throw new Error(`${lastErr.message}（池中已无其它可用凭据）`);
+        }
+        throw err;
       }
-      throw err;
     }
 
     // 选到的凭据本轮已试过（池中可用凭据少于尝试上限）——不再重复试。
