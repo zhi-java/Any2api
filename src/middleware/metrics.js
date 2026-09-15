@@ -59,6 +59,44 @@ export function recordTokenSpeed(model, tokens, duration) {
   }
 }
 
+/**
+ * 记录一次请求的 token 用量，用于计算 tok/s。
+ *
+ * 口径（与 OpenAI 官方一致）：输出 tokens ÷ 整个请求耗时（含首字节等待）。
+ * 之所以不用"生成期"做分母：实测上游是"先跑完思考、再瞬发正文"
+ * （思考阶段约 1745ms、正文阶段仅约 79ms），若剔除首字节等待或只算
+ * 正文期，分母会小到几毫秒级，得出虚高数倍甚至十倍的速度。
+ *
+ * 直接写入最近一条匹配模型的记录（logger 在 res.finish 时创建）。
+ */
+export function recordUsage(model, { outputTokens = 0, durationMs = 0 } = {}) {
+  if (!(outputTokens > 0) || !(durationMs > 0)) return;
+  for (let i = requestBuffer.length - 1; i >= 0; i--) {
+    const r = requestBuffer[i];
+    if (r.model !== model) continue;
+    r.tokens = outputTokens;
+    r.duration = durationMs;
+    return;
+  }
+  // 记录尚未创建（日志中间件在 res.finish 才写）：暂存，待写入时取用。
+  pendingUsage.set(model, { outputTokens, durationMs, at: Date.now() });
+}
+
+// 供 logger 在创建记录时补齐 token 用量（与 recordUsage 的时序兜底）。
+const pendingUsage = new Map();
+
+export function takePendingUsage(model) {
+  const entry = pendingUsage.get(model);
+  if (!entry) return null;
+  // 仅接受近 30 秒内的暂存，避免陈旧数据串到后续请求。
+  if (Date.now() - entry.at > 30_000) {
+    pendingUsage.delete(model);
+    return null;
+  }
+  pendingUsage.delete(model);
+  return entry;
+}
+
 export function recordSessionHit(hit) {
   const now = Date.now();
   sessionEvents.push({ time: now, hit });
