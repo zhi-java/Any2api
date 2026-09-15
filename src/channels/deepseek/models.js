@@ -49,6 +49,11 @@ export function toOpenAIModel(id, { created = 1718000000, ownedBy = 'deepseek' }
     max_output_tokens: maxOutputTokens,
     max_completion_tokens: maxOutputTokens,
     // —— 能力声明 ——
+    //
+    // 客户端判定"是否支持图片"读取的字段名并无统一标准：有的看
+    // capabilities.vision，有的看顶层 supports_vision，有的从 modalities
+    // 数组里找 "image"（OpenRouter 风格）。这些字段并无官方规范，只能按
+    // 已知先例一并给出，避免因字段名不匹配被误判为"当前模型不支持图片"。
     capabilities: {
       text: true,
       thinking: true,
@@ -57,6 +62,10 @@ export function toOpenAIModel(id, { created = 1718000000, ownedBy = 'deepseek' }
       tool_calls: true,
       streaming: true,
     },
+    supports_vision: true,
+    // 模态列表（OpenRouter / LiteLLM 风格）
+    modalities: ['text', 'image'],
+    input_modalities: ['text', 'image'],
     // OpenRouter 风格：部分客户端从此嵌套结构读取
     top_provider: {
       context_length: contextLength,
