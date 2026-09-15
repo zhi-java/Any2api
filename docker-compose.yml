@@ -6,7 +6,11 @@ services:
     container_name: omni
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      # 显式绑定 IPv4 全网卡。若省略主机地址，Docker 会同时绑 IPv4/IPv6，
+      # 而 Windows 上 localhost 优先解析到 IPv6(::1)，其映射常不可达，
+      # 导致浏览器/客户端用 localhost 访问时超时（需改用 127.0.0.1）。
+      # 显式写 0.0.0.0 后，localhost 与 127.0.0.1 均可正常访问。
+      - "0.0.0.0:${PORT:-3000}:3000"
     environment:
       # DeepSeek 认证
       DS_TOKEN: ${DS_TOKEN:-}
