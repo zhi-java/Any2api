@@ -44,9 +44,13 @@ _logs_dates.json
 *tmp_main.js
 CUsersPC-1deepseek-2apitmp_main.js
 
-# logs
+# logs（含调试日志：可能含真实对话内容，不入库）
 logs/
+logs-debug/
 *.log
+
+# 开发期临时调试脚本
+test_cdata_debug.mjs
 
 # Docker
 .env

@@ -32,7 +32,11 @@
 | 🔌 **多协议支持** | OpenAI `chat/completions`、Claude `messages`、原生 `responses` |
 | 🚀 **全流式响应** | 所有端点仅支持 SSE 流式输出，实时获取生成内容 |
 | 🧩 **上游渠道** | DeepSeek Web 端，统一抽象层 |
+| 🖼️ **多模态输入** | 图片 / 文档 / 音视频随消息上送，自动转交上游 |
+| 🧠 **思考内容分离** | 思考（reasoning）与正文分通道流式输出，客户端可分别展示 |
+| 📊 **标准 usage 上报** | 各协议均返回 token 用量、缓存命中与思考 token 拆分 |
 | 🔄 **Token 池管理** | 多账号轮转、自动刷新、并发控制、健康检查 |
+| 🛡️ **限流自愈** | 凭据限流自动切换冷却，IP 级限流快速失败并明确报错 |
 | 🛠️ **工具调用** | 支持 Function Calling，自动注入 XML 格式指令 |
 | ⚙️ **Prompt 注入** | 可开关的兼容性注入，适配不同上游格式 |
 | 🐳 **Docker 就绪** | 一键部署，支持 Docker Compose |
@@ -100,55 +104,67 @@ curl http://localhost:3000/v1/models
 > DeepSeek 上游已合并模型能力，不再区分 flash/pro 两档，对外只暴露 `deepseek-flash`。
 > 客户端附加后缀（如 `[1m]`）会被自动剥离。
 
+`/v1/models` 会返回完整的模型元数据（上下文长度、输出上限、能力声明），
+供客户端自动识别。各字段含义与可配置项见 [配置说明](#配置说明)。
+
+### 多模态输入
+
+图片、文档、音视频可直接随消息上送，服务端会转交上游处理：
+
+```jsonc
+{
+  "model": "deepseek-flash",
+  "messages": [{
+    "role": "user",
+    "content": [
+      { "type": "text", "text": "这张图里有什么？" },
+      { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+    ]
+  }]
+}
+```
+
+三种协议的输入格式都已适配：
+OpenAI 的 `image_url`、Claude 的 `image_source`、Responses 的 `input_image`。
+
 ## 配置说明
 
-### 通用配置
+只需三项，其余参数均有内置默认值。
 
 ```bash
-# 服务端口
-PORT=3000
-
-# API 密钥（客户端调用需携带）
-API_KEY=sk-your-secret-key
-
-# 日志目录
-LOG_DIR=./logs
-
-# 调试模式
-CLIENT_DEBUG_LOG=true
-```
-
-### DeepSeek 配置
-
-```bash
-# 账号密码方式（推荐）
+# 上游认证（二选一）
+# 方式一：账号密码，逗号分隔（推荐，token 失效时自动重新登录）
 DS_ACCOUNTS=
-
-# Token 方式
+# 方式二：直接给 token，逗号分隔
 DS_TOKENS=
 
-# Token 池并发控制
-MAX_CONCURRENT_PER_TOKEN=2
-TOKEN_DEAD_THRESHOLD=5
+# 服务端口（宿主机侧；Docker 部署时映射到此端口）
+PORT=3000
+
+# 管理后台 Key，同时用作 API 请求 Key
+API_KEY=sk-zhi
 ```
+
+> 其余参数（并发、超时、日志、上下文长度、缓存命中率展示值等）
+> 均可在管理后台「设置」页面调整，改动会持久化到数据目录，
+> **无需修改配置文件、也无需重启**。
+
+### 关于内置 Key
+
+`sk-zhi` 是内置放行 Key：无论后台如何轮换主 Key 或增删外部 API Key，
+它始终可用，便于固定客户端配置。仅建议在本地/内网使用；对外提供服务时
+请在后台另行创建强 Key。
 
 ## 高级功能
 
 ### Prompt 注入控制
 
-`ENABLE_PROMPT_INJECTION` 控制是否向上游 Web 端注入兼容性指令：
-
-```bash
-# 启用（默认）：自动注入角色标签、工具调用 XML 格式
-ENABLE_PROMPT_INJECTION=true
-
-# 禁用：直接透传客户端请求原文，不做任何改写
-ENABLE_PROMPT_INJECTION=false
-```
+在管理后台「设置 → 服务」中开关「启用工具提示词注入」，控制是否向上游
+Web 端注入兼容性指令：
 
 | 模式 | 行为 |
 |------|------|
-| **启用** | 注入 `<function_calls>` XML 模板、角色标签，将工具调用转换为上游特定格式 |
+| **启用**（默认） | 注入 `<function_calls>` XML 模板、角色标签，将工具调用转换为上游特定格式 |
 | **禁用** | 不添加任何内容，完整保留客户端 JSON 请求体，工具调用需由客户端自行处理 |
 
 > 禁用时，多轮对话历史不会被自动压缩为单条消息，请确保客户端请求已包含完整上下文。
@@ -264,13 +280,9 @@ web/                 # 管理后台前端（Vite + React + TS + Tailwind）
 ## 更多文档
 
 - [Docker 部署指南](docs/Docker部署指南.md) — 详细的容器化部署说明
-- [管理面板使用](docs/管理面板.md) — 后台配置与监控
-- [API 参考](docs/API.md) — 各端点的请求/响应格式
+- [Docker 快速参考](docs/Docker快速参考.md) — 常用命令速查
+- [设计系统](docs/design-system-s4-soft-product.md) — 管理后台的视觉与交互规范
 
 ## 许可证
 
 [MIT](LICENSE)
-
----
-
-> 🤖 本项目使用 [Trellis](.trellis/) 进行任务管理，采用三阶段开发流程（规划 → 实现 → 检查）。

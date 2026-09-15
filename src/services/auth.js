@@ -138,7 +138,7 @@ export function syncTokenPoolFromConfig() {
   }
 }
 
-import { loginHeaders, getHeaders, getDeviceId, proxiedFetch, getDeviceIdForToken } from '../utils/headers.js';
+import { loginHeaders, getHeaders, getDeviceId, proxiedFetch } from '../utils/headers.js';
 
 async function login(email, password) {
   // Use a fresh deviceId for login — real browser gets it from portal101.cn device fingerprint
@@ -714,28 +714,6 @@ export function buildPersistedTokenEnv(pool) {
   }
 
   return { dsTokens, dsAccountsExtended };
-}
-
-export function upsertEnvValues(content, updates) {
-  const lines = content.split(/\r?\n/);
-  const pending = new Map(Object.entries(updates));
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^([^#=\s][^=]*)=/);
-    if (!match) continue;
-
-    const key = match[1].trim();
-    if (pending.has(key)) {
-      lines[i] = `${key}=${pending.get(key)}`;
-      pending.delete(key);
-    }
-  }
-
-  for (const [key, value] of pending) {
-    lines.push(`${key}=${value}`);
-  }
-
-  return lines.join('\n');
 }
 
 function persistTokensToConfig() {

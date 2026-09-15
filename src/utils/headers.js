@@ -57,11 +57,6 @@ function generateDeviceId() {
   return Buffer.from(bytes).toString('base64').replace(/=/g, '') + '==';
 }
 
-export function getDeviceIdForToken(token) {
-  const cached = tokenCookies.get(token);
-  return cached?.deviceId || null;
-}
-
 // HIF (Hidden Integration Feature) token management
 // DeepSeek uses hif-leim and hif-dliq headers for request validation
 // These are fetched from hif-leim.deepseek.com/query and hif-dliq.deepseek.com/query

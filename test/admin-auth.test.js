@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -72,7 +72,11 @@ test('health endpoint keeps JSON liveness response', async () => {
     assert.equal(response.status, 200);
     const body = JSON.parse(response.text);
     assert.equal(body.status, 'ok');
-    assert.equal(body.version, '1.0.0');
+    // 版本号以 package.json 为唯一来源，此处直接对照该文件，
+    // 避免每次发版都要改测试。
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.equal(body.version, pkg.version);
+    assert.match(body.version, /^\d+\.\d+\.\d+$/);
   });
 });
 

@@ -1,4 +1,3 @@
-import { pickToken, setRequestToken } from './auth.js';
 import { solvePowChallengeForUpload } from '../utils/pow.js';
 import { apiHeaders, getHeaders, proxiedFetch } from '../utils/headers.js';
 import { EXT_BY_MIME, extensionFromName, resolveUploadableBytes } from '../utils/message-files.js';
@@ -64,61 +63,6 @@ export async function waitForFileReady(fileId, token, maxAttempts = 30, interval
   }
 
   throw new Error(`File not ready after ${maxAttempts * intervalMs / 1000}s`);
-}
-
-export async function uploadImageFromFile(fileBuffer, filename, mimeType, token) {
-  const fileId = await uploadFile(fileBuffer, filename, mimeType, token);
-  await waitForFileReady(fileId, token);
-  return fileId;
-}
-
-export async function uploadRefFile(fileBuffer, filename, mimeType, token) {
-  const fileId = await uploadFile(fileBuffer, filename, mimeType, token);
-  await waitForFileReady(fileId, token);
-  return fileId;
-}
-
-const MIME_MAP = {
-  'jpg': 'image/jpeg',
-  'jpeg': 'image/jpeg',
-  'png': 'image/png',
-  'gif': 'image/gif',
-  'webp': 'image/webp',
-  'svg': 'image/svg+xml',
-  'bmp': 'image/bmp',
-};
-
-function extFromDataUrl(dataUrl) {
-  const match = dataUrl.match(/^data:(image\/\w+);/);
-  if (!match) return { ext: 'png', mime: 'image/png' };
-  const mime = match[1];
-  const ext = mime.split('/')[1] || 'png';
-  return { ext: ext === 'jpeg' ? 'jpg' : ext, mime };
-}
-
-export async function resolveImageToRefId(imageUrl, token) {
-  let buffer, filename, mimeType;
-
-  if (imageUrl.startsWith('data:')) {
-    const { ext, mime } = extFromDataUrl(imageUrl);
-    const base64 = imageUrl.split(',')[1];
-    if (!base64) throw new Error('Invalid data URL: no base64 data');
-    buffer = Buffer.from(base64, 'base64');
-    filename = `image.${ext}`;
-    mimeType = mime;
-  } else {
-    const res = await proxiedFetch(imageUrl);
-    if (!res.ok) throw new Error(`Failed to download image: ${res.status}`);
-    const contentType = res.headers.get('content-type') || 'image/png';
-    buffer = Buffer.from(await res.arrayBuffer());
-    const urlPath = new URL(imageUrl).pathname;
-    const ext = urlPath.split('.').pop()?.toLowerCase() || 'png';
-    const mappedMime = MIME_MAP[ext] || contentType;
-    filename = `image.${mappedMime.split('/')[1] === 'jpeg' ? 'jpg' : (mappedMime.split('/')[1] || 'png')}`;
-    mimeType = mappedMime;
-  }
-
-  return uploadImageFromFile(buffer, filename, mimeType, token);
 }
 
 /**
