@@ -74,7 +74,10 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          # 必须用 metadata 输出的镜像引用：${{ github.repository }} 是
+          # "zhi-java/Any2api"（含大写），而 OCI 引用不允许大写字母，
+          # metadata-action 推送时已规范为小写 any2api，直接拼会解析失败。
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           exit-code: '0'
