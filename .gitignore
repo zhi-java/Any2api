@@ -67,3 +67,7 @@ volume-backup.tar.gz
 
 # local runtime config — contains real upstream credentials, never commit
 config.json
+
+# 本地安全扫描产物（trivy 报告等），不纳入版本控制
+.scan-tmp/
+*.sarif

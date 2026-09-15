@@ -58,22 +58,43 @@ npm start
 
 ### Docker 部署（推荐）
 
+无需克隆源码，可直接使用预构建镜像：
+
+```bash
+docker run -d \
+  --name omni \
+  -p 3000:3000 \
+  -e DS_ACCOUNTS="邮箱:密码" \
+  -e API_KEY="sk-zhi" \
+  -v omni-data:/data \
+  -v "$(pwd)/logs:/app/logs" \
+  ghcr.io/zhi-java/any2api:latest
+```
+
+镜像支持 `linux/amd64` 与 `linux/arm64`，Docker 会自动选择对应架构。
+`/data` 卷用于持久化配置，不挂载则容器重建后后台配置会丢失。
+
+#### 使用 Docker Compose
+
 ```bash
 # 1. 复制环境配置
 cp .env.docker .env
 
 # 2. 编辑 .env，配置 DeepSeek 认证信息
-#    例如 DeepSeek: DS_ACCOUNTS="手机号:密码,手机号:密码"
+#    例如 DeepSeek: DS_ACCOUNTS="邮箱:密码,邮箱:密码"
 #    或 DS_TOKENS="token1,token2"
 
-# 3. 启动服务
-docker-compose up -d
+# 3. 启动服务（默认拉取上面的发布镜像）
+docker compose up -d
+
+# 如需从本地源码构建（例如改了代码）
+docker compose up -d --build
 
 # 4. 查看日志
-docker-compose logs -f
+docker compose logs -f
 
 # 5. 停止服务
-docker-compose down
+docker compose down
 ```
 
 ### 验证服务

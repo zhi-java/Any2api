@@ -29,9 +29,8 @@
 ### Docker 配置文件
 
 ```
-├── Dockerfile                    # 标准 Dockerfile
-├── Dockerfile.production         # 生产环境优化版（多阶段构建）
-├── docker-compose.yml            # 开发/测试环境 Compose 配置
+├── Dockerfile                    # 唯一的 Dockerfile（CI 与本地共用）
+├── docker-compose.yml            # 默认 Compose 配置（拉取发布镜像）
 ├── docker-compose.prod.yml       # 生产环境 Compose 配置
 ├── .dockerignore                 # Docker 构建忽略文件
 └── .env.docker                   # Docker 环境变量模板
