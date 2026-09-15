@@ -28,6 +28,7 @@ import {
   reportTokenError,
   reportTokenRateLimited,
 } from '../../services/auth.js';
+import { recordUsage } from '../../middleware/metrics.js';
 import { InternalAPIError } from '../../core/errors.js';
 import {
   createMessageDone,
@@ -551,27 +552,47 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       for (const event of ensureMessageStarted()) yield event;
       yield createMessageDone({ requestId, responseId, messageId, status: 'completed' });
     }
-    // usage 说明：上游 Web 接口只提供输出 token 数（accumulated_token_usage），
-    // 不提供输入 token 与缓存命中统计。这里对输入做本地估算（与输出同一套
-    // 启发式：约 4 字符/token），使各协议都能给出结构完整的 usage——
-    // 客户端据此显示用量与 tok/s。估算值仅供展示，非计费依据。
+    // usage 说明：上游 Web 接口只提供输出 token 总数（accumulated_token_usage），
+    // 不提供输入 token、思考 token 与缓存命中统计。以下均为本地估算
+    // （同一套启发式：约 4 字符/token），供客户端展示，非计费依据。
+    //
+    // reasoningTokens 单独拆出：若全部计入 completion_tokens，客户端会把
+    // 思考量当作"正文生成量"来算 tok/s，得到明显偏高的速度。
     const estimatedInputTokens = Math.max(0, Math.round(String(fullPrompt || '').length / 4));
+    const estimatedReasoningTokens = Math.min(
+      Math.max(0, Math.round(reasoningContent.length / 4)),
+      usageOutputTokens(usage) || Number.MAX_SAFE_INTEGER,
+    );
+    const outputTokensFinal = usageOutputTokens(usage)
+      || Math.round((visibleContent.length + reasoningContent.length) / 4);
+
+    // 上报本次用量供 tok/s 统计。
+    // 顺序很关键：渲染器收到 run.completed 后会立即 end() 响应，进而触发
+    // 日志中间件的 res.finish 写记录；若在 yield 之后再上报，记录早已写定，
+    // token 数就永远关联不上（这正是此前 tok/s 恒为 0 的原因之一）。
+    //
+    // 口径：输出 tokens ÷ 总耗时（含首字节等待），与 OpenAI 官方一致。
+    // 不用"生成期"做分母的原因（实测）：上游是"先跑完思考、再瞬发正文"，
+    // 思考阶段约 1745ms、正文阶段仅约 79ms；剔除首字节等待会让分母小到
+    // 毫秒级，算出虚高数倍的速度。
+    recordUsage(responseModel, {
+      outputTokens: outputTokensFinal,
+      durationMs: Date.now() - requestStart,
+    });
+
     yield createRunCompleted({
       requestId,
       responseId,
       finishReason: detectedToolCalls?.length ? 'tool_calls' : 'stop',
       usage: {
         inputTokens: estimatedInputTokens,
-        outputTokens: usageOutputTokens(usage) || Math.round((visibleContent.length + reasoningContent.length) / 4),
+        outputTokens: outputTokensFinal,
+        reasoningTokens: estimatedReasoningTokens,
       },
     });
 
-    const totalDuration = Date.now() - requestStart;
-    if (context?.recordMetrics && totalDuration > 0) {
-      context.recordMetrics(responseModel, usageOutputTokens(usage), totalDuration);
-      // 有正文产出即视为上游正常，清除 IP 限流判定与空流计数。
-      if (String(visibleContent || '').trim()) noteSuccessfulReply();
-    }
+    // 有正文产出即视为上游正常，清除 IP 限流判定与空流计数。
+    if (String(visibleContent || '').trim()) noteSuccessfulReply();
   } catch (err) {
     if (err.name === 'AbortError') return;
     if (err instanceof InternalAPIError) throw err;

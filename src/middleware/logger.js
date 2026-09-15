@@ -4,7 +4,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import { recordRequest } from './metrics.js';
+import { recordRequest, recordTokenSpeed, takePendingUsage } from './metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { getConfig, getDataDir } from '../services/config-store.js';
 
@@ -244,8 +244,12 @@ export function requestLogger(name) {
 
       console.log(`[${entry.time}] ${entry.method} ${entry.path} model=${entry.model} ${entry.status} ${entry.duration}ms${entry.error?.message ? ' error=' + entry.error.message.slice(0,120) : ''}`);
 
-      // Record to metrics collector
+      // Record to metrics collector。
+      // 若 runner 已上报本次用量的 token 数，一并写入以便计算 tok/s
+      // （口径：输出 tokens ÷ 总耗时，与 OpenAI 官方一致）。
       recordRequest(model, duration, res.statusCode);
+      const pending = takePendingUsage(model);
+      if (pending) recordTokenSpeed(model, pending.outputTokens, duration);
 
       // Add error details for failed requests
       if (res.statusCode >= 400) {
