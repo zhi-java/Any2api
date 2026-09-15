@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
 
     steps:
       - name: 检出代码
@@ -43,13 +44,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 注意：sha 规则不要写 prefix={{branch}}-。在 tag 事件下 {{branch}} 为空，
+          # 会拼出 ":<sha>" 这类非法引用，导致 buildx 整体失败（历史上 7 月起每次构建
+          # 都因此失败）。改用 format=short 生成裸短 sha。
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,prefix={{branch}}-
+            type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: 构建并推送 Docker 镜像
@@ -64,16 +68,20 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
+      # 安全扫描为附加检查，不阻断镜像发布（镜像此时已推送成功）。
       - name: 扫描镜像安全漏洞
         if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
           format: 'sarif'
           output: 'trivy-results.sarif'
+          exit-code: '0'
 
       - name: 上传安全扫描结果
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && hashFiles('trivy-results.sarif') != ''
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
