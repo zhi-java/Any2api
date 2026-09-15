@@ -12,47 +12,28 @@ services:
       # 显式写 0.0.0.0 后，localhost 与 127.0.0.1 均可正常访问。
       - "0.0.0.0:${PORT:-3000}:3000"
     environment:
-      # DeepSeek 认证
-      DS_TOKEN: ${DS_TOKEN:-}
-      DS_TOKENS: ${DS_TOKENS:-}
+      # 只需这三项；其余参数均有内置默认值，可在管理后台「设置」页面调整
+      # （会持久化到 /data，重建容器后保留）。
+      #
+      # 上游认证（二选一）
       DS_ACCOUNTS: ${DS_ACCOUNTS:-}
+      DS_TOKENS: ${DS_TOKENS:-}
+      # 管理后台 Key（同时用作 API 请求 Key）
+      API_KEY: ${API_KEY:-sk-zhi}
+      # 可选：把 .env 中的 token 关联到账号，便于失效时自动重登。
+      # 平时无需填写——账号与 token 的关联会自动持久化到 /data。
       DS_ACCOUNTS_EXTENDED: ${DS_ACCOUNTS_EXTENDED:-}
 
-      # 服务配置
+      # 容器内固定端口（宿主机端口由上方 ports 映射决定）
       PORT: 3000
-      API_KEY: ${API_KEY:-sk-zhi}
-      API_KEYS: ${API_KEYS:-}
-
-      # 数据目录：持久化 config.json（后台添加的凭据等）
+      # 数据目录：持久化 config.json（后台添加的凭据、运行配置）
       ZHI2API_DATA_DIR: /data
-
-      # 代理配置
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
-      HTTP_PROXY: ${HTTP_PROXY:-}
-
-      # Token 池调优
-      MAX_CONCURRENT_PER_TOKEN: ${MAX_CONCURRENT_PER_TOKEN:-2}
-      TOKEN_DEAD_THRESHOLD: ${TOKEN_DEAD_THRESHOLD:-5}
-      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-600}
-      IDLE_THRESHOLD: ${IDLE_THRESHOLD:-1800}
-
-      # 会话管理
-      SESSION_TTL: ${SESSION_TTL:-1800}
-
-      # 日志配置
+      # 日志目录（挂载到宿主机 ./logs）
       LOG_DIR: /app/logs
-      CLIENT_DEBUG_LOG: ${CLIENT_DEBUG_LOG:-false}
-      CLIENT_DEBUG_LOG_DIR: ${CLIENT_DEBUG_LOG_DIR:-}
-      CLIENT_DEBUG_LOG_MAX_CHARS: ${CLIENT_DEBUG_LOG_MAX_CHARS:-200000}
 
-      # 功能开关
-      MERGE_THINKING: ${MERGE_THINKING:-false}
-      ENABLE_PROMPT_INJECTION: ${ENABLE_PROMPT_INJECTION:-true}
-      SYSTEM_FINGERPRINT: ${SYSTEM_FINGERPRINT:-fp_omni_v1}
-      ENABLE_CONVERSATION_AFFINITY: ${ENABLE_CONVERSATION_AFFINITY:-false}
-      CONVERSATION_TTL_MS: ${CONVERSATION_TTL_MS:-1800000}
-      MAX_CONVERSATIONS: ${MAX_CONVERSATIONS:-500}
-      ENABLE_FC_ERROR_RETRY: ${ENABLE_FC_ERROR_RETRY:-true}
+      # 出站代理（可选，需要时取消注释）
+      # HTTPS_PROXY: ${HTTPS_PROXY:-}
+      # HTTP_PROXY: ${HTTP_PROXY:-}
 
     volumes:
       # 持久化日志
