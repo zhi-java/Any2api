@@ -4,7 +4,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, resolve, relative } from 'path';
-import { recordRequest, recordTokenSpeed, takePendingUsage } from './metrics.js';
+import { recordRequest, recordUsageRecord, takeUsage } from './metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { getConfig, getDataDir } from '../services/config-store.js';
 
@@ -247,9 +247,13 @@ export function requestLogger(name) {
       // Record to metrics collector。
       // 若 runner 已上报本次用量的 token 数，一并写入以便计算 tok/s
       // （口径：输出 tokens ÷ 总耗时，与 OpenAI 官方一致）。
-      recordRequest(model, duration, res.statusCode);
-      const pending = takePendingUsage(model);
-      if (pending) recordTokenSpeed(model, pending.outputTokens, duration);
+      // 用 runner 上报的 durationMs（服务端视角的完整耗时）而非此处
+      // 的 duration，避免两者口径不一致；队列按请求先后 FIFO 配对。
+      const record = recordRequest(model, duration, res.statusCode);
+      // 用量由 runner 挂在 res 上（严格 1:1，不受并发影响），此处消费一次，
+      // 并直接写入本次刚创建的记录，不做任何"最近记录"式的模糊匹配。
+      const reportedUsage = takeUsage(res);
+      if (reportedUsage) recordUsageRecord(record, reportedUsage);
 
       // Add error details for failed requests
       if (res.statusCode >= 400) {

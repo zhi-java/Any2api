@@ -35,8 +35,10 @@ let overloadRejectCount = 0;
 
 export function recordRequest(model, duration, status) {
   const now = Date.now();
-  requestBuffer.push(new RequestRecord(now, model, duration, status, null, null));
+  const record = new RequestRecord(now, model, duration, status, null, null);
+  requestBuffer.push(record);
   if (requestBuffer.length > BUFFER_CAP) requestBuffer.splice(0, requestBuffer.length - BUFFER_CAP);
+  return record;
 }
 
 export function recordTTFB(model, ttfb) {
@@ -49,52 +51,38 @@ export function recordTTFB(model, ttfb) {
   }
 }
 
-export function recordTokenSpeed(model, tokens, duration) {
-  // Attach token count to the most recent record for this model
-  for (let i = requestBuffer.length - 1; i >= 0; i--) {
-    if (requestBuffer[i].model === model && requestBuffer[i].tokens === null) {
-      requestBuffer[i].tokens = tokens;
-      break;
-    }
-  }
+/**
+ * 把本次请求的 token 用量挂到响应对象上，由日志中间件在写记录时读取。
+ *
+ * 为什么不用「按模型配对最近一条未配对记录」：并发请求下无法确定哪条
+ * 记录属于哪个请求，会把 A 的 token 数配到 B 的耗时上，算出天文数字般的
+ * tok/s（实测出现过 1586、780）。挂在 res 上则是严格 1:1，与并发无关。
+ */
+export function recordUsage(res, { outputTokens = 0, durationMs = 0 } = {}) {
+  if (!res || !(outputTokens > 0) || !(durationMs > 0)) return;
+  res.omniUsage = { outputTokens, durationMs };
+}
+
+/** 取出并清除响应对象上的用量（由日志中间件调用，保证只消费一次）。 */
+export function takeUsage(res) {
+  if (!res || !res.omniUsage) return null;
+  const usage = res.omniUsage;
+  res.omniUsage = null;
+  return usage;
 }
 
 /**
- * 记录一次请求的 token 用量，用于计算 tok/s。
+ * 把用量写入「刚由 recordRequest 创建的那条记录」。
  *
- * 口径（与 OpenAI 官方一致）：输出 tokens ÷ 整个请求耗时（含首字节等待）。
- * 之所以不用"生成期"做分母：实测上游是"先跑完思考、再瞬发正文"
- * （思考阶段约 1745ms、正文阶段仅约 79ms），若剔除首字节等待或只算
- * 正文期，分母会小到几毫秒级，得出虚高数倍甚至十倍的速度。
- *
- * 直接写入最近一条匹配模型的记录（logger 在 res.finish 时创建）。
+ * 由日志中间件在 recordRequest 之后立即调用，因此目标记录必然是缓冲区
+ * 末尾且属于本次请求——不依赖"最近未配对记录"这类在并发下会错配的启发式。
  */
-export function recordUsage(model, { outputTokens = 0, durationMs = 0 } = {}) {
-  if (!(outputTokens > 0) || !(durationMs > 0)) return;
-  for (let i = requestBuffer.length - 1; i >= 0; i--) {
-    const r = requestBuffer[i];
-    if (r.model !== model) continue;
-    r.tokens = outputTokens;
-    r.duration = durationMs;
-    return;
-  }
-  // 记录尚未创建（日志中间件在 res.finish 才写）：暂存，待写入时取用。
-  pendingUsage.set(model, { outputTokens, durationMs, at: Date.now() });
-}
-
-// 供 logger 在创建记录时补齐 token 用量（与 recordUsage 的时序兜底）。
-const pendingUsage = new Map();
-
-export function takePendingUsage(model) {
-  const entry = pendingUsage.get(model);
-  if (!entry) return null;
-  // 仅接受近 30 秒内的暂存，避免陈旧数据串到后续请求。
-  if (Date.now() - entry.at > 30_000) {
-    pendingUsage.delete(model);
-    return null;
-  }
-  pendingUsage.delete(model);
-  return entry;
+export function recordUsageRecord(record, { outputTokens = 0, durationMs = 0 } = {}) {
+  if (!record || !(outputTokens > 0)) return;
+  record.tokens = outputTokens;
+  // 用 runner 上报的服务端完整耗时（与 tokens 同源），
+  // 避免 tokens 与 duration 来自不同请求而算出畸形速度。
+  if (durationMs > 0) record.duration = durationMs;
 }
 
 export function recordSessionHit(hit) {

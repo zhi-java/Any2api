@@ -575,7 +575,7 @@ export async function* runDeepSeek(internalRequest, context = {}) {
     // 不用"生成期"做分母的原因（实测）：上游是"先跑完思考、再瞬发正文"，
     // 思考阶段约 1745ms、正文阶段仅约 79ms；剔除首字节等待会让分母小到
     // 毫秒级，算出虚高数倍的速度。
-    recordUsage(responseModel, {
+    recordUsage(context?.res, {
       outputTokens: outputTokensFinal,
       durationMs: Date.now() - requestStart,
     });
