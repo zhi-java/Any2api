@@ -563,19 +563,25 @@ export async function* runDeepSeek(internalRequest, context = {}) {
       for (const event of ensureMessageStarted()) yield event;
       yield createMessageDone({ requestId, responseId, messageId, status: 'completed' });
     }
-    // usage 说明：上游 Web 接口只提供输出 token 总数（accumulated_token_usage），
+    // usage 说明：上游 Web 接口只提供输出 token 数（accumulated_token_usage），
     // 不提供输入 token、思考 token 与缓存命中统计。以下均为本地估算
-    // （同一套启发式：约 4 字符/token），供客户端展示，非计费依据。
+    // （思考按约 4 字符/token），供客户端展示，非计费依据。
     //
-    // reasoningTokens 单独拆出：若全部计入 completion_tokens，客户端会把
-    // 思考量当作"正文生成量"来算 tok/s，得到明显偏高的速度。
+    // 关于 completion_tokens 的口径（实测确认）：它对应**正文**而非总量。
+    // 同样的问题下 thinking=true 得 134、thinking=false 得 102，正文长度几乎
+    // 一致而思考量相差数百 token——若 completion_tokens 含思考，差值应与思考
+    // 量同阶，实际只有 32。因此不能把它当作「含思考的总量」再按比例拆分，
+    // 否则会把正文的量错算成思考，并让正文 token 趋近 0。客户端一旦用
+    // 「正文 token ÷ 正文跨度」计算，分母是上游瞬发正文的极短时窗
+    // （实测 208ms 出 53 个分片），就会得出 3589 这类夸张的 tok/s。
     const estimatedInputTokens = Math.max(0, Math.round(String(fullPrompt || '').length / 4));
-    const estimatedReasoningTokens = Math.min(
-      Math.max(0, Math.round(reasoningContent.length / 4)),
-      usageOutputTokens(usage) || Number.MAX_SAFE_INTEGER,
-    );
-    const outputTokensFinal = usageOutputTokens(usage)
-      || Math.round((visibleContent.length + reasoningContent.length) / 4);
+    const visibleChars = visibleContent.length;
+    const reasoningChars = reasoningContent.length;
+    // 正文 token：优先用上游值；缺失时按字符估算。
+    const visibleTokens = usageOutputTokens(usage) || Math.round(visibleChars / 4);
+    // 思考 token：上游不计入，按字符量单独估算。
+    const estimatedReasoningTokens = Math.round(reasoningChars / 4);
+    const outputTokensFinal = visibleTokens + estimatedReasoningTokens;
 
     // 上报本次用量供 tok/s 统计。
     // 顺序很关键：渲染器收到 run.completed 后会立即 end() 响应，进而触发
