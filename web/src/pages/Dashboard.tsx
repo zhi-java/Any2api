@@ -1,8 +1,9 @@
 import { api } from '../lib/api';
 import { usePolling } from '../lib/hooks';
-import { copyText, formatDuration, formatNumber } from '../lib/format';
+import { copyText, formatDuration, formatNumber, formatUptime } from '../lib/format';
 import { Badge, Button, Card, EmptyState, PanelHeader, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { MetricCard, MetricGrid } from '../components/Metric';
+import { ProxyNotice } from '../components/ProxyNotice';
 
 /** 首页：大目标优先 —— 服务状态 → 端点 → 引导清单 → KPI → 渠道卡片。 */
 export function DashboardPage() {
@@ -44,7 +45,7 @@ export function DashboardPage() {
   const steps = [
     {
       title: '添加渠道凭据',
-      detail: hasCreds ? '已配置至少一个上游凭据' : '前往「凭据」粘贴 Token 或账密',
+      detail: hasCreds ? '已配置至少一个上游凭据' : '前往「渠道与凭据」粘贴 Token 或账密',
       done: hasCreds,
     },
     { title: '确认渠道健康', detail: healthy > 0 ? '至少一条渠道可用' : '配置后等待健康检查或去渠道页测试', done: healthy > 0 },
@@ -54,18 +55,22 @@ export function DashboardPage() {
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 lg:grid-cols-[1.35fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
         <Card className="grid content-start gap-4">
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1">
               <span className="text-[12px] font-semibold text-ink-2">服务状态</span>
               <strong
                 className={`text-[28px] font-extrabold tracking-[-0.02em] ${
-                  statusTone === 'is-ok' ? 'text-ok' : statusTone === 'is-warn' ? 'text-warn-ink' : 'text-bad'
+                  statusTone === 'is-ok' ? 'text-ok-ink' : statusTone === 'is-warn' ? 'text-warn-ink' : 'text-bad-ink'
                 }`}
               >
                 {statusWord}
               </strong>
+              {/* 版本与运行时长：排障时第一手信息（"你跑的是哪个版本、起了多久"）。 */}
+              <span className="text-[12px] text-ink-3">
+                v{data.version} · 已运行 {formatUptime(data.uptimeSeconds)}
+              </span>
             </div>
             <Badge tone="muted">自动托管</Badge>
           </div>
@@ -105,7 +110,12 @@ export function DashboardPage() {
             <Badge tone="muted">
               队列 {data.queue?.queued ?? 0}/{data.queue?.maxQueueSize ?? 0}
             </Badge>
+            <Badge tone="muted">并发容量 {data.totalCapacity ?? 0}</Badge>
           </div>
+
+          {/* 代理状态放在服务概览卡内：它与"服务是否健康"是同一层级的部署事实，
+              且未配置时直接关系到会不会被批量风控。 */}
+          <ProxyNotice proxyUrl={data.proxyUrl} />
         </Card>
 
         <Card className="grid content-start gap-3">
@@ -133,7 +143,7 @@ export function DashboardPage() {
             ))}
           </div>
           <div className="flex flex-wrap gap-2">
-            <a href="#credentials">
+            <a href="#channels">
               <Button size="sm" variant="secondary">
                 添加凭据
               </Button>
@@ -164,7 +174,7 @@ export function DashboardPage() {
             {channels.map(channel => (
               <article
                 key={channel.id}
-                className={`grid gap-1.5 rounded-2xl border p-4 ${
+                className={`grid gap-1.5 rounded-xl border p-4 ${
                   channel.status === 'healthy'
                     ? 'border-ok-line bg-ok-soft'
                     : channel.status === 'degraded'

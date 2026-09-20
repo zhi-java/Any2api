@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { copyText, formatDateTime } from '../lib/format';
-import { Badge, Button, Card, EmptyState, Field, Input, PanelHeader, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, Field, Input, PanelHeader, Skeleton, useToast } from '../components/ui';
+import { useConfirm } from '../components/ConfirmDialog';
 import type { ServerConfig } from '../types';
 
 /** 外部 API Key 管理：创建（自动生成高熵密钥）/ 复制 / 删除。 */
 export function ApiKeysPage() {
   const toast = useToast();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [server, setServer] = useState<ServerConfig | null>(null);
   const [createdKey, setCreatedKey] = useState('');
   const [name, setName] = useState('');
@@ -22,7 +24,16 @@ export function ApiKeysPage() {
     void load();
   }, [load]);
 
-  if (!server) return <EmptyState title="加载中…" />;
+  // 加载态用 Skeleton 而非 EmptyState：空态表达"没有数据"，
+  // 而这里是"正在读取"，两者语义不同，用错会让人以为列表是空的。
+  if (!server) {
+    return (
+      <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+        <Skeleton className="h-64" />
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
 
   async function create(event: React.FormEvent) {
     event.preventDefault();
@@ -42,7 +53,23 @@ export function ApiKeysPage() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm('确定删除这个外部 API Key？正在使用它的客户端会立即失效。')) return;
+    const ok = await confirm({
+      title: '删除这个外部 API Key？',
+      tone: 'danger',
+      confirmLabel: '删除',
+      detail: (
+        <div className="grid gap-2">
+          <p className="m-0">
+            正在使用该 Key 的客户端会<strong className="text-ink">立即失效</strong>，
+            需要重新配置新的 Key 才能恢复访问。
+          </p>
+          <p className="m-0 rounded-xl border border-line bg-subtle p-3 text-[13px]">
+            确认该 Key 已从所有客户端移除后再继续。
+          </p>
+        </div>
+      ),
+    });
+    if (!ok) return;
     try {
       const result = await api.removeServerApiKey(id);
       setCreatedKey('');
@@ -54,7 +81,7 @@ export function ApiKeysPage() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
+    <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
       <Card>
         <PanelHeader title="Key 列表" hint={`${server.externalApiKeyCount || 0} 个可用`} />
         {server.adminKeyAcceptedForApi || server.apiKeys.length ? (
@@ -62,9 +89,9 @@ export function ApiKeysPage() {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="text-left text-[12px] font-semibold text-ink-3">
-                  <th className="border-b border-line py-2 pr-3">名称</th>
-                  <th className="border-b border-line py-2 pr-3">Key</th>
-                  <th className="border-b border-line py-2" />
+                  <th scope="col" className="border-b border-line py-2 pr-3">名称</th>
+                  <th scope="col" className="border-b border-line py-2 pr-3">Key</th>
+                  <th scope="col" className="border-b border-line py-2" />
                 </tr>
               </thead>
               <tbody>
@@ -115,7 +142,7 @@ export function ApiKeysPage() {
         <PanelHeader title="创建 Key" hint="自动生成高熵密钥" />
         {createdKey ? (
           <div className="mb-3 grid gap-2 rounded-xl border border-ok-line bg-ok-soft p-3">
-            <span className="text-[12px] font-bold text-ok">新 Key 已创建 · 仅显示一次</span>
+            <span className="text-[12px] font-bold text-ok-ink">新 Key 已创建 · 仅显示一次</span>
             <div className="flex items-center gap-2">
               <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[13px] text-ink">
                 {createdKey}
@@ -160,6 +187,8 @@ export function ApiKeysPage() {
           </Button>
         </form>
       </Card>
+
+      {confirmDialog}
     </div>
   );
 }

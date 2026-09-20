@@ -33,6 +33,18 @@ export function formatDateTime(value: string | undefined): string {
   });
 }
 
+/** 把秒数格式化为"3天2小时"这类运行时长文案。 */
+export function formatUptime(seconds: number | undefined): string {
+  const n = Number(seconds || 0);
+  if (!Number.isFinite(n) || n <= 0) return '刚刚启动';
+  const d = Math.floor(n / 86400);
+  const h = Math.floor((n % 86400) / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  if (d > 0) return h ? `${d} 天 ${h} 小时` : `${d} 天`;
+  if (h > 0) return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
+  return m > 0 ? `${m} 分钟` : `${n} 秒`;
+}
+
 /** 把剩余毫秒格式化为"X天Y小时后恢复"这类可读文案。0 表示无自动恢复计划。 */
 export function formatRemaining(ms: number | undefined): string {
   const n = Number(ms || 0);

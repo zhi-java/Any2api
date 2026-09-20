@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { api } from './lib/api';
 import { useHashRoute } from './lib/router';
 import { Shell, LoginView } from './components/Shell';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/ui';
 import { DashboardPage } from './pages/Dashboard';
 import { ChannelsPage } from './pages/Channels';
-import { CredentialsPage } from './pages/Credentials';
 import { ApiKeysPage } from './pages/ApiKeys';
 import { SettingsPage } from './pages/Settings';
 import { LogsPage } from './pages/Logs';
@@ -69,13 +69,17 @@ function Console() {
 
   return (
     <Shell route={route} onLogout={logout}>
-      {route === 'dashboard' && <DashboardPage />}
-      {route === 'channels' && <ChannelsPage />}
-      {route === 'credentials' && <CredentialsPage />}
-      {route === 'apiKeys' && <ApiKeysPage />}
-      {route === 'settings' && <SettingsPage />}
-      {route === 'logs' && <LogsPage />}
-      {route === 'performance' && <PerformancePage />}
+      {/* key={route} 让切换页面时重建边界：否则在某页出错后，切到其它页
+          仍会停留在错误态（错误状态是持久的，不会因 children 变化自动清除）。 */}
+      <ErrorBoundary key={route}>
+        {route === 'dashboard' && <DashboardPage />}
+        {/* 凭据已并入渠道页；routeFromHash 会把旧的 #credentials 重定向到这里。 */}
+        {route === 'channels' && <ChannelsPage />}
+        {route === 'apiKeys' && <ApiKeysPage />}
+        {route === 'settings' && <SettingsPage />}
+        {route === 'logs' && <LogsPage />}
+        {route === 'performance' && <PerformancePage />}
+      </ErrorBoundary>
     </Shell>
   );
 }

@@ -12,7 +12,7 @@ export function MetricCard({
   tone?: 'ok' | 'warn' | 'bad';
 }) {
   const toneCls =
-    tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn-ink' : tone === 'bad' ? 'text-bad' : 'text-ink';
+    tone === 'ok' ? 'text-ok-ink' : tone === 'warn' ? 'text-warn-ink' : tone === 'bad' ? 'text-bad-ink' : 'text-ink';
   return (
     <article className="card grid gap-1 p-4">
       <span className="text-[12px] font-semibold text-ink-2">{label}</span>

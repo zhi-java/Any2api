@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import { Badge, Button, Card, EmptyState, Field, Input, PanelHeader, Switch, useToast } from '../components/ui';
+import { Badge, Button, Card, Field, Input, PanelHeader, Skeleton, Switch, useToast } from '../components/ui';
 import { MetricCard, MetricGrid } from '../components/Metric';
 import type { PublicConfig } from '../types';
 
@@ -30,7 +30,15 @@ export function SettingsPage() {
     void load();
   }, [load]);
 
-  if (!config) return <EmptyState title="加载运行配置…" />;
+  // 加载态用 Skeleton（此处原先用 EmptyState，语义错误：那是"没有数据"）。
+  if (!config) {
+    return (
+      <div className="grid gap-4">
+        <Skeleton className="h-12" />
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
 
   const { server, runtime, deepseek } = config;
 
@@ -71,13 +79,21 @@ export function SettingsPage() {
 
   return (
     <form onSubmit={save} className="grid gap-4">
-      <div className="flex flex-wrap gap-2">
+      {/* role=tablist + aria-selected 让读屏器知道这是一组选项卡而非普通按钮；
+          窄屏允许横向滚动，避免 5 个标签换行后挤压内容区。 */}
+      <div
+        role="tablist"
+        aria-label="设置分类"
+        className="flex gap-2 overflow-x-auto pb-1 max-sm:-mx-4 max-sm:px-4"
+      >
         {TABS.map(item => (
           <button
             key={item.id}
             type="button"
+            role="tab"
+            aria-selected={item.id === tab}
             onClick={() => setTab(item.id)}
-            className={`rounded-xl border px-4 py-2 text-sm font-bold transition ${
+            className={`shrink-0 cursor-pointer rounded-xl border px-4 py-2 text-sm font-bold transition ${
               item.id === tab
                 ? 'border-line-accent bg-accent-soft text-accent'
                 : 'border-line bg-surface text-ink-2 hover:text-ink'
@@ -226,8 +242,8 @@ export function SettingsPage() {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="text-left text-[12px] font-semibold text-ink-3">
-                  <th className="border-b border-line py-2 pr-3">变量</th>
-                  <th className="border-b border-line py-2">说明</th>
+                  <th scope="col" className="border-b border-line py-2 pr-3">变量</th>
+                  <th scope="col" className="border-b border-line py-2">说明</th>
                 </tr>
               </thead>
               <tbody>

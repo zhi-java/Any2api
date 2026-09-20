@@ -56,7 +56,8 @@ export function LogsPage() {
   return (
     <div className="grid gap-4">
       <Card className="py-3">
-        <div className="flex flex-wrap gap-2.5">
+        {/* 窄屏时三个下拉各占整行、搜索框铺满，避免挤在一行导致溢出 */}
+        <div className="grid gap-2.5 sm:grid-cols-[auto_auto_auto_minmax(0,1fr)]">
           <Select value={count} onChange={e => setCount(e.target.value)} aria-label="日志条数">
             {['30', '60', '100', '200'].map(item => (
               <option key={item} value={item}>
@@ -78,7 +79,7 @@ export function LogsPage() {
             placeholder="搜索日志"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="max-w-[280px]"
+            className="sm:max-w-none"
           />
         </div>
       </Card>
@@ -92,19 +93,23 @@ export function LogsPage() {
               return (
                 <article
                   key={`${log.time}-${index}`}
-                  className={`grid grid-cols-[92px_76px_1fr] items-start gap-3 rounded-xl border px-3 py-2 text-[13px] ${
+                  // 窄屏改为「时间+级别」一行、消息另起一行；宽屏仍是三列。
+                  // 原先固定 92px/76px 像素列在 375px 下会把消息挤到几乎不可读。
+                  className={`grid items-start gap-x-3 gap-y-1 rounded-xl border px-3 py-2 text-[13px] sm:grid-cols-[92px_76px_1fr] grid-cols-[92px_1fr] ${
                     LEVEL_TONE[level] ?? 'border-line bg-subtle'
                   }`}
                 >
                   <time className="tabular font-mono text-[12px] text-ink-3">{formatTime(log.time)}</time>
                   <strong
                     className={`text-[12px] font-bold ${
-                      level === 'error' ? 'text-bad' : level === 'warn' ? 'text-warn-ink' : 'text-ok'
+                      level === 'error' ? 'text-bad-ink' : level === 'warn' ? 'text-warn-ink' : 'text-ok-ink'
                     }`}
                   >
                     {log.level || ''}
                   </strong>
-                  <span className="break-all font-mono text-[12px] text-ink-2">{log.message || ''}</span>
+                  <span className="col-span-2 break-all font-mono text-[12px] text-ink-2 sm:col-span-1">
+                    {log.message || ''}
+                  </span>
                 </article>
               );
             })}

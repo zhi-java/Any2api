@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { api } from '../lib/api';
-import { usePolling } from '../lib/hooks';
 import { Badge, Card, EmptyState, PanelHeader, Skeleton, StatusBadge } from '../components/ui';
 import { MetricCard, MetricGrid } from '../components/Metric';
+import { CredentialsPanel } from '../components/CredentialsPanel';
+import { usePolling } from '../lib/hooks';
+import { api } from '../lib/api';
 import type { ChannelId } from '../types';
 
 const CAPABILITIES = [
@@ -14,8 +14,15 @@ const CAPABILITIES = [
   ['audio', '音频'],
 ] as const;
 
+/**
+ * 「渠道与凭据」页。
+ *
+ * 原先是两个平级页面（渠道 / 凭据），但它们管理的是同一批资源：渠道是上游
+ * 接入方式，凭据是挂在该渠道下的 token/账号。分成两页会让用户反复猜测
+ * "这件事该去哪一页"，也造成状态展示重复。现在合并为：上层渠道概览，
+ * 下层即该渠道的凭据管理。
+ */
 export function ChannelsPage() {
-  const [filter, setFilter] = useState<'all' | ChannelId>('all');
   const { data, loading } = usePolling(
     async () => {
       const [channels, models] = await Promise.all([api.getChannels(), api.getModels()]);
@@ -35,8 +42,7 @@ export function ChannelsPage() {
 
   const channels = data?.channels ?? [];
   const models = data?.models ?? [];
-  const visibleChannels = filter === 'all' ? channels : channels.filter(c => c.id === filter);
-  const visibleModels = filter === 'all' ? models : models.filter(m => m.channel === filter);
+  const activeChannel = (channels[0]?.id ?? 'deepseek') as ChannelId;
 
   return (
     <div className="grid gap-4">
@@ -47,78 +53,56 @@ export function ChannelsPage() {
         <MetricCard label="模型" value={models.length} hint="本地目录" />
       </MetricGrid>
 
-      <Card className="py-3">
-        <select
-          value={filter}
-          onChange={event => setFilter(event.target.value as 'all' | ChannelId)}
-          className="min-h-[38px] rounded-xl border border-line-strong bg-surface px-3 text-sm outline-none focus:border-accent"
-          aria-label="筛选渠道"
-        >
-          <option value="all">全部渠道</option>
-          <option value="deepseek">DeepSeek</option>
-        </select>
-      </Card>
-
       <Card>
-        <PanelHeader title="渠道" hint={`${visibleChannels.length} 项`} />
-        {visibleChannels.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="text-left text-[12px] font-semibold text-ink-3">
-                  <th className="border-b border-line py-2 pr-3">渠道</th>
-                  <th className="border-b border-line py-2 pr-3">状态</th>
-                  <th className="border-b border-line py-2 pr-3">凭据</th>
-                  <th className="border-b border-line py-2 pr-3">并发</th>
-                  <th className="border-b border-line py-2">错误</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleChannels.map(channel => (
-                  <tr key={channel.id}>
-                    <td className="border-b border-line py-3 pr-3">
-                      <strong>{channel.name || channel.id}</strong>
-                      <small className="block text-[12px] text-ink-3">{channel.mode}</small>
-                    </td>
-                    <td className="border-b border-line py-3 pr-3">
-                      <StatusBadge status={channel.status} />
-                    </td>
-                    <td className="tabular border-b border-line py-3 pr-3">
-                      <span>{channel.availableCount || 0}/{channel.credentialCount || 0}</span>
-                      {Number(channel.disabledCount ?? 0) > 0 ? (
-                        <small className="ml-1.5 text-[12px] text-warn-ink">
-                          {Number(channel.disabledCount)} 禁用
-                        </small>
-                      ) : null}
-                    </td>
-                    <td className="tabular border-b border-line py-3 pr-3">
-                      {channel.activeRequests || 0}/{channel.capacity || 0}
-                    </td>
-                    <td className="tabular border-b border-line py-3">{channel.usage?.errors || 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <PanelHeader title="渠道概览" hint={`${channels.length} 项`} />
+        {channels.length ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {channels.map(channel => (
+              <article
+                key={channel.id}
+                className={`grid gap-1.5 rounded-xl border p-4 ${
+                  channel.status === 'healthy'
+                    ? 'border-ok-line bg-ok-soft'
+                    : channel.status === 'degraded'
+                      ? 'border-warn/30 bg-warn-soft'
+                      : 'border-line bg-subtle'
+                }`}
+              >
+                <strong className="text-sm">{channel.name || channel.id}</strong>
+                <span className="text-[12px] text-ink-2">
+                  {channel.availableCount || 0}/{channel.credentialCount || 0} 凭据可用
+                  {Number(channel.disabledCount ?? 0) > 0 ? ` · ${Number(channel.disabledCount)} 已禁用` : ''}
+                </span>
+                <span className="text-[12px] text-ink-3">
+                  并发 {channel.activeRequests || 0}/{channel.capacity || 0}
+                </span>
+                <div className="mt-1">
+                  <StatusBadge status={channel.status} />
+                </div>
+              </article>
+            ))}
           </div>
         ) : (
           <EmptyState title="无渠道数据" />
         )}
       </Card>
 
+      <CredentialsPanel channel={activeChannel} />
+
       <Card>
-        <PanelHeader title="模型" hint={`${visibleModels.length} 项`} />
-        {visibleModels.length ? (
+        <PanelHeader title="模型" hint={`${models.length} 项`} />
+        {models.length ? (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="text-left text-[12px] font-semibold text-ink-3">
-                  <th className="border-b border-line py-2 pr-3">模型</th>
-                  <th className="border-b border-line py-2 pr-3">渠道</th>
-                  <th className="border-b border-line py-2">能力</th>
+                  <th scope="col" className="border-b border-line py-2 pr-3">模型</th>
+                  <th scope="col" className="border-b border-line py-2 pr-3">渠道</th>
+                  <th scope="col" className="border-b border-line py-2">能力</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleModels.map(model => (
+                {models.map(model => (
                   <tr key={model.id}>
                     <td className="border-b border-line py-3 pr-3">
                       <code className="font-mono text-[13px]">{model.id}</code>

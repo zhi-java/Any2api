@@ -134,14 +134,33 @@ export interface PublicConfig {
   deepseek: DeepSeekConfig;
 }
 
+export interface SessionInfo {
+  count: number;
+  ttl: number;
+  sessions: { key: string; modelType: string; ageSeconds: number; ttlRemainingSeconds: number; requestCount: number }[];
+}
+
+export interface ConversationInfo {
+  enabled?: boolean;
+  active?: number;
+  maxConversations?: number;
+  ttlMs?: number;
+  affinityEnabled: boolean;
+}
+
 export interface Stats {
   status: string;
   version: string;
   uptimeSeconds: number;
   serverUrl: string;
+  /** 出站代理。为 null 表示未配置 —— 所有账号共用同一出口 IP，风控风险显著升高。 */
   proxyUrl: string | null;
   queue: { queued: number; maxQueueSize: number };
   channels: Channel[];
+  /** 上游 token 池的总并发容量 */
+  totalCapacity: number;
+  sessions: SessionInfo;
+  conversations: ConversationInfo;
   logStats: { totalRequests: number; successCount: number; errorCount: number; last5min: number };
   metrics: Metrics;
 }

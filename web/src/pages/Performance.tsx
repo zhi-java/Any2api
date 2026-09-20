@@ -85,6 +85,9 @@ export function PerformancePage() {
   const [range, setRange] = useState('6h');
   const metrics = usePolling(() => api.getMetrics(), 15_000);
   const series = usePolling(() => api.getTimeseries(range), 15_000);
+  // 容量/会话/对话这些状态后端一直在返回，但界面从未展示——排障时
+  // "池子还能扛多少并发""会话缓存命中如何"都需要它们。
+  const stats = usePolling(() => api.getStats(), 15_000);
 
   const points = series.data?.points ?? [];
   const labels = timeLabels(points);
@@ -112,6 +115,30 @@ export function PerformancePage() {
         <MetricCard label="错误率" value={`${m.errorRate ?? 0}%`} hint="近期请求" />
       </MetricGrid>
 
+      <MetricGrid>
+        <MetricCard
+          label="并发容量"
+          value={stats.data?.totalCapacity ?? 0}
+          hint={`当前在途 ${stats.data?.channels?.reduce((s, c) => s + (c.activeRequests || 0), 0) ?? 0}`}
+        />
+        <MetricCard
+          label="会话缓存"
+          value={stats.data?.sessions?.count ?? 0}
+          hint={`TTL ${stats.data?.sessions?.ttl ?? 0}s`}
+        />
+        <MetricCard
+          label="队列"
+          value={stats.data?.queue?.queued ?? 0}
+          hint={`上限 ${stats.data?.queue?.maxQueueSize ?? 0}`}
+          tone={stats.data && stats.data.queue.queued > 0 ? 'warn' : undefined}
+        />
+        <MetricCard
+          label="对话亲和"
+          value={stats.data?.conversations?.affinityEnabled ? '已启用' : '未启用'}
+          hint={stats.data?.conversations?.active != null ? `${stats.data.conversations.active} 个活跃对话` : '运行时开关'}
+        />
+      </MetricGrid>
+
       <Card className="py-3">
         <div className="flex flex-wrap gap-1.5">
           {RANGES.map(item => (
@@ -119,7 +146,7 @@ export function PerformancePage() {
               key={item}
               type="button"
               onClick={() => setRange(item)}
-              className={`rounded-xl px-3 py-1.5 text-[13px] font-bold transition ${
+              className={`cursor-pointer rounded-xl px-3 py-1.5 text-[13px] font-bold transition ${
                 item === range ? 'bg-accent text-white' : 'bg-subtle text-ink-2 hover:text-ink'
               }`}
             >

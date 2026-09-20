@@ -129,18 +129,17 @@ test('禁用凭据不再参与分配，也不计入容量', async () => {
   }
 });
 
-test('禁用态写入 config.json，且从磁盘重载后仍保留（持久化）', async () => {
-  const dir = await setupEnv();
+test('磁盘来源凭据：禁用态与凭据本体都写入 config.json，重载后保留（持久化）', async () => {
+  // 这里的 token 通过 config.json 提供（非 env），因此应当落盘。
+  const dir = await setupEnv({ tokens: '' });
   try {
-    const auth = await import('../../src/services/auth.js');
     const configStore = await import('../../src/services/config-store.js');
+    configStore.updateConfig({ deepseek: { tokens: ['disk-token-AAA'], accounts: [] } });
+    configStore.loadConfig({ force: true });
+    const auth = await import('../../src/services/auth.js');
     auth.syncTokenPoolFromConfig();
 
-    const slot = auth.acquireToken();
-    const token = tokenOf(slot);
-    slot.release();
-
-    auth.disableToken(token, { reason: '账号被禁言', disabledUntil: Date.now() + 2_592_000_000 });
+    auth.disableToken('disk-token-AAA', { reason: '账号被禁言', disabledUntil: Date.now() + 2_592_000_000 });
 
     const config = readConfig();
     const stateIds = Object.keys(config?.deepseek?.credentialStates || {});
@@ -150,15 +149,43 @@ test('禁用态写入 config.json，且从磁盘重载后仍保留（持久化�
     assert.match(state.reason, /禁言/);
     assert.equal(state.source, 'auto');
 
-    // 凭据本体必须保留在 tokens 里，否则重启后禁用记录会被当成 stale key 剪掉。
-    assert.equal(config.deepseek.tokens.includes(token), true, '禁用中的 token 仍应写回配置');
+    // 磁盘来源的凭据本体必须保留，否则重启后禁用记录会被当成 stale key 剪掉。
+    assert.equal(config.deepseek.tokens.includes('disk-token-AAA'), true, '禁用中的磁盘 token 仍应写回配置');
 
     // 模拟重启：强制从磁盘重读配置，再同步进池。
     configStore.loadConfig({ force: true });
     auth.syncTokenPoolFromConfig();
-    const restored = auth.getPoolInfo().find(t => token.startsWith(t.token.replace('...', '')));
+    const restored = auth.getPoolInfo().find(t => 'disk-token-AAA'.startsWith(t.token.replace('...', '')));
     assert.ok(restored, '重启同步后凭据应仍在池中');
     assert.equal(restored.disabled, true, '重启同步后禁用态应保留');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('env 来源凭据：凭据本体不落盘，但禁用态持久化且重启后经并集重新生效', async () => {
+  // env 是凭据的外部权威来源：不应把机密复制进 config.json。
+  // 但禁用态必须持久化，否则重启后风控标记会丢失、凭据"复活"。
+  const dir = await setupEnv({ tokens: 'env-token-AAA' });
+  try {
+    const auth = await import('../../src/services/auth.js');
+    const configStore = await import('../../src/services/config-store.js');
+    auth.syncTokenPoolFromConfig();
+
+    auth.disableToken('env-token-AAA', { reason: '账号被封禁', disabledUntil: Date.now() + 86_400_000 });
+
+    const config = readConfig();
+    assert.equal(config.deepseek.tokens.includes('env-token-AAA'), false,
+      'env 来源的凭据不应被写入磁盘（避免机密副本）');
+    const stateIds = Object.keys(config?.deepseek?.credentialStates || {});
+    assert.equal(stateIds.length, 1, '禁用态仍应被持久化');
+
+    // 模拟重启：env 依旧提供该凭据，禁用态应重新套用。
+    configStore.loadConfig({ force: true });
+    auth.syncTokenPoolFromConfig();
+    const restored = auth.getPoolInfo().find(t => 'env-token-AAA'.startsWith(t.token.replace('...', '')));
+    assert.ok(restored, 'env 凭据应在重启后经并集合并回到池中');
+    assert.equal(restored.disabled, true, '重启后禁用态不应丢失（否则风控标记被绕过）');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

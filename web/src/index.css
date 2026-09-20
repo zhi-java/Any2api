@@ -16,16 +16,23 @@
   --color-line-strong: #cbd5e1;
   --color-line-accent: #c7d2fe;
 
+  /* 文字色阶：三级全部满足 WCAG AA（≥4.5:1 于 surface/canvas/subtle 三种底色）。
+     旧值 ink-3 #94a3b8 仅 2.45~2.56，辅助信息（时间戳、提示文案、凭据原因）
+     实际读不清，属于真实可读性缺陷而非审美问题。 */
   --color-ink: #0f172a;
-  --color-ink-2: #64748b;
-  --color-ink-3: #94a3b8;
+  --color-ink-2: #475569;
+  --color-ink-3: #6b7280;
 
   --color-accent: #4f46e5;
   --color-accent-hover: #4338ca;
 
+  /* ok/bad 的亮色（#10b981/#ef4444）对比度不足，只用于圆点、进度条等
+     图形元素；文字一律用下面带 -ink 后缀的深色变体（≥4.5:1）。
+     这与既有的 --color-warn-ink 保持同一模式。 */
   --color-ok: #10b981;
   --color-ok-soft: #ecfdf5;
   --color-ok-line: #bbf7d0;
+  --color-ok-ink: #047857;
 
   --color-warn: #f59e0b;
   --color-warn-soft: #fffbeb;
@@ -33,6 +40,7 @@
 
   --color-bad: #ef4444;
   --color-bad-soft: #fef2f2;
+  --color-bad-ink: #b91c1c;
 
   --color-info: #6366f1;
   --color-cyan: #06b6d4;

@@ -1,4 +1,14 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { ChannelStatus } from '../types';
 import { statusLabel, statusTone } from '../lib/format';
 
@@ -14,14 +24,17 @@ export function PanelHeader({
   title,
   hint,
   action,
+  titleId,
 }: {
   title: string;
   hint?: ReactNode;
   action?: ReactNode;
+  /** 供 Modal 的 aria-labelledby 关联标题。 */
+  titleId?: string;
 }) {
   return (
     <div className="mb-3 flex items-center justify-between gap-3">
-      <h2 className="text-[16px] font-bold text-ink">{title}</h2>
+      <h2 id={titleId} className="text-[16px] font-bold text-ink">{title}</h2>
       <div className="flex items-center gap-3 text-[12px] font-semibold text-ink-3">
         {hint}
         {action}
@@ -31,9 +44,9 @@ export function PanelHeader({
 }
 
 const BADGE_TONE = {
-  ok: 'bg-ok-soft text-ok border-ok-line',
+  ok: 'bg-ok-soft text-ok-ink border-ok-line',
   warn: 'bg-warn-soft text-warn-ink border-warn/30',
-  bad: 'bg-bad-soft text-bad border-bad/30',
+  bad: 'bg-bad-soft text-bad-ink border-bad/30',
   muted: 'bg-subtle text-ink-2 border-line',
   accent: 'bg-accent-soft text-accent border-line-accent',
 } as const;
@@ -62,7 +75,10 @@ const BTN_VARIANT = {
   primary: 'bg-accent text-white hover:bg-accent-hover shadow-[0_8px_20px_rgba(79,70,229,0.22)]',
   secondary: 'bg-accent-soft text-accent hover:bg-line-accent/50',
   ghost: 'bg-surface text-ink border border-line hover:border-line-strong',
-  danger: 'bg-surface text-bad border border-bad/30 hover:bg-bad-soft',
+  danger: 'bg-surface text-bad-ink border border-bad/30 hover:bg-bad-soft',
+  // 实心危险按钮：用于确认对话框的主操作。用 bad-ink(#b91c1c) 作底色，
+  // 白字对比度 6.47:1（bad 亮色 #ef4444 只有 3.76:1，不足以承载正文）。
+  'danger-solid': 'bg-bad-ink text-white hover:bg-bad shadow-[0_8px_20px_rgba(185,28,28,0.22)]',
 } as const;
 
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -76,7 +92,9 @@ export function Button({ variant = 'primary', size = 'md', className = '', ...re
     <button
       type="button"
       {...rest}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sizeCls} ${BTN_VARIANT[variant]} ${className}`}
+      // cursor-pointer 是必需的：Tailwind v4 的 preflight 把 button 默认设为
+      // cursor: default，若不显式声明，所有按钮悬停时都不会显示手型光标。
+      className={`inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-xl font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sizeCls} ${BTN_VARIANT[variant]} ${className}`}
     />
   );
 }
@@ -132,8 +150,11 @@ export function Switch({
         type="button"
         role="switch"
         aria-checked={checked}
+        // 视觉 label 在 button 之外，按钮自身需要一个可访问名，否则读屏器
+        // 只会念出"开关"而不知其含义。
+        aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors ${
+        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full border transition-colors ${
           checked ? 'border-accent bg-accent' : 'border-line-strong bg-line'
         }`}
       >
@@ -190,9 +211,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const toneCls: Record<Tone, string> = useMemo(
     () => ({
       info: 'border-line bg-surface text-ink',
-      success: 'border-ok-line bg-ok-soft text-ok',
+      success: 'border-ok-line bg-ok-soft text-ok-ink',
       warning: 'border-warn/30 bg-warn-soft text-warn-ink',
-      danger: 'border-bad/30 bg-bad-soft text-bad',
+      danger: 'border-bad/30 bg-bad-soft text-bad-ink',
     }),
     [],
   );
@@ -200,7 +221,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={push}>
       {children}
-      <div className="pointer-events-none fixed bottom-6 right-6 z-50 grid gap-2">
+      {/* role=status + aria-live=polite 让读屏器播报操作结果。
+          此前 Toast 是纯视觉的，而页面内容区却包了 aria-live —— 优先级正好
+          反了：真正该播报的"保存成功/删除失败"被漏掉，轮询刷新反而会吵。 */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="false"
+        className="pointer-events-none fixed bottom-6 right-6 z-50 grid gap-2"
+      >
         {items.map(item => (
           <div
             key={item.id}
@@ -218,6 +247,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 // 模态
 // ============================================================
 
+/**
+ * 模态框（含完整键盘与读屏器支持）。
+ *
+ * 补上了三项 WAI-ARIA 对话框的必要能力，缺任一项都会让键盘/读屏器用户
+ * 无法正常使用（此前三者皆无）：
+ *   1. role="dialog" + aria-modal + aria-labelledby —— 声明这是对话框并关联标题；
+ *   2. Esc 关闭 —— 键盘用户的预期逃生通道；
+ *   3. 焦点管理 —— 打开时移入弹窗、关闭后归还触发元素；Tab 在弹窗内循环，
+ *      避免焦点跑到被遮罩的页面内容上（背景内容对键盘用户实际不可达）。
+ */
 export function Modal({
   title,
   hint,
@@ -231,19 +270,64 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
 }) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    // 记录触发元素，关闭后把焦点还回去（否则焦点会丢失到 body）。
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !panelRef.current) return;
+
+      // 焦点陷阱：Tab 在弹窗内首尾循环。
+      const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      previouslyFocused?.focus?.();
+    };
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center p-6">
-      <div className="absolute inset-0 bg-ink/20 backdrop-blur-[2px]" onClick={onClose} />
-      <div className="card relative z-10 max-h-[85vh] w-full max-w-2xl overflow-auto p-6">
+      <div className="absolute inset-0 bg-ink/20 backdrop-blur-[2px]" onClick={onClose} aria-hidden="true" />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="card relative z-10 max-h-[85vh] w-full max-w-2xl overflow-auto p-6"
+      >
         <PanelHeader
           title={title}
           hint={hint}
+          titleId={titleId}
           action={
             <button
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="rounded-lg px-2 py-1 text-ink-3 hover:bg-subtle hover:text-ink"
+              className="cursor-pointer rounded-lg px-2 py-1 text-ink-3 hover:bg-subtle hover:text-ink"
             >
               ✕
             </button>

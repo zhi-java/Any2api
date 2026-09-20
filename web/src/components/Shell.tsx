@@ -1,5 +1,8 @@
-import { useState, type ReactNode } from 'react';
-import { ROUTES, type RouteId } from '../lib/router';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { LogOut, Menu, X } from 'lucide-react';
+import { NAV_GROUPS, ROUTES, type RouteId } from '../lib/router';
+import { usePolling } from '../lib/hooks';
+import { api } from '../lib/api';
 
 export function BrandMark({ size = 42 }: { size?: number }) {
   return (
@@ -66,19 +69,86 @@ export function LoginView({
           />
         </label>
         {error ? (
-          <div className="rounded-xl border border-bad/30 bg-bad-soft px-3 py-2.5 text-sm text-bad" role="alert">
+          <div className="rounded-xl border border-bad/30 bg-bad-soft px-3 py-2.5 text-sm text-bad-ink" role="alert">
             {error}
           </div>
         ) : null}
         <button
           type="submit"
           disabled={busy}
-          className="min-h-[42px] rounded-xl bg-accent px-4 py-2.5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(79,70,229,0.22)] transition hover:bg-accent-hover disabled:opacity-60"
+          className="min-h-[42px] cursor-pointer rounded-xl bg-accent px-4 py-2.5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(79,70,229,0.22)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? '登录中…' : '登录'}
         </button>
       </form>
     </div>
+  );
+}
+
+/** 侧栏底部的全局健康指示：运维面板的核心价值是"扫一眼知道有没有事"。 */
+function PoolStatus() {
+  const { data } = usePolling(() => api.getStats(), 30_000);
+  if (!data) return null;
+
+  const channel = data.channels?.[0];
+  const available = channel?.availableCount ?? 0;
+  const disabled = channel?.disabledCount ?? 0;
+  const healthy = channel?.status === 'healthy';
+
+  return (
+    <div className="grid gap-1.5 rounded-xl border border-line bg-subtle p-3">
+      <div className="flex items-center gap-2">
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${healthy ? 'bg-ok' : 'bg-bad'}`}
+          aria-hidden="true"
+        />
+        <strong className="text-[12px] text-ink">
+          {healthy ? '运行正常' : '需要关注'}
+        </strong>
+      </div>
+      <span className="text-[12px] text-ink-3">
+        {available} 个凭据可用
+        {disabled > 0 ? ` · ${disabled} 个已禁用` : ''}
+      </span>
+      {/* 未配置代理时在此也提示一句：风控是账号池最致命的故障模式，
+          不该只在首页可见。 */}
+      {!data.proxyUrl ? (
+        <span className="text-[12px] font-semibold text-warn-ink">未配置出站代理</span>
+      ) : null}
+      <span className="text-[11px] text-ink-3">v{data.version}</span>
+    </div>
+  );
+}
+
+function NavLinks({ route, onNavigate }: { route: RouteId; onNavigate?: () => void }) {
+  return (
+    <nav className="grid gap-4" aria-label="主导航">
+      {NAV_GROUPS.map(group => (
+        <div key={group.title} className="grid gap-1">
+          <span className="px-3 text-[11px] font-bold uppercase tracking-[0.12em] text-ink-3">
+            {group.title}
+          </span>
+          {group.items.map(item => {
+            const active = item.id === route;
+            const Icon = item.icon;
+            return (
+              <a
+                key={item.id}
+                href={`#${item.id}`}
+                onClick={onNavigate}
+                aria-current={active ? 'page' : undefined}
+                className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors ${
+                  active ? 'bg-accent-soft text-accent' : 'text-ink-2 hover:bg-subtle hover:text-ink'
+                }`}
+              >
+                <Icon size={17} aria-hidden="true" className="shrink-0" />
+                {item.label}
+              </a>
+            );
+          })}
+        </div>
+      ))}
+    </nav>
   );
 }
 
@@ -92,63 +162,120 @@ export function Shell({
   children: ReactNode;
 }) {
   const current = ROUTES.find(item => item.id === route) ?? ROUTES[0];
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+
+  // 路由变化时自动关闭抽屉：点完导航项不该还停留在遮罩上。
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [route]);
+
+  // 抽屉打开时：Esc 关闭 + 焦点移入 + 锁滚动。
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    drawerRef.current?.focus();
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [drawerOpen]);
 
   return (
-    <div className="grid min-h-screen grid-cols-[248px_1fr] max-lg:grid-cols-1">
-      <aside className="border-r border-line bg-surface p-4 max-lg:hidden">
-        <div className="mb-6 flex items-center gap-3 px-1.5">
+    <div className="grid min-h-screen grid-cols-[248px_minmax(0,1fr)] max-lg:grid-cols-1">
+      {/* 桌面侧栏 */}
+      <aside className="flex flex-col gap-4 border-r border-line bg-surface p-4 max-lg:hidden">
+        <div className="flex items-center gap-3 px-1.5">
           <BrandMark size={38} />
           <div className="grid">
             <strong className="text-[15px]">OmniAPI</strong>
-            <span className="text-[12px] text-ink-3">本地 AI 网关</span>
+            <span className="text-[12px] text-ink-3">AI 网关控制台</span>
           </div>
         </div>
-        <nav className="grid gap-1" aria-label="主导航">
-          {ROUTES.map(item => {
-            const active = item.id === route;
-            return (
-              <a
-                key={item.id}
-                href={`#${item.id}`}
-                aria-current={active ? 'page' : undefined}
-                className={`rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors ${
-                  active
-                    ? 'bg-accent-soft text-accent'
-                    : 'text-ink-2 hover:bg-subtle hover:text-ink'
-                }`}
-              >
-                {item.label}
-              </a>
-            );
-          })}
-        </nav>
+        <NavLinks route={route} />
+        <div className="mt-auto">
+          <PoolStatus />
+        </div>
       </aside>
+
+      {/* 移动端抽屉：窄屏下侧栏隐藏，若无此入口则完全无法切换页面 */}
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]"
+            onClick={() => setDrawerOpen(false)}
+            aria-hidden="true"
+          />
+          <div
+            ref={drawerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="导航菜单"
+            tabIndex={-1}
+            className="relative z-10 flex h-full w-[272px] max-w-[85vw] flex-col gap-4 overflow-y-auto bg-surface p-4 shadow-[var(--shadow-card)] outline-none"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <BrandMark size={34} />
+                <strong className="text-[15px]">OmniAPI</strong>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(false)}
+                aria-label="关闭导航"
+                className="cursor-pointer rounded-lg p-2 text-ink-3 transition hover:bg-subtle hover:text-ink"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+            <NavLinks route={route} onNavigate={() => setDrawerOpen(false)} />
+            <div className="mt-auto">
+              <PoolStatus />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <main className="min-w-0">
         <header className="flex items-center justify-between gap-4 border-b border-line bg-canvas/80 px-7 py-5 backdrop-blur max-lg:px-4">
-          <div>
-            <p className="m-0 text-[12px] font-bold uppercase tracking-[0.14em] text-accent">
-              {current.eyebrow}
-            </p>
-            <h1 className="m-0 text-[24px] font-extrabold tracking-[-0.02em]">{current.label}</h1>
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              aria-label="打开导航菜单"
+              aria-expanded={drawerOpen}
+              className="cursor-pointer rounded-xl border border-line bg-surface p-2 text-ink-2 transition hover:border-line-strong hover:text-ink lg:hidden"
+            >
+              <Menu size={18} aria-hidden="true" />
+            </button>
+            <div className="min-w-0">
+              <p className="m-0 text-[12px] font-bold uppercase tracking-[0.14em] text-accent">
+                {current.eyebrow}
+              </p>
+              <h1 className="m-0 truncate text-[24px] font-extrabold tracking-[-0.02em]">{current.label}</h1>
+            </div>
           </div>
           <button
             type="button"
             onClick={onLogout}
             title="退出登录"
             aria-label="退出登录"
-            className="rounded-xl border border-line bg-surface px-3 py-2 text-ink-2 transition hover:border-line-strong hover:text-ink"
+            className="flex cursor-pointer items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-ink-2 transition hover:border-line-strong hover:text-ink"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M10 4a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V6H6v12h3v-1a1 1 0 1 1 2 0v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5Zm6.3 4.3 3 3a1 1 0 0 1 0 1.4l-3 3a1 1 0 1 1-1.4-1.4l1.29-1.3H10a1 1 0 1 1 0-2h6.19L14.9 9.7a1 1 0 0 1 1.4-1.4Z"
-                fill="currentColor"
-              />
-            </svg>
+            <LogOut size={16} aria-hidden="true" />
+            <span className="hidden text-sm font-semibold sm:inline">退出</span>
           </button>
         </header>
 
-        <div className="p-7 max-lg:p-4" aria-live="polite">
+        {/* 这里刻意不加 aria-live：包住整个内容区会让每次轮询刷新（10~15 秒一次）
+            都触发读屏器播报，成为噪音源。该播报的是操作结果，已由 Toast 承担
+            （见 ui.tsx 的 ToastProvider）。 */}
+        <div className="mx-auto w-full max-w-[1440px] p-7 max-lg:p-4">
           {children}
         </div>
       </main>
