@@ -137,7 +137,7 @@ docker build -t omni:latest .
 docker run -d \
   --name omni \
   -p 3000:3000 \
-  -e DS_ACCOUNTS=
+  -e DS_ACCOUNTS="email:password" \
   -e API_KEY="sk-your-key" \
   -v $(pwd)/logs:/app/logs \
   --restart unless-stopped \
@@ -196,11 +196,11 @@ docker-compose up -d --scale omni=3
 
 ```env
 # DeepSeek 认证（至少配置一种）
-DS_ACCOUNTS=
+DS_ACCOUNTS=email1:password1,email2:password2
 # 或
-DS_TOKENS=
+DS_TOKENS=token1,token2
 # 或
-DS_TOKEN=
+DS_TOKEN=single_token
 
 # API 鉴权（生产环境必需）
 API_KEY=sk-your-secret-key

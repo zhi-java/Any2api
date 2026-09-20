@@ -38,7 +38,7 @@ docker pull ghcr.io/zhi-java/any2api:latest
 docker run -d \
   --name omni \
   -p 3000:3000 \
-  -e DS_ACCOUNTS=
+  -e DS_ACCOUNTS="email:password" \
   -e API_KEY="sk-your-key" \
   -v omni-data:/data \
   -v "$(pwd)/logs:/app/logs" \

@@ -16,9 +16,9 @@ function tokenDeadThreshold() {
   return getConfig().deepseek.tokenDeadThreshold;
 }
 
-// Multi-token support: DS_TOKENS=
-// Fallback: DS_TOKEN=
-// Account support: DS_ACCOUNTS=
+// Multi-token support: DS_TOKENS=token1,token2,token3 (comma-separated)
+// Fallback: DS_TOKEN=single_token
+// Account support: DS_ACCOUNTS=email1:pass1,email2:pass2 (auto-login to refresh tokens)
 export function loadTokens() {
   const tokensStr = process.env.DS_TOKENS?.trim();
   if (tokensStr) {
@@ -48,7 +48,7 @@ function generateDeviceId() {
   return Buffer.from(bytes).toString('base64').replace(/=/g, '') + '==';
 }
 
-// DS_ACCOUNTS_EXTENDED=
+// DS_ACCOUNTS_EXTENDED=email:password:token_prefix — links existing tokens to accounts
 function loadAccountTokens() {
   const extStr = process.env.DS_ACCOUNTS_EXTENDED?.trim();
   if (!extStr) return [];

@@ -64,7 +64,7 @@ npm start
 docker run -d \
   --name omni \
   -p 3000:3000 \
-  -e DS_ACCOUNTS=
+  -e DS_ACCOUNTS="邮箱:密码" \
   -e API_KEY="sk-zhi" \
   -v omni-data:/data \
   -v "$(pwd)/logs:/app/logs" \
@@ -81,8 +81,8 @@ docker run -d \
 cp .env.docker .env
 
 # 2. 编辑 .env，配置 DeepSeek 认证信息
-#    例如 DeepSeek: DS_ACCOUNTS=
-#    或 DS_TOKENS=
+#    例如 DeepSeek: DS_ACCOUNTS="邮箱:密码,邮箱:密码"
+#    或 DS_TOKENS="token1,token2"
 
 # 3. 启动服务（默认拉取上面的发布镜像）
 docker compose up -d
@@ -155,9 +155,9 @@ OpenAI 的 `image_url`、Claude 的 `image_source`、Responses 的 `input_image`
 ```bash
 # 上游认证（二选一）
 # 方式一：账号密码，逗号分隔（推荐，token 失效时自动重新登录）
-DS_ACCOUNTS=
+DS_ACCOUNTS="邮箱:密码,邮箱:密码"
 # 方式二：直接给 token，逗号分隔
-DS_TOKENS=
+DS_TOKENS="token1,token2"
 
 # 服务端口（宿主机侧；Docker 部署时映射到此端口）
 PORT=3000

@@ -108,9 +108,9 @@ docker-compose up -d --build
 
 ```env
 # DeepSeek 认证（至少配置一种）
-DS_ACCOUNTS=
-DS_TOKENS=
-DS_TOKEN=
+DS_ACCOUNTS=email:password
+DS_TOKENS=token1,token2
+DS_TOKEN=single_token
 
 # API 鉴权（生产环境必需）
 API_KEY=sk-your-key
