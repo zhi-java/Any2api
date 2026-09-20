@@ -16,14 +16,24 @@ class RequestRecord {
 }
 
 const requestBuffer = []; // all recent records (capped at 5000)
-const BUFFER_CAP = 5000;
+// 内存缓冲上限。低配服务器上刻意收紧：
+//   requestBuffer 5000→1000（滑动窗口只需近几分钟的数据）
+//   sessionEvents 2000→500（仅用于算命中率）
+//   timeseries    4320→2880（72h→48h，每点约 200B）
+// 均可通过环境变量覆盖。
+function cap(name, fallback) {
+  const parsed = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const BUFFER_CAP = cap('METRICS_REQUEST_BUFFER_CAP', 1000);
 
 // Session hit/miss counters (sliding window)
 const sessionEvents = []; // { time, hit: bool }
-const SESSION_CAP = 2000;
+const SESSION_CAP = cap('METRICS_SESSION_EVENTS_CAP', 500);
 
 // Timeseries snapshots (1 per minute, 72h = 4320 points)
-const TIMESERIES_CAP = 4320;
+const TIMESERIES_CAP = cap('METRICS_TIMESERIES_CAP', 2880);
 const timeseries = []; // { ts, rpm, ttfbP50, ttfbP90, tokenSpeed, sessionHitRate, errorRate, perModel: {} }
 let lastSnapshotTime = 0;
 

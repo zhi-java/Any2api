@@ -1,6 +1,11 @@
 import { acquireToken, getPoolInfo, getTotalCapacity } from './auth.js';
 
-const MAX_QUEUE_SIZE = 100;
+// 队列上限。低配服务器上 100 个排队请求意义不大（多数会先超时），
+// 反而让等待时间拉长、内存与连接占用变高。收紧到 50，可用 QUEUE_MAX_SIZE 覆盖。
+const MAX_QUEUE_SIZE = (() => {
+  const parsed = parseInt(process.env.QUEUE_MAX_SIZE || '50', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
+})();
 const queue = [];
 
 const OVERLOAD_LOG_COOLDOWN = 60_000; // 1 min between overload logs to avoid spam

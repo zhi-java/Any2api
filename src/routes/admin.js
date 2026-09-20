@@ -14,7 +14,7 @@ import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, remove
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
 import { getQueueInfo } from '../services/queue.js';
-import { filterLogs, getLogStats, readHistoricalLogs, readChatLogs, readRecentLogs, listLogDates } from '../middleware/logger.js';
+import { getLogStats, readRecentLogs } from '../middleware/logger.js';
 import { getMetrics } from '../middleware/metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
 import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig } from '../services/config-store.js';
@@ -447,23 +447,15 @@ router.get('/api/logs', (req, res) => {
   res.json({ logs, stats: getLogStats() });
 });
 
-router.get('/api/logs/dates', (req, res) => {
-  res.json({ dates: listLogDates() });
-});
-
-router.get('/api/logs/history', (req, res) => {
-  const { date } = req.query;
-  if (!date) return res.status(400).json({ error: { message: 'date param required (YYYY-MM-DD)' } });
-  const count = Math.min(parseInt(req.query.count) || 100, 10000);
-  const logs = filterLogs(readHistoricalLogs(date, count), logFiltersFromQuery(req.query)).slice().reverse().map(decorateLog);
-  res.json({ logs });
-});
-
-router.get('/api/logs/chats', (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
-  const count = Math.min(parseInt(req.query.count) || 100, 10000);
-  res.json({ chats: readChatLogs(date, count), total: count });
-});
+// 历史日志 / 完整对话读取端点（/api/logs/dates、/api/logs/history、
+// /api/logs/chats）已移除。
+//
+// 原因：它们会把整天的 jsonl（实测单日 26MB~68MB）全量读入内存，在低配
+// 服务器上单个请求即可造成数十 MB 尖峰；且前端从未调用过这三个端点。
+// 需要回溯历史请直接读取日志文件：
+//   tail -n 200 <logDir>/omni/YYYY-MM-DD.jsonl
+//
+// 近期日志仍由 /api/logs 提供（读内存环形缓冲，有上限，不碰磁盘）。
 
 // ============= Token 管理 API =============
 

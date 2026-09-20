@@ -36,6 +36,19 @@ services:
       # 日志目录（挂载到宿主机 ./logs）
       LOG_DIR: /app/logs
 
+      # ---- 低配服务器内存护栏（可按机器规格调整）----
+      # 显式限制 V8 堆上限，让 GC 更早介入，避免被宿主 OOM Killer 直接杀掉
+      # （进程被杀时不会有任何日志，最难排查）。建议为容器内存上限的 60%~75%。
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=512}
+      # 请求体上限（MB）。原为硬编码 50MB，实测客户端最大约 2.3MB。
+      MAX_REQUEST_BODY_MB: ${MAX_REQUEST_BODY_MB:-25}
+      # 单次响应在内存中的捕获上限（字符）。超限后日志只记元数据+截断正文。
+      LOG_RESPONSE_CAPTURE_MAX_CHARS: ${LOG_RESPONSE_CAPTURE_MAX_CHARS:-262144}
+      # 近期日志内存条数上限
+      LOG_MEMORY_LIMIT: ${LOG_MEMORY_LIMIT:-300}
+      # 排队请求上限
+      QUEUE_MAX_SIZE: ${QUEUE_MAX_SIZE:-50}
+
       # 出站代理（可选，需要时取消注释）
       # HTTPS_PROXY: ${HTTPS_PROXY:-}
       # HTTP_PROXY: ${HTTP_PROXY:-}
