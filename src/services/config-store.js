@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { appRootPath } from '../utils/runtime-paths.js';
@@ -10,9 +10,13 @@ const DEFAULT_CONFIG = Object.freeze({
     apiKeys: [],
     mergeThinking: false,
     enablePromptInjection: true,
+    // 客户端调试日志默认关闭：它会记录完整请求/响应正文（含用户对话内容），
+    // 是磁盘与内存增长最快的部分（实测单日可达 37MB）。仅在排障时临时开启。
     clientDebugLog: false,
     clientDebugLogDir: '',
-    clientDebugLogMaxChars: 200000,
+    // 单字段记录上限。默认 64KB（原 200KB）：配合 logger 的整文件 20MB 上限，
+    // 避免单条记录就把内存/磁盘吃掉一大块。
+    clientDebugLogMaxChars: 65536,
     systemFingerprint: 'fp_omni_v1',
   },
   runtime: {
@@ -54,6 +58,11 @@ let loaded = false;
 let config = clone(DEFAULT_CONFIG);
 let configPath = null;
 let configLoadError = null;
+
+// 由环境变量（.env）提供的凭据 id 集合。用途有二：
+//   1. 持久化时剔除——不把来自 .env 的机密复制一份写进 config.json；
+//   2. 禁用态剪枝时视为有效凭据——否则 env 凭据的禁用态会在重启后被误剪。
+let envCredentialIds = new Set();
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -110,15 +119,42 @@ function parseAccounts(value) {
   }).filter(Boolean);
 }
 
-function serializeAccounts(accounts = []) {
-  return accounts
-    .filter(item => item?.email && item?.password)
-    .map(item => `${item.email}:${item.password}`)
-    .join(',');
-}
-
 function uniqueStrings(values = []) {
   return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+/**
+ * 合并「环境变量来源」与「磁盘配置来源」的凭据，取并集去重。
+ *
+ * 语义（与其它配置项的"磁盘覆盖 env"刻意不同）：
+ *   - 凭据是**累加**语义：env 与磁盘里各自配置的凭据都应当生效，谁都不丢；
+ *   - env 来源排在前面（更接近"显式声明"，且便于排查）；
+ *   - 精确字符串去重。DeepSeek 的 token 是 64 字符无结构的 base64 随机串
+ *     （实测解码为 48 字节随机数据，非 JWT、无分隔符、无共享前缀），因此
+ *     **无法提取任何标识做语义去重**，只能按字符串全等比较；
+ *   - 账号按 `email:password` 去重，与 secretId 的口径一致。
+ *
+ * @param {string[]} envTokens  来自 DS_TOKENS / DS_TOKEN
+ * @param {string[]} diskTokens 来自 config.json 的 deepseek.tokens
+ * @param {object[]} envAccounts
+ * @param {object[]} diskAccounts
+ */
+function mergeCredentials(envTokens, diskTokens, envAccounts, diskAccounts) {
+  const tokens = uniqueStrings([...(envTokens || []), ...(diskTokens || [])]);
+
+  const seen = new Set();
+  const accounts = [];
+  for (const account of [...(envAccounts || []), ...(diskAccounts || [])]) {
+    const email = String(account?.email || '').trim();
+    const password = String(account?.password || '').trim();
+    if (!email || !password) continue;
+    const key = `${email}:${password}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    accounts.push({ email, password });
+  }
+
+  return { tokens, accounts };
 }
 
 function normalizeAccounts(accounts = []) {
@@ -148,6 +184,9 @@ function normalizeCredentialStates(states, tokens = [], accounts = []) {
   const validIds = new Set([
     ...tokens.map(value => secretId(value)),
     ...accounts.map(account => secretId(`${account.email}:${account.password}`)),
+    // 环境变量提供的凭据也算有效：它们不落盘，但禁用态需要保留，
+    // 否则重启后 .env 凭据的禁用记录会被当 stale key 剪掉而"复活"。
+    ...envCredentialIds,
   ]);
 
   const normalized = {};
@@ -194,7 +233,11 @@ function normalizeConfig(input) {
   merged.server.enablePromptInjection = merged.server.enablePromptInjection !== false;
   merged.server.clientDebugLog = Boolean(merged.server.clientDebugLog);
   merged.server.clientDebugLogDir = String(merged.server.clientDebugLogDir || '').trim();
-  merged.server.clientDebugLogMaxChars = parseIntValue(merged.server.clientDebugLogMaxChars, 200000, 1000);
+  merged.server.clientDebugLogMaxChars = parseIntValue(
+    merged.server.clientDebugLogMaxChars,
+    DEFAULT_CONFIG.server.clientDebugLogMaxChars,
+    1000,
+  );
   merged.server.systemFingerprint = String(merged.server.systemFingerprint || 'fp_omni_v1').trim() || 'fp_omni_v1';
 
   merged.runtime.sessionTtlSeconds = parseIntValue(merged.runtime.sessionTtlSeconds, 1800, 1);
@@ -296,14 +339,45 @@ export function loadConfig({ force = false } = {}) {
   configPath = resolveConfigPath();
   configLoadError = null;
   let disk = {};
+  let diskCorrupted = false;
   try {
     disk = readDiskConfig(configPath);
   } catch (error) {
     configLoadError = error.message;
-    console.warn(`Failed to load config ${configPath}: ${error.message}`);
+    diskCorrupted = true;
+    console.warn(
+      `Failed to load config ${configPath}: ${error.message}\n`
+      + '  → 已跳过该文件（不会用空配置覆盖内存中的既有配置）。'
+      + '请修复或删除该文件后重启。',
+    );
   }
 
-  config = normalizeConfig(deepMerge(envConfig(), disk));
+  const fromEnv = envConfig();
+
+  // 磁盘配置损坏时，绝不能用空对象继续 —— 那会把已有的凭据/设置静默清空
+  // （历史上表现为"凭据莫名其妙全没了"）。已加载过则保留内存里那份，
+  // 并让后续 saveConfig 有机会把修复后的配置写回。
+  if (diskCorrupted && loaded) return config;
+
+  const merged = deepMerge(fromEnv, disk);
+
+  // 凭据取并集而非"磁盘覆盖 env"：见 mergeCredentials 的说明。
+  // 先记录 env 来源（用于持久化时剔除与禁用态剪枝），再覆盖合并结果。
+  envCredentialIds = new Set([
+    ...(fromEnv.deepseek?.tokens || []).map(value => secretId(value)),
+    ...(fromEnv.deepseek?.accounts || []).map(a => secretId(`${a.email}:${a.password}`)),
+  ]);
+  merged.deepseek = merged.deepseek || {};
+  const credentials = mergeCredentials(
+    fromEnv.deepseek?.tokens,
+    disk.deepseek?.tokens,
+    fromEnv.deepseek?.accounts,
+    disk.deepseek?.accounts,
+  );
+  merged.deepseek.tokens = credentials.tokens;
+  merged.deepseek.accounts = credentials.accounts;
+
+  config = normalizeConfig(merged);
   loaded = true;
   return config;
 }
@@ -334,8 +408,12 @@ export function applyConfigToProcessEnv() {
   setEnv('ENABLE_FC_ERROR_RETRY', current.runtime.enableFcErrorRetry ? 'true' : 'false');
   setEnv('LOG_DIR', current.runtime.logDir);
 
-  setEnv('DS_TOKENS', current.deepseek.tokens.join(','));
-  setEnv('DS_ACCOUNTS', serializeAccounts(current.deepseek.accounts));
+  // 刻意**不**回写 DS_TOKENS / DS_ACCOUNTS。
+  //
+  // 回写会让两边互相覆盖、来源不可追溯：后台保存一次配置，config 的值就被
+  // 塞回 process.env，之后 .env 再怎么改都被这个"内存里的值"盖住，
+  // 且与"凭据取并集"的语义冲突。凭据的唯一来源是 getConfig()。
+  // 其它 DS_* 调优项（并发、阈值等）仍回写，保持既有行为。
   setEnv('MAX_CONCURRENT_PER_TOKEN', current.deepseek.maxConcurrentPerToken);
   setEnv('TOKEN_DEAD_THRESHOLD', current.deepseek.tokenDeadThreshold);
   setEnv('HEALTH_CHECK_INTERVAL', current.deepseek.healthCheckIntervalSeconds);
@@ -366,11 +444,38 @@ export function getLogDir() {
   return getConfig().runtime.logDir || resolve(getDataDir(), 'logs');
 }
 
+/**
+ * 生成写入磁盘的配置副本：剔除来自环境变量的凭据。
+ *
+ * 为什么剔除：env 是凭据的**外部权威来源**，把它复制进 config.json 会造成
+ * ①机密在磁盘多一份副本；②来源不可追溯（分不清某个 token 是 env 给的还是
+ * 后台加的，之后改 .env 会被磁盘里的旧副本压住——这正是本次要修的问题）。
+ * 内存中的 config 仍保留并集，因此运行时行为不受影响。
+ */
+function stripEnvCredentials(source) {
+  if (envCredentialIds.size === 0) return source;
+  const next = clone(source);
+  if (!next.deepseek) return next;
+  next.deepseek.tokens = (next.deepseek.tokens || [])
+    .filter(token => !envCredentialIds.has(secretId(token)));
+  next.deepseek.accounts = (next.deepseek.accounts || [])
+    .filter(account => !envCredentialIds.has(secretId(`${account.email}:${account.password}`)));
+  return next;
+}
+
 export function saveConfig(nextConfig = config) {
   const normalized = normalizeConfig(nextConfig);
   const path = getConfigPath();
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(normalized, null, 2)}\n`);
+
+  // 原子写：先写同目录临时文件再 rename。直接覆盖时若进程被杀/磁盘满，
+  // 会留下被截断的 JSON，下次启动解析失败并回落成空配置（凭据全丢）。
+  // 同目录 rename 在 POSIX 与 Windows 上都是原子替换。
+  const tmpPath = `${path}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(stripEnvCredentials(normalized), null, 2)}\n`);
+  renameSync(tmpPath, path);
+
+  // 内存态持有完整并集（含 env 凭据），运行时与后台展示都以它为准。
   config = normalized;
   loaded = true;
   applyConfigToProcessEnv();
