@@ -4,8 +4,9 @@ import {
   reportTokenSuccess,
   reportTokenRateLimited,
   hasAlternativeToken,
-  markTokenDead,
+  disableToken,
   getPoolInfo,
+  CREDENTIAL_DISABLE_DEFAULT_MS,
 } from '../services/auth.js';
 import { solvePowChallengeWithToken } from './pow.js';
 import { getSession, invalidateTokenSessions } from '../services/session.js';
@@ -49,14 +50,34 @@ async function invalidateTokenRuntimeState(token) {
   invalidateByTokenPrefix(tokenPrefix);
 }
 
-async function markTokenUnavailable(token) {
-  // Muted tokens are unusable for completions until the mute expires, so mark dead immediately.
-  markTokenDead(token);
+/**
+ * 禁言类不可用：禁用**而非删除**，并清掉该 token 的会话缓存。
+ * 以前这里直接置死（随后被人删除），导致风控结束后无从恢复。
+ */
+async function markTokenUnavailable(token, options = {}) {
+  disableToken(token, {
+    reason: options.reason || '上游禁言',
+    disabledUntil: options.disabledUntil || Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+    source: 'auto',
+  });
   await invalidateTokenRuntimeState(token);
 }
 
 function isDeepSeekJsonError(json) {
   return json?.code !== undefined || json?.data?.biz_code !== undefined || json?.data?.biz_msg;
+}
+
+/**
+ * 归一化上游的 mute_until 为毫秒时间戳。上游可能给秒级、毫秒级或字符串，
+ * 也可能给已过去的时刻（此时返回 0，由调用方回落到默认禁期）。
+ */
+function normalizeMuteUntil(value) {
+  if (value == null || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  // 秒级时间戳（约 1e9~1e10）换算为毫秒；已是毫秒级则原样使用。
+  const ms = parsed < 1e12 ? parsed * 1000 : parsed;
+  return ms > Date.now() ? ms : 0;
 }
 
 async function throwDeepSeekErrorFromJson(json, slot) {
@@ -65,18 +86,21 @@ async function throwDeepSeekErrorFromJson(json, slot) {
   if (!isDeepSeekJsonError(json)) return;
 
   if (code === 40003) {
+    // token 失效：先让它累计错误（保留原有"多次失败才淘汰"的语义），
+    // 达到阈值由 reportTokenError 统一转禁用；这里不再直接置死。
     reportTokenError(slot.token);
     throw new Error('Token invalid (40003)');
   }
   if (code === 40004) {
-    reportTokenError(slot.token);
     const entry = getPoolInfo().find(t => slot.token.startsWith(t.token.replace('...', '')));
     console.error(`Account BANNED during completion: ${entry?.email || slot.token.slice(0, 12)}...`);
+    await markTokenUnavailable(slot.token, { reason: '账号被封禁 (40004)' });
     throw new Error('Account banned (40004)');
   }
   if (code === 40301) {
     await invalidateTokenRuntimeState(slot.token);
     // 上游会话级限流：换一个凭据（新会话）可能即可绕过，标记可故障转移。
+    // 注意与"禁言"的区别：40301 是会话级临时限制，凭据本身仍可用，故不禁用。
     const err = new Error('Session rate limited (40301) — sessions rotated');
     err.credentialFailover = true;
     throw err;
@@ -95,9 +119,15 @@ async function throwDeepSeekErrorFromJson(json, slot) {
     throw err;
   }
   if (code === 5 || json?.data?.biz_code === 5) {
-    await markTokenUnavailable(slot.token);
-    const until = json?.data?.biz_data?.mute_until;
-    const err = new Error(`DeepSeek user muted (biz_code=5)${until ? ` until ${until}` : ''}: ${message}`);
+    // 禁言：上游通常给出 mute_until（秒或毫秒时间戳），优先按它设置禁期；
+    // 缺失时回落到默认 3 天。禁期内不再重登该账号，避免加重风控。
+    const rawUntil = json?.data?.biz_data?.mute_until;
+    const muteUntilMs = normalizeMuteUntil(rawUntil);
+    await markTokenUnavailable(slot.token, {
+      reason: `账号被禁言${rawUntil ? `（至 ${rawUntil}）` : ''}`,
+      disabledUntil: muteUntilMs || Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+    });
+    const err = new Error(`DeepSeek user muted (biz_code=5)${rawUntil ? ` until ${rawUntil}` : ''}: ${message}`);
     err.credentialFailover = true;
     throw err;
   }

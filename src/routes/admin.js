@@ -10,14 +10,14 @@
 
 import express from 'express';
 import { appVersion, srcPath } from '../utils/runtime-paths.js';
-import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck } from '../services/auth.js';
+import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck, setCredentialDisabledById, disableTokenByTokenString } from '../services/auth.js';
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
 import { getQueueInfo } from '../services/queue.js';
 import { filterLogs, getLogStats, readHistoricalLogs, readChatLogs, readRecentLogs, listLogDates } from '../middleware/logger.js';
 import { getMetrics } from '../middleware/metrics.js';
 import { DEEPSEEK_MODEL_MAP } from '../channels/deepseek/models.js';
-import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig, secretId } from '../services/config-store.js';
+import { getConfig, getLogDir, getPublicChannelConfig, getPublicConfig, addServerApiKey, removeServerApiKey, addChannelCredential, removeChannelCredential, updateChannelConfig, updateConfig } from '../services/config-store.js';
 import { authStatus, clearAdminSessionCookie, setAdminSessionCookie, verifyAdminPassword } from '../services/admin-auth.js';
 
 const router = express.Router();
@@ -87,7 +87,8 @@ function summarizeModelMetrics() {
 function buildChannels() {
   const config = getConfig();
   const deepseekPool = getPoolInfo();
-  const deepseekAlive = deepseekPool.filter(item => !item.dead && item.token !== 'NONE').length;
+  const deepseekAlive = deepseekPool.filter(item => !item.disabled && item.token !== 'NONE').length;
+  const deepseekDisabled = deepseekPool.filter(item => item.disabled).length;
   const errors = summarizeRecentErrors();
   const { byChannel } = summarizeModelMetrics();
 
@@ -96,8 +97,11 @@ function buildChannels() {
       id: 'deepseek',
       name: 'DeepSeek',
       configured: config.deepseek.tokens.length + config.deepseek.accounts.length > 0,
+      // credentialCount 为**总数（含禁用）**，这样前端能表达"可用 N / 共 M"；
+      // 禁用数单列，便于一眼看出有多少凭据被风控摘除。
       credentialCount: deepseekPool.length,
       availableCount: deepseekAlive,
+      disabledCount: deepseekDisabled,
       activeRequests: deepseekPool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
       capacity: getTotalCapacity(),
       mode: config.deepseek.accounts.length > 0 ? 'account-pool' : 'token-pool',
@@ -287,6 +291,31 @@ router.delete('/api/channels/:channel/credentials/:id', (req, res) => {
   }
 });
 
+// 启用/禁用凭据。禁用不删除配置，仅记录状态：
+//   - disabled=true  → 手动禁用（不自动恢复，须人工再启用）
+//   - disabled=false → 启用，交回调度
+//
+// 刻意**不做**同步上游探测：那会让后台请求阻塞在上游延迟（甚至代理超时）上，
+// 且启用动作本身不该被探测结果左右。状态由随后的 healthCheck 自然收敛。
+// 需要立刻验证请用「测试渠道」按钮。
+router.patch('/api/channels/:channel/credentials/:id', (req, res) => {
+  try {
+    const { channel, id } = req.params;
+    ensureChannel(channel);
+    const { disabled } = req.body || {};
+    if (typeof disabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'disabled (boolean) required' } });
+    }
+
+    const target = setCredentialDisabledById(id, disabled);
+    if (!target) return res.status(404).json({ error: { message: 'credential not found in runtime pool' } });
+
+    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+  } catch (error) {
+    jsonError(res, error);
+  }
+});
+
 function secretLabel(value) {
   const text = String(value || '');
   return text.length <= 12 ? text : `${text.slice(0, 6)}...${text.slice(-4)}`;
@@ -298,7 +327,6 @@ router.post('/api/channels/:channel/test', async (req, res) => {
     ensureChannel(channel);
     const config = getConfig();
     const results = [];
-    const removedIds = [];
 
     if (channel === 'deepseek') {
       const { testDeepSeekToken, getDeepSeekPoolEntries, loginAndAddToken } = await import('../services/auth.js');
@@ -317,25 +345,39 @@ router.post('/api/channels/:channel/test', async (req, res) => {
         pool = getDeepSeekPoolEntries();
       }
       for (const entry of pool) {
+        const label = entry.email || (entry.token ? entry.token.replace(/^(.{6}).*(.{4})$/, '$1...$2') : 'unknown');
+        if (entry.disabled && !entry.token) {
+          results.push({ label, success: false, message: `已禁用：${entry.disabledReason || '未知原因'}（保留在池中，可手动启用）` });
+          continue;
+        }
         if (!entry.token) {
-          results.push({ label: entry.email || 'unknown', success: false, message: '无可用 Token（等待自动登录）' });
+          results.push({ label, success: false, message: '无可用 Token（等待自动登录）' });
           continue;
         }
         try {
           const result = await testDeepSeekToken(entry.token);
           if (result.valid) {
-            results.push({ label: entry.email || entry.token.replace(/^(.{6}).*(.{4})$/, '$1...$2'), success: true, message: '有效' });
+            results.push({ label, success: true, message: entry.disabled ? '有效（当前为禁用状态，可手动启用）' : '有效' });
           } else {
-            const id = secretId(entry.token);
-            removeChannelCredential('deepseek', id);
-            removedIds.push(id);
-            results.push({ label: entry.email || entry.token.replace(/^(.{6}).*(.{4})$/, '$1...$2'), success: false, message: '无效，凭据已删除' });
+            // 关键改动：无效凭据**禁用而非删除**。
+            // 旧逻辑调 removeChannelCredential 物理删除配置，导致风控结束后
+            // 无从恢复、后台也看不到痕迹。禁用后仍保留在池中并持久化。
+            disableTokenByTokenString(entry.token, '手动测试无效');
+            results.push({ label, success: false, message: '无效，已禁用（保留在池中，可稍后重试或手动启用）' });
           }
         } catch (err) {
-          results.push({ label: entry.email || entry.token, success: false, message: err.message });
+          results.push({ label, success: false, message: err.message });
         }
       }
-      return res.json({ success: results.some(r => r.success), channel, results, removed: removedIds.length > 0 });
+      // 禁用态已即时写入池并持久化，不重建池（重建会重置在途请求的并发计数）。
+      const disabledCount = getPoolInfo().filter(item => item.disabled).length;
+      return res.json({
+        success: results.some(r => r.success),
+        channel,
+        results,
+        disabled: true,
+        disabledCount,
+      });
     }
 
     res.json({ success: true, channel, results });

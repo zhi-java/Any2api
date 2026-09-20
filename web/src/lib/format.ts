@@ -33,6 +33,19 @@ export function formatDateTime(value: string | undefined): string {
   });
 }
 
+/** 把剩余毫秒格式化为"X天Y小时后恢复"这类可读文案。0 表示无自动恢复计划。 */
+export function formatRemaining(ms: number | undefined): string {
+  const n = Number(ms || 0);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const totalMinutes = Math.ceil(n / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes} 分钟后恢复`;
+  const totalHours = Math.ceil(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours} 小时后恢复`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours ? `${days} 天 ${hours} 小时后恢复` : `${days} 天后恢复`;
+}
+
 const STATUS_LABEL: Record<ChannelStatus, string> = {
   healthy: '健康',
   degraded: '需关注',

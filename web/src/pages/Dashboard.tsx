@@ -179,6 +179,7 @@ export function DashboardPage() {
                     : channel.status === 'degraded'
                       ? `降级 · 需关注 · ${channel.availableCount}/${channel.credentialCount} 凭据`
                       : '未配置 · 去添加凭据'}
+                  {Number(channel.disabledCount ?? 0) > 0 ? ` · ${Number(channel.disabledCount)} 已禁用` : ''}
                 </span>
                 <div className="mt-1.5">
                   <StatusBadge status={channel.status} />

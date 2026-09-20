@@ -22,7 +22,7 @@ export async function createSession(token, modelType = 'default') {
   });
   const json = await res.json();
 
-  // Token invalid — report error so auth.js can mark it dead
+  // Token invalid — report error so auth.js can disable it
   if (json.code === 40003) {
     reportTokenError(token);
     throw new Error('Token invalid (40003)');
@@ -110,7 +110,7 @@ export function getSessionInfo() {
 
 export async function prewarmSessions(tokens, modelTypes = ['default']) {
   const poolInfo = getPoolInfo();
-  const alivePrefixes = poolInfo.filter(t => !t.dead && t.token !== 'NONE').map(t => t.token.replace('...', ''));
+  const alivePrefixes = poolInfo.filter(t => !t.disabled && t.token !== 'NONE').map(t => t.token.replace('...', ''));
 
   console.log(`Pre-warming sessions for ${alivePrefixes.length} alive tokens × ${SESSIONS_PER_TOKEN_PER_MODEL} slots × ${modelTypes.length} model types...`);
   const promises = [];

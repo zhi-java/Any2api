@@ -26,6 +26,13 @@ const DEFAULT_CONFIG = Object.freeze({
   deepseek: {
     tokens: [],
     accounts: [],
+    // 凭据禁用态表：{ [secretId]: { disabled, reason, until, at, source } }。
+    //
+    // 为什么要单独存一张表而不是直接删掉凭据：上游风控（禁言/封禁）是**临时**的，
+    // 删除会让凭据永久丢失、且后台完全看不到发生过什么。这里只记录"禁用"，
+    // 凭据本身仍留在 tokens/accounts 里，到期可自动恢复，也可人工启用。
+    // 具体语义见 src/services/auth.js 的 disableToken/enableToken。
+    credentialStates: {},
     maxConcurrentPerToken: 2,
     tokenDeadThreshold: 5,
     healthCheckIntervalSeconds: 600,
@@ -129,6 +136,38 @@ function normalizeAccounts(accounts = []) {
   return normalized;
 }
 
+/**
+ * 归一化凭据禁用态表。
+ *
+ * 只保留 disabled===true 的条目——"未禁用"是默认态，写进配置只会让文件膨胀。
+ * 同时剪掉已不对应任何现存凭据的 key（校验逻辑见 pruneCredentialStates），
+ * 避免反复增删凭据后表无限增长。
+ */
+function normalizeCredentialStates(states, tokens = [], accounts = []) {
+  const source = isPlainObject(states) ? states : {};
+  const validIds = new Set([
+    ...tokens.map(value => secretId(value)),
+    ...accounts.map(account => secretId(`${account.email}:${account.password}`)),
+  ]);
+
+  const normalized = {};
+  for (const [id, raw] of Object.entries(source)) {
+    if (!isPlainObject(raw) || raw.disabled !== true) continue;
+    if (!validIds.has(id)) continue;
+    const until = Number(raw.until);
+    const at = Number(raw.at);
+    normalized[id] = {
+      disabled: true,
+      reason: String(raw.reason || '').trim(),
+      // until 为绝对时间戳；0 表示手动禁用（不自动恢复）。
+      until: Number.isFinite(until) && until > 0 ? until : 0,
+      at: Number.isFinite(at) && at > 0 ? at : 0,
+      source: raw.source === 'manual' ? 'manual' : 'auto',
+    };
+  }
+  return normalized;
+}
+
 function normalizeApiKeys(apiKeys = []) {
   const seen = new Set();
   const normalized = [];
@@ -167,6 +206,12 @@ function normalizeConfig(input) {
 
   merged.deepseek.tokens = uniqueStrings(merged.deepseek.tokens);
   merged.deepseek.accounts = normalizeAccounts(merged.deepseek.accounts);
+  // 禁用态表依赖已归一化的 tokens/accounts（据此计算合法 id 并剪除 stale key）。
+  merged.deepseek.credentialStates = normalizeCredentialStates(
+    merged.deepseek.credentialStates,
+    merged.deepseek.tokens,
+    merged.deepseek.accounts,
+  );
   merged.deepseek.maxConcurrentPerToken = parseIntValue(merged.deepseek.maxConcurrentPerToken, 2, 1);
   merged.deepseek.tokenDeadThreshold = parseIntValue(merged.deepseek.tokenDeadThreshold, 5, 1);
   merged.deepseek.healthCheckIntervalSeconds = parseIntValue(merged.deepseek.healthCheckIntervalSeconds, 600, 1);
@@ -354,8 +399,8 @@ function maskSecret(secret) {
   return `${text.slice(0, 4)}...${text.slice(-4)}`;
 }
 
-function publicSecrets(values = []) {
-  return values.map(value => ({ id: secretId(value), label: maskSecret(value), configured: true }));
+function publicSecrets(values = [], states = {}) {
+  return values.map(value => ({ id: secretId(value), label: maskSecret(value), configured: true, ...publicStateOf(states, secretId(value)) }));
 }
 
 function publicApiKeys(values = []) {
@@ -368,12 +413,30 @@ function publicApiKeys(values = []) {
   }));
 }
 
-function publicAccounts(accounts = []) {
+function publicAccounts(accounts = [], states = {}) {
   return accounts.map(account => ({
     id: secretId(`${account.email}:${account.password}`),
     email: account.email,
     hasPassword: Boolean(account.password),
+    ...publicStateOf(states, secretId(`${account.email}:${account.password}`)),
   }));
+}
+
+/**
+ * 把禁用态剪成前端可用的扁平字段。未禁用的凭据只带 disabled:false，
+ * 不额外塞 null 字段，保持既有响应形状尽量稳定。
+ */
+function publicStateOf(states, id) {
+  const state = states?.[id];
+  if (!state?.disabled) return { disabled: false };
+  return {
+    disabled: true,
+    disabledReason: state.reason || '',
+    disabledUntil: state.until || 0,
+    disabledAt: state.at || 0,
+    disabledSource: state.source || 'auto',
+    disabledRemainingMs: state.until > 0 ? Math.max(0, state.until - Date.now()) : 0,
+  };
 }
 
 export function getPublicConfig() {
@@ -411,8 +474,10 @@ export function getPublicConfig() {
     deepseek: {
       authMode: current.deepseek.accounts.length > 0 ? 'account-pool' : 'token-pool',
       tokenCount: current.deepseek.tokens.length,
-      tokens: current.deepseek.accounts.length > 0 ? [] : publicSecrets(current.deepseek.tokens),
-      accounts: publicAccounts(current.deepseek.accounts),
+      tokens: current.deepseek.accounts.length > 0 ? [] : publicSecrets(current.deepseek.tokens, current.deepseek.credentialStates),
+      accounts: publicAccounts(current.deepseek.accounts, current.deepseek.credentialStates),
+      // 禁用凭据数（含 token 与账号），供前端提示"可用 N / 共 M"。
+      disabledCount: Object.keys(current.deepseek.credentialStates || {}).length,
       maxConcurrentPerToken: current.deepseek.maxConcurrentPerToken,
       tokenDeadThreshold: current.deepseek.tokenDeadThreshold,
       healthCheckIntervalSeconds: current.deepseek.healthCheckIntervalSeconds,
@@ -535,6 +600,45 @@ export function removeChannelCredential(channel, id) {
   }
 
   if (!removed) return false;
+  // 凭据本体已删除，禁用态记录也随之作废，一并清理避免残留脏 key。
+  if (next.deepseek.credentialStates?.[id]) {
+    delete next.deepseek.credentialStates[id];
+  }
   saveConfig(next);
   return true;
+}
+
+/** 读取某渠道的凭据禁用态表（返回副本，调用方不应直接改）。 */
+export function getCredentialStates(channel) {
+  ensureChannelKey(channel);
+  return clone(getConfig()[channel].credentialStates || {});
+}
+
+/**
+ * 写入/合并一条禁用态。patch 只需给出要改的字段。
+ * 传 `{ disabled: false }` 等价于 clearCredentialState。
+ */
+export function setCredentialState(channel, id, patch = {}) {
+  ensureChannelKey(channel);
+  if (!id) throw new Error('credential id required');
+  const next = clone(getConfig());
+  const states = next[channel].credentialStates || (next[channel].credentialStates = {});
+  if (patch.disabled === false) {
+    delete states[id];
+  } else {
+    states[id] = { ...(states[id] || {}), ...patch, disabled: true };
+  }
+  saveConfig(next);
+  return clone(states[id] || { disabled: false });
+}
+
+/** 清除禁用态（恢复为默认可用）。 */
+export function clearCredentialState(channel, id) {
+  return setCredentialState(channel, id, { disabled: false });
+}
+
+function ensureChannelKey(channel) {
+  if (!Object.prototype.hasOwnProperty.call(DEFAULT_CONFIG, channel)) {
+    throw new Error(`Unsupported channel: ${channel}`);
+  }
 }

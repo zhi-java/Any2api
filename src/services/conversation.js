@@ -229,7 +229,7 @@ export function getRecentToolCallIndex(toolCallIds = []) {
   return index;
 }
 
-// Invalidate a conversation (e.g. when its token gets marked dead/refreshed).
+// Invalidate a conversation (e.g. when its token gets disabled/refreshed).
 export function invalidateConversation(conversationId) {
   if (conversationId) store.delete(conversationId);
 }

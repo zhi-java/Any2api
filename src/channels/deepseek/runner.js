@@ -21,6 +21,8 @@ import { collectParsedStreamContent } from '../common-internal-runner.js';
 import { collectUploadableParts, hasUploadableParts } from '../../utils/message-files.js';
 import { mapModel } from './models.js';
 import {
+  CREDENTIAL_DISABLE_DEFAULT_MS,
+  disableToken,
   getIpThrottleRemainingMs,
   isIpThrottled,
   noteEmptyReply,
@@ -315,6 +317,17 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         const isRateLimited = event.code === 429 || event.code === 40301;
         if (slot && isRateLimited) {
           reportTokenRateLimited(slot.token);
+        }
+        // 流中途才暴露的终态失败（封禁/失效/禁言）同样要处置凭据：数据虽已
+        // 下发，但该凭据已不可用，禁用后由其它凭据接管，并保留待恢复。
+        if (slot) {
+          if (event.code === 40004) {
+            disableToken(slot.token, { reason: '账号被封禁 (40004)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto' });
+          } else if (event.code === 40003) {
+            reportTokenError(slot.token);
+          } else if (event.code === 5) {
+            disableToken(slot.token, { reason: '账号被禁言 (biz_code=5)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto' });
+          }
         }
         throw new InternalAPIError(event.message || `DeepSeek error ${event.code}`, {
           // 限流应回报 429 rate_limit_error，客户端据此退避重试；

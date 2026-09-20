@@ -90,6 +90,12 @@ export const api = {
     request<{ success: boolean }>(`${BASE}/channels/${channel}/credentials/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+  /** 启用/禁用凭据。禁用只改状态、不删配置，可随时启用恢复。 */
+  setCredentialDisabled: (channel: string, id: string, disabled: boolean) =>
+    request<{ success: boolean }>(
+      `${BASE}/channels/${channel}/credentials/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify({ disabled }) },
+    ),
   testChannel: (channel: string) =>
     request<ChannelTestResult>(`${BASE}/channels/${channel}/test`, { method: 'POST', body: '{}' }),
 

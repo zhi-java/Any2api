@@ -12,6 +12,15 @@ export interface CredentialSummary {
   /** 账号型凭据才有 */
   email?: string;
   hasPassword?: boolean;
+  /** 是否被禁用（风控/失效等）。禁用凭据不参与调度，但保留在配置中可恢复。 */
+  disabled?: boolean;
+  disabledReason?: string;
+  /** 自动恢复时刻（绝对时间戳，ms）；0 表示手动禁用、不自动恢复 */
+  disabledUntil?: number;
+  disabledAt?: number;
+  disabledSource?: 'auto' | 'manual' | null;
+  /** 距自动恢复剩余毫秒，0 表示无自动恢复计划 */
+  disabledRemainingMs?: number;
 }
 
 /** 外部 API Key 的公开摘要（比渠道凭据多 name / createdAt）。 */
@@ -31,8 +40,12 @@ export interface Channel {
   id: ChannelId;
   name: string;
   configured: boolean;
+  /** 凭据总数（含禁用项） */
   credentialCount: number;
+  /** 可用凭据数（不含禁用项） */
   availableCount: number;
+  /** 被禁用的凭据数 */
+  disabledCount?: number;
   activeRequests: number;
   capacity: number;
   mode: string;
@@ -91,6 +104,8 @@ export interface DeepSeekConfig {
   tokenCount: number;
   tokens: CredentialSummary[];
   accounts: CredentialSummary[];
+  /** 禁用凭据数（含 token 与账号） */
+  disabledCount?: number;
   maxConcurrentPerToken: number;
   tokenDeadThreshold: number;
   healthCheckIntervalSeconds: number;
@@ -153,6 +168,8 @@ export interface TimeseriesPoint {
 export interface ChannelTestResult {
   success: boolean;
   channel: string;
-  removed?: boolean;
+  /** 无效凭据是否已被禁用（替代旧的 removed：旧逻辑会删除凭据） */
+  disabled?: boolean;
+  disabledCount?: number;
   results: { label: string; success: boolean; message: string }[];
 }

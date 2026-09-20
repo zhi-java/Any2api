@@ -84,7 +84,12 @@ export function ChannelsPage() {
                       <StatusBadge status={channel.status} />
                     </td>
                     <td className="tabular border-b border-line py-3 pr-3">
-                      {channel.availableCount || 0}/{channel.credentialCount || 0}
+                      <span>{channel.availableCount || 0}/{channel.credentialCount || 0}</span>
+                      {Number(channel.disabledCount ?? 0) > 0 ? (
+                        <small className="ml-1.5 text-[12px] text-warn-ink">
+                          {Number(channel.disabledCount)} 禁用
+                        </small>
+                      ) : null}
                     </td>
                     <td className="tabular border-b border-line py-3 pr-3">
                       {channel.activeRequests || 0}/{channel.capacity || 0}

@@ -12,6 +12,7 @@ import {
   Select,
   useToast,
 } from '../components/ui';
+import { formatRemaining } from '../lib/format';
 import type { ChannelId, ChannelTestResult } from '../types';
 
 interface ChannelMeta {
@@ -38,6 +39,10 @@ interface CredentialRow {
   id: string;
   label?: string;
   email?: string;
+  disabled?: boolean;
+  disabledReason?: string;
+  disabledRemainingMs?: number;
+  disabledSource?: 'auto' | 'manual' | null;
 }
 
 function credentialsFor(channel: ChannelId, config: Record<string, unknown>): CredentialRow[] {
@@ -103,7 +108,9 @@ export function CredentialsPage() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm('确定删除这个凭据？')) return;
+    // 删除是不可逆的：凭据本身与禁用记录都会被清掉，风控结束后无法恢复。
+    // 因此提示里明确引导用户优先考虑"禁用"。
+    if (!window.confirm('确定删除这个凭据？删除后配置将被移除、无法恢复。\n如需临时停用，请改用「禁用」。')) return;
     try {
       await api.removeCredential(channel, id);
       toast('凭据已删除', 'success');
@@ -113,13 +120,30 @@ export function CredentialsPage() {
     }
   }
 
+  async function toggleDisabled(row: CredentialRow) {
+    const next = !row.disabled;
+    try {
+      await api.setCredentialDisabled(channel, row.id, next);
+      toast(next ? '凭据已禁用（仍保留在配置中，可随时启用）' : '凭据已启用', next ? 'warning' : 'success');
+      await loadConfigs();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '操作失败', 'danger');
+    }
+  }
+
   async function test() {
     setTesting(true);
     try {
       const result = await api.testChannel(channel);
       setTestResult(result);
-      if (result.removed) {
-        toast('失效凭据已自动删除', 'warning');
+      // 无效凭据改为"禁用"而非删除：它仍留在列表中，只是标记为禁用状态。
+      if (result.disabled) {
+        toast(
+          result.disabledCount
+            ? `失效凭据已禁用（共 ${result.disabledCount} 个），可在列表中启用或删除`
+            : '失效凭据已禁用，可在列表中启用或删除',
+          'warning',
+        );
         await loadConfigs();
       }
     } catch (error) {
@@ -155,6 +179,11 @@ export function CredentialsPage() {
         <Card>
           <PanelHeader
             title={`${meta.name} 凭据`}
+            hint={
+              Number(config.disabledCount ?? 0) > 0
+                ? `${Number(config.disabledCount)} 个已禁用`
+                : undefined
+            }
             action={
               <Button size="sm" variant="secondary" onClick={test} disabled={testing}>
                 {testing ? '测试中…' : '测试渠道'}
@@ -186,12 +215,31 @@ export function CredentialsPage() {
                         <code className="font-mono text-[13px]">{item.email || item.label || item.id}</code>
                       </td>
                       <td className="border-b border-line py-3 pr-3">
-                        <Badge tone="muted">已保存</Badge>
+                        {item.disabled ? (
+                          <div className="grid gap-1">
+                            <Badge tone={item.disabledSource === 'manual' ? 'muted' : 'warn'}>
+                              {item.disabledSource === 'manual' ? '已禁用（手动）' : '已禁用'}
+                            </Badge>
+                            <small className="text-[12px] text-ink-3">
+                              {item.disabledReason || '未知原因'}
+                              {item.disabledRemainingMs
+                                ? ` · ${formatRemaining(item.disabledRemainingMs)}`
+                                : ' · 不自动恢复'}
+                            </small>
+                          </div>
+                        ) : (
+                          <Badge tone="ok">已启用</Badge>
+                        )}
                       </td>
                       <td className="border-b border-line py-3 text-right">
-                        <Button size="sm" variant="danger" onClick={() => void remove(item.id)}>
-                          删除
-                        </Button>
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" variant="secondary" onClick={() => void toggleDisabled(item)}>
+                            {item.disabled ? '启用' : '禁用'}
+                          </Button>
+                          <Button size="sm" variant="danger" onClick={() => void remove(item.id)}>
+                            删除
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

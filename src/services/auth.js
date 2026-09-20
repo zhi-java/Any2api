@@ -1,5 +1,5 @@
 import { loadEnvironment } from '../utils/env.js';
-import { getConfig, updateChannelConfig } from './config-store.js';
+import { clearCredentialState, getConfig, secretId, setCredentialState, updateChannelConfig } from './config-store.js';
 import { invalidateByTokenPrefix } from './conversation.js';
 import { invalidateTokenSessions as invalidateSessionCache } from './session.js';
 
@@ -64,7 +64,16 @@ function loadAccountTokens() {
 
 const accountTokenMap = loadAccountTokens();
 
-// Token metadata: { token, email, password, visionCapable, lastUsed, errorCount, activeRequests, dead }
+// Token metadata: { token, email, password, visionCapable, lastUsed, errorCount,
+//                   activeRequests, cooldownUntil, rateLimitHits, disabled, ... }
+//
+// 三态区分（务必不要混淆）：
+//   - 可用：正常参与分配
+//   - cooldownUntil（临时限流）：仍是"可用凭据"，只是这段时间不参与分配，
+//     到期自动恢复，不上报 429 之外的语义。见 reportTokenRateLimited。
+//   - disabled（禁用）：终态失败（封禁/禁言/token 失效/连续错误超阈值）。
+//     不参与分配，且**保留在池中并持久化**，便于后台展示与到期恢复。
+//     以前这里是直接删除条目，导致风控结束后无法恢复、后台也看不到。
 const tokenPool = tokens.map(t => ({
   token: t,
   email: null,
@@ -73,7 +82,9 @@ const tokenPool = tokens.map(t => ({
   lastUsed: 0,
   errorCount: 0,
   activeRequests: 0,
-  dead: false,
+  cooldownUntil: 0,
+  rateLimitHits: 0,
+  ...emptyDisabledState(),
 }));
 
 // Link existing tokens to accounts via token prefix
@@ -85,6 +96,30 @@ for (const entry of tokenPool) {
     entry.email = match.email;
     entry.password = match.password;
   }
+}
+
+// 禁用态的默认（未禁用）字段组。集中一处避免各构造点漏字段。
+function emptyDisabledState() {
+  return {
+    disabled: false,
+    disabledReason: null,
+    disabledUntil: 0,
+    disabledAt: 0,
+    disabledSource: null,
+  };
+}
+
+/**
+ * 凭据的稳定身份，用于与 config.json 的 credentialStates / 前端行 id 对齐。
+ *
+ * 与 config-store 的 publicSecrets / publicAccounts 保持同一算法：
+ * 有账号密码按 `email:password`，否则按 token 本体。
+ */
+export function credentialIdOf(entry) {
+  if (!entry) return null;
+  if (entry.email && entry.password) return secretId(`${entry.email}:${entry.password}`);
+  if (entry.token) return secretId(entry.token);
+  return null;
 }
 
 // Create pool entries for accounts without matching tokens (will login on init)
@@ -99,7 +134,9 @@ for (const acct of accounts) {
       lastUsed: 0,
       errorCount: 0,
       activeRequests: 0,
-      dead: false,
+      cooldownUntil: 0,
+      rateLimitHits: 0,
+      ...emptyDisabledState(),
     });
   }
 }
@@ -113,7 +150,7 @@ function createTokenEntry({ token = null, email = null, password = null, visionC
     lastUsed: 0,
     errorCount: 0,
     activeRequests: 0,
-    dead: false,
+    ...emptyDisabledState(),
     // 限流冷却：cooldownUntil 为绝对时间戳（0 = 可用）
     cooldownUntil: 0,
     rateLimitHits: 0,
@@ -134,6 +171,29 @@ export function syncTokenPoolFromConfig() {
     const alreadyLinked = tokenPool.some(entry => entry.email === account.email);
     if (!alreadyLinked) {
       tokenPool.push(createTokenEntry({ email: account.email, password: account.password }));
+    }
+  }
+
+  // 从持久化的 credentialStates 回填禁用态。
+  //
+  // 放在这里而不是 initTokenPool：admin 增删凭据后走 applyChannelRuntime →
+  // syncTokenPoolFromConfig 重建池，若不在此回填，禁用态会在一次后台操作后丢失。
+  applyPersistedCredentialStates(deepseek.credentialStates || {});
+}
+
+/** 把 config 里的禁用态套用到当前池条目上。 */
+function applyPersistedCredentialStates(states = {}) {
+  for (const entry of tokenPool) {
+    const id = credentialIdOf(entry);
+    const state = id ? states[id] : null;
+    if (state?.disabled) {
+      entry.disabled = true;
+      entry.disabledReason = state.reason || entry.disabledReason || '已禁用';
+      entry.disabledUntil = state.until || 0;
+      entry.disabledAt = state.at || 0;
+      entry.disabledSource = state.source || 'auto';
+    } else {
+      Object.assign(entry, emptyDisabledState());
     }
   }
 }
@@ -258,25 +318,27 @@ async function validateToken(token) {
   }
 }
 
-// Refresh a dead token entry — login if account credentials exist
-async function refreshToken(entry) {
+/**
+ * 重新登录换取新 token（仅账号型条目可用）。
+ *
+ * force=false（默认）时**禁用中的条目直接跳过**：风控期内反复登录会使旧 token
+ * 失效、并要求上游重新校验账号，只会加重风控。只有"禁用期已到"的恢复探测
+ * （healthCheck）与管理员手动启用才会传 force=true。
+ */
+async function refreshToken(entry, { force = false } = {}) {
   if (!entry.password) return false;
+  if (entry.disabled && !force) return false;
   try {
     const newToken = await login(entry.email, entry.password);
     entry.token = newToken;
     entry.errorCount = 0;
-    entry.dead = false;
     const vision = await checkVisionCapability(newToken);
     entry.visionCapable = vision;
     console.log(`  Refreshed token for ${entry.email}: ${newToken.slice(0, 12)}... vision=${vision}`);
     return true;
   } catch (err) {
     console.warn(`  Refresh failed for ${entry.email}: ${err.message}`);
-    // If account is banned, mark dead permanently
-    if (err.message.includes('banned')) {
-      entry.dead = true;
-      entry.errorCount = tokenDeadThreshold();
-    }
+    // 这里是"恢复探测"失败：不在此处判定禁用（由调用方决定是否顺延冷却）。
     return false;
   }
 }
@@ -351,15 +413,20 @@ export async function initTokenPool() {
   }
 
   // Always log in accounts that have no token yet — startup must produce usable tokens.
-  for (let i = tokenPool.length - 1; i >= 0; i--) {
-    const entry = tokenPool[i];
-    if (!entry.token && entry.password) {
-      console.log(`  Logging in ${entry.email}...`);
-      const ok = await refreshToken(entry);
-      if (!ok && entry.dead) {
-        console.log(`  Removing banned/failed account entry for ${entry.email}`);
-        tokenPool.splice(i, 1);
-      }
+  // 禁用中的账号跳过登录（风控期内重登会加重处罚），其禁用态由
+  // syncTokenPoolFromConfig 从 credentialStates 回填，等 healthCheck 到期探测。
+  for (const entry of tokenPool) {
+    if (entry.token || !entry.password) continue;
+    if (entry.disabled) {
+      console.log(`  Skipping login for ${entry.email}: disabled (${entry.disabledReason || 'unknown'})`);
+      continue;
+    }
+    console.log(`  Logging in ${entry.email}...`);
+    const ok = await refreshToken(entry);
+    if (!ok) {
+      // 不再删除条目——禁用后保留，便于后台可见、风控结束后恢复。
+      disableToken(entry, { reason: '账号登录失败', source: 'auto' });
+      console.log(`  Disabled account entry for ${entry.email} (login failed); kept in pool for recovery`);
     }
   }
 
@@ -374,19 +441,18 @@ export async function initTokenPool() {
   if (!config.validateOnStartup) {
     console.log('DeepSeek startup validation skipped; accounts already logged in above. Use the admin test button to validate individual tokens.');
     for (const entry of tokenPool) {
-      if (entry.token && !entry.dead) {
+      if (entry.token && !entry.disabled) {
         const vision = await checkVisionCapability(entry.token);
         entry.visionCapable = vision;
       }
     }
-    const alive = tokenPool.filter(t => !t.dead).length;
-    console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive`);
+    logPoolReady();
     return;
   }
 
-  // Validate existing tokens, mark dead ones (auto-refresh if account linked)
+  // Validate existing tokens, disable failed ones (auto-refresh if account linked)
   for (const entry of tokenPool) {
-    if (entry.token) {
+    if (entry.token && !entry.disabled) {
       const valid = await validateToken(entry.token);
       if (!valid) {
         console.log(`  ${entry.token.slice(0, 12)}... INVALID — ${entry.password ? 'attempting refresh' : 'no account to refresh'}`);
@@ -400,15 +466,15 @@ export async function initTokenPool() {
             }
           }
         } else {
-          entry.dead = true;
-          entry.errorCount = tokenDeadThreshold();
+          // 无账号可重登：禁用而非删除，保留凭据等人工处理。
+          disableToken(entry, { reason: 'Token 无效（启动校验）', source: 'auto' });
         }
       }
     }
   }
 
   for (const entry of tokenPool) {
-    if (entry.token && !entry.dead) {
+    if (entry.token && !entry.disabled) {
       const vision = await checkVisionCapability(entry.token);
       entry.visionCapable = vision;
       const label = vision === true ? 'vision=YES' : vision === false ? 'vision=NO' : 'vision=UNKNOWN';
@@ -416,16 +482,22 @@ export async function initTokenPool() {
     }
   }
 
-  const alive = tokenPool.filter(t => !t.dead).length;
-  console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive`);
+  logPoolReady();
   persistTokensToConfig();
+}
+
+/** 统一输出池状态：可用 / 总数，并单独提示禁用数便于排查。 */
+function logPoolReady() {
+  const alive = tokenPool.filter(t => !t.disabled && t.token).length;
+  const disabled = tokenPool.filter(t => t.disabled).length;
+  console.log(`Pool ready: ${alive}/${tokenPool.length} tokens alive${disabled ? ` (${disabled} disabled)` : ''}`);
 }
 
 export function acquireToken(preferVision = false) {
   const now = Date.now();
-  // 限流冷却中的 token 不参与分配。冷却到期自动恢复可用（无需外部清理）。
+  // 冷却/禁用中的 token 不参与分配。冷却到期自动恢复可用（无需外部清理）。
   const liveCandidates = tokenPool.filter(t =>
-    !t.dead
+    !t.disabled
     && t.token
     && t.activeRequests < maxConcurrentPerToken()
     && (t.cooldownUntil || 0) <= now,
@@ -470,8 +542,92 @@ export function reportTokenError(token) {
   entry.errorCount++;
 
   if (entry.errorCount >= tokenDeadThreshold()) {
-    markTokenDead(entry);
+    disableToken(entry, {
+      reason: `连续错误达阈值（${entry.errorCount}）`,
+      disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+      source: 'auto',
+    });
   }
+}
+
+/**
+ * 禁用期限（毫秒）。
+ *
+ * 默认 3 天：实测上游风控禁言即约 3 天。上游若在响应里给出 mute_until 则优先
+ * 采用该时刻（见 sse.js），否则回落到这个默认值，避免在风控期内反复无效探测
+ * 而加重处罚。
+ */
+export const CREDENTIAL_DISABLE_DEFAULT_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * 禁用一个凭据（终态失败：封禁/禁言/token 失效/连续错误超阈值）。
+ *
+ * 与 reportTokenRateLimited 的区别：限流是**临时**状态，用冷却窗口即可，
+ * 到期自动恢复、语义上仍是"可用凭据"。禁用则是**终态**，凭据退出调度但
+ * 保留在池中并持久化：后台可见、到期可探测恢复、也可人工启用。
+ *
+ * 以前这里是直接删除条目，导致风控结束后永久丢失且后台毫无痕迹。
+ *
+ * @param {string|object} tokenOrEntry
+ * @param {{ reason?: string, disabledUntil?: number, source?: 'auto'|'manual' }} options
+ *   disabledUntil 为绝对时间戳；省略或 0 表示手动禁用（不自动恢复）。
+ */
+export function disableToken(tokenOrEntry, { reason = '', disabledUntil = 0, source = 'auto' } = {}) {
+  const entry = typeof tokenOrEntry === 'string'
+    ? tokenPool.find(t => t.token === tokenOrEntry)
+    : tokenOrEntry;
+  if (!entry || entry.disabled) return false;
+
+  entry.disabled = true;
+  entry.disabledReason = reason || '已禁用';
+  entry.disabledUntil = Number.isFinite(disabledUntil) && disabledUntil > 0 ? disabledUntil : 0;
+  entry.disabledAt = Date.now();
+  entry.disabledSource = source === 'manual' ? 'manual' : 'auto';
+
+  const id = credentialIdOf(entry);
+  if (id) {
+    try {
+      setCredentialState('deepseek', id, {
+        disabled: true,
+        reason: entry.disabledReason,
+        until: entry.disabledUntil,
+        at: entry.disabledAt,
+        source: entry.disabledSource,
+      });
+    } catch (err) {
+      console.warn(`[DeepSeek] 持久化禁用态失败（${id}）：${err.message}`);
+    }
+  }
+
+  const label = entry.email || (entry.token ? `${entry.token.slice(0, 12)}...` : id || 'unknown');
+  const untilText = entry.disabledUntil
+    ? `，约 ${Math.ceil((entry.disabledUntil - Date.now()) / 3600000)} 小时后自动探测恢复`
+    : '（手动禁用，不自动恢复）';
+  console.warn(`[DeepSeek] 凭据 ${label} 已禁用：${entry.disabledReason}${untilText}`);
+  return true;
+}
+
+/** 解除禁用并立即恢复为可用（人工启用，或到期探测成功后调用）。 */
+export function enableToken(tokenOrEntry) {
+  const entry = typeof tokenOrEntry === 'string'
+    ? tokenPool.find(t => t.token === tokenOrEntry)
+    : tokenOrEntry;
+  if (!entry) return false;
+
+  Object.assign(entry, emptyDisabledState());
+  entry.errorCount = 0;
+
+  const id = credentialIdOf(entry);
+  if (id) {
+    try {
+      clearCredentialState('deepseek', id);
+    } catch (err) {
+      console.warn(`[DeepSeek] 清除禁用态失败（${id}）：${err.message}`);
+    }
+  }
+  const label = entry.email || (entry.token ? `${entry.token.slice(0, 12)}...` : 'unknown');
+  console.log(`[DeepSeek] 凭据 ${label} 已启用`);
+  return true;
 }
 
 // 限流冷却基础时长（秒）。命中后 token 暂时退出分配，到期自动恢复；
@@ -581,26 +737,27 @@ export function resetIpThrottleState() {
   ipThrottledUntil = 0;
 }
 
-// Force a token into the dead state regardless of its current errorCount.
-// Used when DeepSeek explicitly mutes/bans an account (biz_code=5, 40004).
-export function markTokenDead(tokenOrEntry) {
+/**
+ * 兼容封装：强制禁用某凭据，忽略其当前 errorCount。
+ *
+ * 历史用法是"上游明确封禁/禁言时立即置死"（biz_code=5、40004）。现在语义
+ * 统一为禁用（见 disableToken），不再删除、也不再立刻重登（风控期内重登
+ * 会加重处罚）。新代码请直接调 disableToken 以便带上准确 reason 与 mute_until。
+ *
+ * 这里用 source:'auto' + 默认期限而非 manual：万一有遗漏的调用点，auto 能
+ * 自行到期恢复，而 manual 会永久停用，与本次修复的初衷相悖。
+ */
+export function markTokenDead(tokenOrEntry, options = {}) {
   const entry = typeof tokenOrEntry === 'string'
     ? tokenPool.find(t => t.token === tokenOrEntry)
     : tokenOrEntry;
-  if (!entry || entry.dead) return;
+  if (!entry) return false;
   entry.errorCount = tokenDeadThreshold();
-  entry.dead = true;
-  console.warn(`Token ${entry.token.slice(0, 12)}... marked DEAD (forced)`);
-
-  if (entry.password) {
-    refreshToken(entry).then(ok => {
-      if (ok) {
-        invalidateTokenSessions(entry.token);
-      }
-    }).catch(err => {
-      console.warn(`refresh then-callback failed for ${entry.email}: ${err.message}`);
-    });
-  }
+  return disableToken(entry, {
+    reason: options.reason || '上游封禁/禁言',
+    disabledUntil: options.disabledUntil || Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+    source: options.source || 'auto',
+  });
 }
 
 export function reportTokenSuccess(token) {
@@ -611,9 +768,11 @@ export function reportTokenSuccess(token) {
   // 成功即视为限流已解除：清冷却与计数，避免残留让 token 长时间闲置。
   entry.rateLimitHits = 0;
   entry.cooldownUntil = 0;
-  if (entry.dead) {
-    entry.dead = false;
-    console.log(`Token ${token.slice(0, 12)}... revived (was dead, now working)`);
+  // 自动禁用可被一次成功复活；手动禁用必须由管理员显式启用，不能被
+  // 一次偶然成功悄悄解除（否则人工下线的凭据会自己回到调度里）。
+  if (entry.disabled && entry.disabledSource === 'auto') {
+    enableToken(entry);
+    console.log(`Token ${token.slice(0, 12)}... revived (was disabled, now working)`);
   }
 }
 
@@ -629,7 +788,7 @@ function invalidateTokenSessions(token) {
 // Legacy: pickToken returns just the token string
 let tokenIndex = 0;
 export function pickToken(preferVision = false) {
-  let candidates = tokenPool.filter(t => !t.dead && t.token);
+  let candidates = tokenPool.filter(t => !t.disabled && t.token);
 
   if (preferVision) {
     const visionTokens = candidates.filter(t => t.visionCapable === true);
@@ -676,7 +835,8 @@ export async function loginAndAddToken(email, password) {
   if (nullEntry) {
     nullEntry.token = token;
     nullEntry.errorCount = 0;
-    nullEntry.dead = false;
+    // 人工触发的登录成功即视为可用，清掉禁用态（含手动禁用的显式启用场景）。
+    Object.assign(nullEntry, emptyDisabledState());
     const vision = await checkVisionCapability(token);
     nullEntry.visionCapable = vision;
     persistTokensToConfig();
@@ -685,7 +845,7 @@ export async function loginAndAddToken(email, password) {
   const existing = tokenPool.find(t => t.token === token);
   if (!existing) {
     const vision = await checkVisionCapability(token);
-    tokenPool.push({ token, email, password, visionCapable: vision, lastUsed: 0, errorCount: 0, activeRequests: 0, dead: false });
+    tokenPool.push(createTokenEntry({ token, email, password, visionCapable: vision }));
     persistTokensToConfig();
   }
   return token;
@@ -699,7 +859,9 @@ export function buildPersistedTokenEnv(pool) {
 
   for (const entry of pool) {
     const token = entry.token?.trim();
-    if (!token || entry.dead || seenTokens.has(token)) continue;
+    // 注意：这里**不**按 disabled 过滤。禁用是临时状态，凭据本体必须保留，
+    // 否则重启后禁用记录会因失去对应凭据而被剪掉，风控结束也无从恢复。
+    if (!token || seenTokens.has(token)) continue;
     seenTokens.add(token);
     dsTokens.push(token);
 
@@ -776,32 +938,97 @@ function idleThresholdMs() {
   return getConfig().deepseek.idleThresholdSeconds * 1000;
 }
 
-async function healthCheck() {
+/**
+ * 执行一次健康检查（含禁期已到凭据的恢复探测）。
+ * 导出以便测试与人工触发；常规运行由 startHealthCheck 定时调用。
+ */
+export async function healthCheck() {
   const now = Date.now();
   const idleThreshold = idleThresholdMs();
-  // Only check idle tokens — recently used ones are assumed valid
-  const idle = tokenPool.filter(t => !t.dead && t.token && (now - t.lastUsed) > idleThreshold);
+
+  // 1) 到期恢复探测：自动禁用的凭据过了禁期就试一次，成功即恢复。
+  //    手动禁用（until=0）不在此列，必须由管理员显式启用。
+  await probeRecoverableCredentials(now);
+
+  // 2) 常规健康检查：只查闲置 token（近期用过的视为有效）。
+  const idle = tokenPool.filter(t => !t.disabled && t.token && (now - t.lastUsed) > idleThreshold);
   if (idle.length === 0) return;
 
-  console.log(`Health check: ${idle.length} idle tokens (of ${tokenPool.filter(t => !t.dead).length} alive)`);
+  console.log(`Health check: ${idle.length} idle tokens (of ${tokenPool.filter(t => !t.disabled).length} active)`);
 
   for (const entry of idle) {
     const valid = await validateToken(entry.token);
     if (!valid) {
-      console.log(`Health check: ${entry.token.slice(0, 12)}... INVALID — ${entry.password ? 'refreshing' : 'marking dead'}`);
+      console.log(`Health check: ${entry.token.slice(0, 12)}... INVALID — ${entry.password ? 'refreshing' : 'disabling'}`);
       if (entry.password) {
+        // 注意：refreshToken 对禁用条目会直接返回 false，所以这里能走到说明未禁用。
         const ok = await refreshToken(entry);
-        if (!ok && entry.dead) {
-          console.log(`Health check: ${entry.email} is BANNED, removing from pool`);
-          const idx = tokenPool.indexOf(entry);
-          if (idx !== -1) tokenPool.splice(idx, 1);
+        if (!ok) {
+          disableToken(entry, {
+            reason: '健康检查失败（账号重登未成功）',
+            disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+            source: 'auto',
+          });
         }
       } else {
-        entry.dead = true;
-        entry.errorCount = tokenDeadThreshold();
+        disableToken(entry, {
+          reason: '健康检查失败（token 无效）',
+          disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+          source: 'auto',
+        });
       }
     } else {
       entry.lastUsed = now; // reset idle timer on successful check
+    }
+  }
+}
+
+/**
+ * 对"禁期已到"的自动禁用凭据做一次恢复探测。
+ *
+ * 账号型走 force 重登（禁用期已过，此时登录不再加重风控）；token 型直接
+ * 校验原 token 是否重新可用。探测失败则把禁期顺延一个默认周期，避免每个
+ * 健康检查周期都去打上游。
+ */
+async function probeRecoverableCredentials(now = Date.now()) {
+  const due = tokenPool.filter(t =>
+    t.disabled
+    && t.disabledSource === 'auto'
+    && t.disabledUntil > 0
+    && now >= t.disabledUntil,
+  );
+  if (due.length === 0) return;
+
+  console.log(`Health check: 探测 ${due.length} 个禁期已到的凭据`);
+
+  for (const entry of due) {
+    let ok = false;
+    if (entry.password) {
+      ok = await refreshToken(entry, { force: true });
+      if (ok) invalidateTokenSessions(entry.token);
+    } else if (entry.token) {
+      ok = await validateToken(entry.token);
+    }
+
+    if (ok) {
+      enableToken(entry);
+    } else {
+      // 顺延一个周期，等下次健康检查再试。
+      entry.disabledUntil = Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS;
+      const id = credentialIdOf(entry);
+      if (id) {
+        try {
+          setCredentialState('deepseek', id, {
+            disabled: true,
+            reason: entry.disabledReason || '恢复探测失败',
+            until: entry.disabledUntil,
+            at: entry.disabledAt || Date.now(),
+            source: 'auto',
+          });
+        } catch { /* 持久化失败不影响运行态 */ }
+      }
+      const label = entry.email || (entry.token ? `${entry.token.slice(0, 12)}...` : 'unknown');
+      console.log(`Health check: ${label} 仍未恢复，禁期顺延约 3 天`);
     }
   }
 }
@@ -812,6 +1039,9 @@ export function startHealthCheck() {
   if (healthCheckTimer) return;
   const interval = healthCheckIntervalMs();
   healthCheckTimer = setInterval(healthCheck, interval);
+  // 不阻止进程退出：健康检查是后台维护任务，不应因为它的定时器而让
+  // 进程（尤其是测试进程）无法结束。
+  healthCheckTimer.unref?.();
   console.log(`Health check enabled: every ${interval / 1000}s`);
 }
 
@@ -822,15 +1052,25 @@ export function stopHealthCheck() {
   }
 }
 
+/**
+ * 池状态（含禁用条目 —— 这是刻意的）。
+ *
+ * 以前这里 filter 掉 dead 条目，导致被风控淘汰的凭据在后台完全不可见，
+ * 管理员看不到"发生过什么"。现在禁用凭据也返回，并带 disabled 字段与
+ * 原因/剩余时间，由前端决定如何呈现（可用项与禁用项本就该都看得到）。
+ */
 export function getPoolInfo() {
   const now = Date.now();
-  return tokenPool.filter(t => !t.dead).map(t => ({
+  return tokenPool.map(t => ({
     token: t.token ? t.token.slice(0, 12) + '...' : 'NONE',
     email: t.email || null,
     visionCapable: t.visionCapable,
     errorCount: t.errorCount,
     activeRequests: t.activeRequests,
-    dead: t.dead,
+    disabled: Boolean(t.disabled),
+    disabledReason: t.disabledReason || null,
+    disabledSource: t.disabledSource || null,
+    disabledRemainingMs: t.disabled && t.disabledUntil > 0 ? Math.max(0, t.disabledUntil - now) : 0,
     maxConcurrent: maxConcurrentPerToken(),
     // 限流冷却剩余时间（毫秒），0 表示可用
     cooldownRemainingMs: Math.max(0, (t.cooldownUntil || 0) - now),
@@ -845,7 +1085,7 @@ export function getPoolInfo() {
 export function hasAlternativeToken(excludeToken = null) {
   const now = Date.now();
   return tokenPool.some(t =>
-    !t.dead
+    !t.disabled
     && t.token
     && t.token !== excludeToken
     && (t.cooldownUntil || 0) <= now,
@@ -853,11 +1093,11 @@ export function hasAlternativeToken(excludeToken = null) {
 }
 
 export function getAliveTokens() {
-  return tokenPool.filter(t => !t.dead && t.token).map(t => t.token);
+  return tokenPool.filter(t => !t.disabled && t.token).map(t => t.token);
 }
 
 export function getTotalCapacity() {
-  return tokenPool.filter(t => !t.dead && t.token).length * maxConcurrentPerToken();
+  return tokenPool.filter(t => !t.disabled && t.token).length * maxConcurrentPerToken();
 }
 
 export async function testDeepSeekToken(token) {
@@ -867,15 +1107,48 @@ export async function testDeepSeekToken(token) {
 }
 
 export function getDeepSeekTestToken() {
-  const entry = tokenPool.find(t => !t.dead && t.token);
+  const entry = tokenPool.find(t => !t.disabled && t.token);
   return entry?.token || null;
 }
 
+/**
+ * 池条目（含禁用项）。与 getPoolInfo 一样刻意不过滤禁用条目——
+ * admin 的测试接口需要看到它们才能判断"是禁用还是真没有"。
+ */
 export function getDeepSeekPoolEntries() {
-  return tokenPool.filter(t => !t.dead).map(t => ({
+  return tokenPool.map(t => ({
     token: t.token,
     email: t.email || null,
     visionCapable: t.visionCapable,
-    dead: t.dead,
+    disabled: Boolean(t.disabled),
+    disabledReason: t.disabledReason || null,
+    disabledUntil: t.disabledUntil || 0,
+    disabledSource: t.disabledSource || null,
   }));
+}
+
+/**
+ * 按凭据 id 启用/禁用（供 admin API 调用）。
+ * 返回受影响条目的一份快照（含 token，供调用方做启用后探测），找不到返回 null。
+ */
+export function setCredentialDisabledById(id, disabled, reason = '') {
+  const entry = tokenPool.find(t => credentialIdOf(t) === id);
+  if (!entry) return null;
+  if (disabled) {
+    disableToken(entry, { reason: reason || '管理员手动禁用', source: 'manual', disabledUntil: 0 });
+  } else {
+    enableToken(entry);
+  }
+  return { token: entry.token, email: entry.email, disabled: Boolean(entry.disabled) };
+}
+
+/** 后台「测试」入口：把校验失败的凭据禁用（而非按旧逻辑删除）。 */
+export function disableTokenByTokenString(token, reason) {
+  const entry = tokenPool.find(t => t.token === token);
+  if (!entry) return false;
+  return disableToken(entry, {
+    reason,
+    disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+    source: 'auto',
+  });
 }
