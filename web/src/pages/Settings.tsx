@@ -20,15 +20,53 @@ export function SettingsPage() {
   const [tab, setTab] = useState<TabId>('service');
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [busy, setBusy] = useState(false);
+  // 已保存配置的快照。用于判断是否存在未保存改动——改了一堆开关后切 Tab
+  // 或关页面会导致静默丢失，而用户往往以为已经存过了。
+  const [savedSnapshot, setSavedSnapshot] = useState<string>('');
+
+  /** 只取本页可编辑的字段做比较，避免无关字段（如运行态统计）造成误判。 */
+  const editableSnapshot = useCallback((c: PublicConfig) => JSON.stringify({
+    server: {
+      mergeThinking: c.server.mergeThinking,
+      enablePromptInjection: c.server.enablePromptInjection,
+      systemFingerprint: c.server.systemFingerprint,
+      clientDebugLog: c.server.clientDebugLog,
+      clientDebugLogDir: c.server.clientDebugLogDir,
+      clientDebugLogMaxChars: c.server.clientDebugLogMaxChars,
+    },
+    runtime: {
+      logDir: c.runtime.logDir,
+      sessionTtlSeconds: c.runtime.sessionTtlSeconds,
+      enableConversationAffinity: c.runtime.enableConversationAffinity,
+      conversationTtlMs: c.runtime.conversationTtlMs,
+      maxConversations: c.runtime.maxConversations,
+      enableFcErrorRetry: c.runtime.enableFcErrorRetry,
+    },
+  }), []);
 
   const load = useCallback(async () => {
     const result = await api.getConfig();
     setConfig(result.config);
-  }, []);
+    setSavedSnapshot(editableSnapshot(result.config));
+  }, [editableSnapshot]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const dirty = Boolean(config) && editableSnapshot(config as PublicConfig) !== savedSnapshot;
+
+  // 有未保存改动时拦截页面关闭/刷新：浏览器只在有用户交互后才会显示该提示。
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // 部分浏览器仍需设置 returnValue 才会弹确认。
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
 
   // 加载态用 Skeleton（此处原先用 EmptyState，语义错误：那是"没有数据"）。
   if (!config) {
@@ -69,6 +107,9 @@ export function SettingsPage() {
         },
       });
       setConfig(result.config);
+      // 以服务端归一化后的结果重置快照：这样脏状态反映的是"与服务端是否一致"，
+      // 而不是"与用户上次输入是否一致"。
+      setSavedSnapshot(editableSnapshot(result.config));
       toast('运行配置已保存', 'success');
     } catch (error) {
       toast(error instanceof Error ? error.message : '保存失败', 'danger');
@@ -268,8 +309,17 @@ export function SettingsPage() {
       ) : null}
 
       {tab !== 'startup' ? (
-        <div className="flex justify-end">
-          <Button type="submit" disabled={busy}>
+        <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-line bg-canvas/90 py-3 backdrop-blur">
+          {/* 未保存状态必须显式可见：这些开关改完不会自动生效，若用户以为
+              已经保存就切走，改动静默丢失且毫无提示。 */}
+          {dirty ? (
+            <span className="text-[13px] font-semibold text-warn-ink" role="status">
+              有未保存的改动
+            </span>
+          ) : (
+            <span className="text-[13px] text-ink-3">已与服务端一致</span>
+          )}
+          <Button type="submit" disabled={busy || !dirty}>
             {busy ? '保存中…' : '保存运行配置'}
           </Button>
         </div>

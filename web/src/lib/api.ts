@@ -36,7 +36,10 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    if (response.status === 401) notifyAuthExpired();
+    // 登录接口自身的 401 表示"凭据错误"，不是"会话过期"。若不排除，
+    // 用户在过期弹窗里输错 Key 会再次触发 auth:expired 广播，语义混乱。
+    const isAuthEndpoint = url.includes('/auth/login') || url.includes('/auth/status');
+    if (response.status === 401 && !isAuthEndpoint) notifyAuthExpired();
     throw new ApiError(await errorMessage(response), response.status);
   }
   return response.json() as Promise<T>;

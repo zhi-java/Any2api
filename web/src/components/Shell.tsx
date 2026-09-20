@@ -20,10 +20,25 @@ export function BrandMark({ size = 42 }: { size?: number }) {
   );
 }
 
+/**
+ * 登录视图。两种用法：
+ *   1. 未登录时的整页登录（默认标题）；
+ *   2. 会话过期时作为覆盖层复用（传 title/description/submitLabel），
+ *      此时不渲染整页背景，由调用方提供遮罩。
+ */
 export function LoginView({
   onSubmit,
+  title = 'OmniAPI 控制台',
+  description = '登录后查看服务状态、复制接入地址，并管理渠道与凭据。',
+  submitLabel = '登录',
+  embedded = false,
 }: {
   onSubmit: (apiKey: string) => Promise<void>;
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+  /** true 表示已被外层遮罩包裹，不再渲染整页背景。 */
+  embedded?: boolean;
 }) {
   const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState('');
@@ -43,20 +58,11 @@ export function LoginView({
     }
   }
 
-  return (
-    <div
-      className="grid min-h-screen place-items-center p-6"
-      style={{
-        background:
-          'radial-gradient(circle at 18% 10%, rgba(79,70,229,0.10), transparent 28%), radial-gradient(circle at 88% 8%, rgba(6,182,212,0.08), transparent 24%), var(--color-canvas)',
-      }}
-    >
-      <form onSubmit={submit} className="card grid w-full max-w-[420px] gap-3.5 p-7">
-        <BrandMark />
-        <h1 className="m-0 text-[26px] font-extrabold tracking-[-0.03em]">OmniAPI 控制台</h1>
-        <p className="m-0 text-sm leading-relaxed text-ink-2">
-          登录后查看服务状态、复制接入地址，并管理渠道与凭据。
-        </p>
+  const form = (
+    <form onSubmit={submit} className="card grid w-full max-w-[420px] gap-3.5 p-7">
+      <BrandMark />
+      <h1 className="m-0 text-[26px] font-extrabold tracking-[-0.03em]">{title}</h1>
+      <p className="m-0 text-sm leading-relaxed text-ink-2">{description}</p>
         <label className="grid gap-1.5">
           <span className="text-[13px] font-semibold text-ink-2">API Key</span>
           <input
@@ -78,9 +84,23 @@ export function LoginView({
           disabled={busy}
           className="min-h-[42px] cursor-pointer rounded-xl bg-accent px-4 py-2.5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(79,70,229,0.22)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {busy ? '登录中…' : '登录'}
+          {busy ? '登录中…' : submitLabel}
         </button>
       </form>
+  );
+
+  // embedded：由调用方提供遮罩，这里只交出表单本身。
+  if (embedded) return form;
+
+  return (
+    <div
+      className="grid min-h-screen place-items-center p-6"
+      style={{
+        background:
+          'radial-gradient(circle at 18% 10%, rgba(79,70,229,0.10), transparent 28%), radial-gradient(circle at 88% 8%, rgba(6,182,212,0.08), transparent 24%), var(--color-canvas)',
+      }}
+    >
+      {form}
     </div>
   );
 }

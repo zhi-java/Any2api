@@ -71,6 +71,7 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
   const [testResult, setTestResult] = useState<ChannelTestResult | null>(null);
   const [filter, setFilter] = useState<'all' | 'active' | 'disabled'>('all');
   const [showDisabled, setShowDisabled] = useState(true);
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   const load = useCallback(async () => {
     const result = await api.getChannelConfig(channel);
@@ -164,6 +165,13 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
 
   async function test() {
     setTesting(true);
+    // 测试是单次请求、后端逐个打上游，凭据多时可达数秒。显示已用时长，
+    // 让用户知道"还在跑"而不是"卡住了"——原先只有按钮文字变化。
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const ticker = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
     try {
       const result = await api.testChannel(channel);
       setTestResult(result);
@@ -180,7 +188,9 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
     } catch (error) {
       toast(error instanceof Error ? error.message : '测试失败', 'danger');
     } finally {
+      window.clearInterval(ticker);
       setTesting(false);
+      setElapsedSec(0);
     }
   }
 
@@ -202,10 +212,17 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
             hint={`${allRows.filter(r => !r.disabled).length} 可用 · ${disabledCount} 已禁用`}
             action={
               <Button size="sm" variant="secondary" onClick={test} disabled={testing}>
-                {testing ? '测试中…' : '测试渠道'}
+                {testing ? `测试中… ${elapsedSec}s` : '测试渠道'}
               </Button>
             }
           />
+
+          {/* 测什么、要等多久：该操作会逐个向上游校验每个凭据，凭据多时较慢。 */}
+          {testing ? (
+            <p className="mb-3 text-[12px] text-ink-3" role="status">
+              正在逐个向上游校验凭据，数量较多时可能需要十几秒，请勿关闭页面。
+            </p>
+          ) : null}
 
           {/* 状态筛选：禁用项较多时（风控批量禁用）快速聚焦到可用凭据。 */}
           {allRows.length > 0 ? (

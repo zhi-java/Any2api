@@ -8,7 +8,33 @@ import { MetricCard, MetricGrid } from '../components/Metric';
 import type { TimeseriesPoint } from '../types';
 
 const RANGES = ['1h', '3h', '6h', '12h', '24h', '48h', '72h'];
-const COLORS = { primary: '#4f46e5', ok: '#10b981', warn: '#f59e0b', bad: '#ef4444', info: '#6366f1' };
+
+/**
+ * 图表配色从设计 token 读取，不再硬编码 hex。
+ *
+ * 原因：原先这里重复定义了一份与 index.css 相同的色值，改 token 时图表不会
+ * 跟着变，长期必然漂移。chart.js 需要具体色值而非 CSS 变量引用，因此在运行时
+ * 读取计算后的变量值；变量缺失时回落到同样的字面量，保证不退化为不可见。
+ */
+function tokenColor(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function chartColors() {
+  return {
+    primary: tokenColor('--color-accent', '#4f46e5'),
+    // 图表线条属于大块图形，用亮色即可（文字才需要 -ink 深色变体）。
+    ok: tokenColor('--color-ok', '#10b981'),
+    warn: tokenColor('--color-warn', '#f59e0b'),
+    bad: tokenColor('--color-bad', '#ef4444'),
+    info: tokenColor('--color-info', '#6366f1'),
+    // 坐标轴文字用小号字，需要满足对比度：用 ink-2 而非更浅的 ink-3。
+    axis: tokenColor('--color-ink-2', '#475569'),
+    grid: tokenColor('--color-line', '#e2e8f0'),
+  };
+}
 
 interface Series {
   label: string;
@@ -27,6 +53,7 @@ function timeLabels(points: TimeseriesPoint[]): string[] {
 }
 
 function lineConfig(): ChartConfiguration<'line'> {
+  const c = chartColors();
   return {
     type: 'line',
     data: { labels: [], datasets: [] },
@@ -37,8 +64,8 @@ function lineConfig(): ChartConfiguration<'line'> {
       interaction: { intersect: false, mode: 'index' },
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { display: false }, ticks: { color: '#64748b', maxTicksLimit: 6 } },
-        y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.25)' }, ticks: { color: '#64748b' } },
+        x: { grid: { display: false }, ticks: { color: c.axis, maxTicksLimit: 6 } },
+        y: { beginAtZero: true, grid: { color: c.grid }, ticks: { color: c.axis } },
       },
     },
   };
@@ -92,18 +119,20 @@ export function PerformancePage() {
   const points = series.data?.points ?? [];
   const labels = timeLabels(points);
   const m = metrics.data ?? {};
+  // 在渲染时读取 token：模块加载时读会早于样式生效，拿不到值。
+  const colors = chartColors();
 
   const chartSeries: { title: string; series: Series[] }[] = [
-    { title: 'RPM', series: [{ label: 'RPM', color: COLORS.primary, data: points.map(p => p.rpm ?? 0) }] },
+    { title: 'RPM', series: [{ label: 'RPM', color: colors.primary, data: points.map(p => p.rpm ?? 0) }] },
     {
       title: '首字延迟',
       series: [
-        { label: 'P50', color: COLORS.ok, data: points.map(p => p.ttfbP50 ?? 0) },
-        { label: 'P90', color: COLORS.warn, data: points.map(p => p.ttfbP90 ?? 0) },
+        { label: 'P50', color: colors.ok, data: points.map(p => p.ttfbP50 ?? 0) },
+        { label: 'P90', color: colors.warn, data: points.map(p => p.ttfbP90 ?? 0) },
       ],
     },
-    { title: 'Token 速度', series: [{ label: 'Token/s', color: COLORS.info, data: points.map(p => p.tokenSpeed ?? 0) }] },
-    { title: '错误率', series: [{ label: '错误率', color: COLORS.bad, data: points.map(p => p.errorRate ?? 0) }] },
+    { title: 'Token 速度', series: [{ label: 'Token/s', color: colors.info, data: points.map(p => p.tokenSpeed ?? 0) }] },
+    { title: '错误率', series: [{ label: '错误率', color: colors.bad, data: points.map(p => p.errorRate ?? 0) }] },
   ];
 
   return (
