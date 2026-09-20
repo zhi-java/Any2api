@@ -1,4 +1,5 @@
 import { ProxyAgent } from 'undici';
+import { createHash } from 'node:crypto';
 
 // Mimic real Chrome 120 browser session
 const UA_VERSION = '120.0.0.0';
@@ -43,19 +44,15 @@ function ensureCookies(token) {
   const HWWAFSESID = `${randomAlphaNum(4)}${randomHex(12)}`;
   const dsSessionId = `${randomHex(32)}`;
   const thumbcacheKey = randomHex(32);
-  const deviceId = generateDeviceId();
+  // 与请求参数 did 使用同一派生值：真实浏览器里 thumbcache 与 did 本就来自
+  // 同一份设备指纹；两处用不同随机值反而是可被识别的"不一致"信号。
+  const deviceId = deriveDeviceId(token);
   const thumbcacheValue = deviceId;
   const cookie = `smidV2=${smidV2}; HWWAFSESTIME=${HWWAFSESTIME}; HWWAFSESID=${HWWAFSESID}; ds_session_id=${dsSessionId}; .thumbcache_${thumbcacheKey}=${encodeURIComponent(thumbcacheValue)}`;
   tokenCookies.set(token, { cookie, deviceId });
   return tokenCookies.get(token);
 }
 
-// Generate deviceId from fp-it-acc.portal101.cn format (base64-like)
-function generateDeviceId() {
-  const bytes = new Uint8Array(48);
-  for (let i = 0; i < 48; i++) bytes[i] = Math.floor(Math.random() * 256);
-  return Buffer.from(bytes).toString('base64').replace(/=/g, '') + '==';
-}
 
 // HIF (Hidden Integration Feature) token management
 // DeepSeek uses hif-leim and hif-dliq headers for request validation
@@ -217,9 +214,40 @@ export function loginHeaders(extra = {}) {
   };
 }
 
-// Persistent device ID (per process lifetime) — used for settings endpoint
-const deviceId = randomHex(8) + '-' + randomHex(4) + '-' + randomHex(4) + '-' + randomHex(4) + '-' + randomHex(12);
-export function getDeviceId() { return deviceId; }
+// 设备标识（device id）。
+//
+// 为什么必须按 token 派生而不是进程级共享：池中每个账号在上游看来都应是
+// 一台独立设备。若所有账号共用一个进程级 did，上游可以据此把整池账号关联
+// 为同一来源——这与"未配置代理时共用出口 IP"是同一类关联信号，会显著抬高
+// 批量风控的概率。
+//
+// 采用确定性派生（同 token → 同 did）而非每次随机：一是与 ensureCookies 里
+// 按 token 生成的 deviceId 语义一致，二是同一账号多次请求保持稳定设备身份，
+// 频繁变更设备反而更像异常客户端。
+function deriveDeviceId(token) {
+  const digest = createHash('sha256').update(`omni-device:${token || 'anonymous'}`).digest('hex');
+  // 拼成 UUID 形态，贴合真实浏览器从指纹采集得到的 did 格式。
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    `4${digest.slice(13, 16)}`, // 版本位，模拟 UUID v4
+    `a${digest.slice(17, 20)}`, // 变体位
+    digest.slice(20, 32),
+  ].join('-');
+}
+
+// 无 token 场景（如健康检查）的兜底设备标识，进程内保持稳定。
+const anonymousDeviceId = randomHex(8) + '-' + randomHex(4) + '-' + randomHex(4) + '-' + randomHex(4) + '-' + randomHex(12);
+
+/** 取设备标识。传 token 则返回该账号专属的稳定 did；不传则返回匿名兜底值。 */
+export function getDeviceId(token) {
+  return token ? deriveDeviceId(token) : anonymousDeviceId;
+}
+
+/** 供 checkVisionCapability 等按 token 查询设备能力的调用方使用。 */
+export function getDeviceIdForToken(token) {
+  return deriveDeviceId(token);
+}
 
 // Wrap fetch to use proxy dispatcher when available
 export async function proxiedFetch(url, options = {}) {

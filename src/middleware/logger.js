@@ -90,6 +90,67 @@ function getLogPath(date) {
   return p;
 }
 
+/**
+ * 上游状态事件的落盘路径（按天）。
+ *
+ * 为什么单独一份：风控/限流这类事件的原始报文（mute_until、biz_code、
+ * HTTP 状态）以前只走 console.warn，随容器重启即丢失。上次排查"8 个账号
+ * 为何被同时禁言"时，最关键的证据就是拿不到那一刻的上游响应——只能靠
+ * 事后推断。这类事件低频（每天几条到几十条），单独落一份便于 grep 归因。
+ *
+ * 只写不读：不在内存中保留，符合低配服务器的内存约束；需要时直接 tail。
+ */
+function getUpstreamEventPath(date) {
+  const safeDate = sanitizeDate(date);
+  const dir = join(currentLogDir(), serviceName);
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `upstream-events-${safeDate}.jsonl`);
+  assertWithinLogDir(p);
+  return p;
+}
+
+/**
+ * 把凭据掩码为可识别但不可复原的形式。
+ *
+ * 真实 token 为 64 字符，取前 12 位足以在池中对上号；但对短输入（测试桩、
+ * 误传值）必须整体掩码，否则"截断"反而成了完整泄露。
+ */
+function maskCredential(value) {
+  if (!value) return null;
+  const text = String(value);
+  if (text.length <= 16) return `***(${text.length}字符)`;
+  return `${text.slice(0, 12)}…`;
+}
+
+/**
+ * 记录一次上游状态事件（限流/封禁/禁言/token 失效等）。
+ *
+ * @param {object} event
+ * @param {string} event.type    事件类型，如 'rate_limited' | 'banned' | 'muted' | 'token_invalid'
+ * @param {string} [event.token] 凭据前缀（仅前 12 位，不落完整凭据）
+ * @param {string} [event.email]
+ * @param {object} [event.detail] 原始响应的关键字段（code/biz_code/mute_until/status…）
+ */
+export function recordUpstreamEvent(event = {}) {
+  try {
+    const entry = {
+      time: new Date().toISOString(),
+      type: String(event.type || 'unknown'),
+      // 凭据只记前缀：这份文件用于归因，不该成为凭据泄露面。
+      // 注意不能简单 slice(0,12) —— 真实 token 是 64 字符，但若传入的是短值
+      // （如测试桩、误传的邮箱前缀），全量落盘就等于泄露。这里对短于阈值的
+      // 输入一律整体掩码，只留长度信息。
+      token: maskCredential(event.token),
+      email: event.email || null,
+      detail: event.detail || null,
+    };
+    appendFileSync(getUpstreamEventPath(), JSON.stringify(entry) + '\n');
+  } catch (e) {
+    // 日志写入失败绝不能影响请求处理。
+    console.error('Upstream event log write failed:', e.message);
+  }
+}
+
 function writeLog(entry) {
   try {
     appendFileSync(getLogPath(), JSON.stringify(entry) + '\n');

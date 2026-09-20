@@ -1,5 +1,6 @@
 import { loadEnvironment } from '../utils/env.js';
 import { clearCredentialState, getConfig, secretId, setCredentialState, updateChannelConfig } from './config-store.js';
+import { recordUpstreamEvent } from '../middleware/logger.js';
 import { invalidateByTokenPrefix } from './conversation.js';
 import { invalidateTokenSessions as invalidateSessionCache } from './session.js';
 
@@ -198,7 +199,7 @@ function applyPersistedCredentialStates(states = {}) {
   }
 }
 
-import { loginHeaders, getHeaders, getDeviceId, proxiedFetch } from '../utils/headers.js';
+import { loginHeaders, getHeaders, getDeviceIdForToken, proxiedFetch } from '../utils/headers.js';
 
 async function login(email, password) {
   // Use a fresh deviceId for login — real browser gets it from portal101.cn device fingerprint
@@ -289,7 +290,9 @@ async function login(email, password) {
 
 async function checkVisionCapability(token) {
   try {
-    const res = await proxiedFetch(`${BASE_URL}/api/v0/client/settings?did=${getDeviceId()}&scope=model`, {
+    // did 必须按 token 派生：传进程级共享值会让上游把整池账号识别为同一设备，
+    // 这在风控视角下是明确的关联信号（详见 headers.js 的说明）。
+    const res = await proxiedFetch(`${BASE_URL}/api/v0/client/settings?did=${getDeviceIdForToken(token)}&scope=model`, {
       headers: await getHeaders(token),
     });
     const json = await res.json();
@@ -572,7 +575,7 @@ export const CREDENTIAL_DISABLE_DEFAULT_MS = 3 * 24 * 60 * 60 * 1000;
  * @param {{ reason?: string, disabledUntil?: number, source?: 'auto'|'manual' }} options
  *   disabledUntil 为绝对时间戳；省略或 0 表示手动禁用（不自动恢复）。
  */
-export function disableToken(tokenOrEntry, { reason = '', disabledUntil = 0, source = 'auto' } = {}) {
+export function disableToken(tokenOrEntry, { reason = '', disabledUntil = 0, source = 'auto', detail = null, eventType = 'credential_disabled' } = {}) {
   const entry = typeof tokenOrEntry === 'string'
     ? tokenPool.find(t => t.token === tokenOrEntry)
     : tokenOrEntry;
@@ -604,6 +607,20 @@ export function disableToken(tokenOrEntry, { reason = '', disabledUntil = 0, sou
     ? `，约 ${Math.ceil((entry.disabledUntil - Date.now()) / 3600000)} 小时后自动探测恢复`
     : '（手动禁用，不自动恢复）';
   console.warn(`[DeepSeek] 凭据 ${label} 已禁用：${entry.disabledReason}${untilText}`);
+
+  // 落盘存档：console.warn 会随容器重启丢失，而风控类事件恰恰是事后
+  // 归因时最需要的证据（"那一刻上游到底返回了什么"）。
+  recordUpstreamEvent({
+    type: eventType,
+    token: entry.token,
+    email: entry.email,
+    detail: {
+      reason: entry.disabledReason,
+      source: entry.disabledSource,
+      until: entry.disabledUntil || null,
+      ...(detail ? { upstream: detail } : {}),
+    },
+  });
   return true;
 }
 
@@ -642,7 +659,7 @@ const RATE_LIMIT_MAX_COOLDOWN_SECONDS = 3600;
  * 否则短暂限流会把好凭据永久剔除。这里改为设置冷却窗口——冷却期内该
  * token 不参与分配，其他凭据接管；到期自动恢复。
  */
-export function reportTokenRateLimited(token) {
+export function reportTokenRateLimited(token, detail = null) {
   const entry = tokenPool.find(t => t.token === token);
   if (!entry) return { cooldownSeconds: 0 };
   entry.rateLimitHits = (entry.rateLimitHits || 0) + 1;
@@ -655,6 +672,18 @@ export function reportTokenRateLimited(token) {
     `[DeepSeek] Token ${String(entry.token).slice(0, 12)}... 命中限流，冷却 ${cooldownSeconds}s `
     + `(第 ${entry.rateLimitHits} 次)`,
   );
+  // 限流是风控的早期信号：连续命中往往先于封禁/禁言出现。落盘后可据此
+  // 回溯"什么时候开始不对劲"，这是 console 日志给不了的。
+  recordUpstreamEvent({
+    type: 'rate_limited',
+    token: entry.token,
+    email: entry.email,
+    detail: {
+      cooldownSeconds,
+      hitCount: entry.rateLimitHits,
+      ...(detail ? { upstream: detail } : {}),
+    },
+  });
   return { cooldownSeconds, rateLimitHits: entry.rateLimitHits };
 }
 

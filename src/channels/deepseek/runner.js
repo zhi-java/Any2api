@@ -315,18 +315,20 @@ export async function* runDeepSeek(internalRequest, context = {}) {
         // 流中途才报限流：数据已开始下发，本次无法更换凭据，但要让该
         // 凭据进入冷却，避免后续请求继续撞它。
         const isRateLimited = event.code === 429 || event.code === 40301;
+        // 上游原始报文（流内已解析出 code 与 message）随事件落盘，便于事后归因。
+        const upstream = { code: event.code ?? null, msg: event.message ?? null, phase: 'stream' };
         if (slot && isRateLimited) {
-          reportTokenRateLimited(slot.token);
+          reportTokenRateLimited(slot.token, upstream);
         }
         // 流中途才暴露的终态失败（封禁/失效/禁言）同样要处置凭据：数据虽已
         // 下发，但该凭据已不可用，禁用后由其它凭据接管，并保留待恢复。
         if (slot) {
           if (event.code === 40004) {
-            disableToken(slot.token, { reason: '账号被封禁 (40004)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto' });
+            disableToken(slot.token, { reason: '账号被封禁 (40004)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto', detail: upstream, eventType: 'banned' });
           } else if (event.code === 40003) {
             reportTokenError(slot.token);
           } else if (event.code === 5) {
-            disableToken(slot.token, { reason: '账号被禁言 (biz_code=5)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto' });
+            disableToken(slot.token, { reason: '账号被禁言 (biz_code=5)', disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS, source: 'auto', detail: upstream, eventType: 'muted' });
           }
         }
         throw new InternalAPIError(event.message || `DeepSeek error ${event.code}`, {

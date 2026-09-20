@@ -59,6 +59,8 @@ async function markTokenUnavailable(token, options = {}) {
     reason: options.reason || '上游禁言',
     disabledUntil: options.disabledUntil || Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
     source: 'auto',
+    detail: options.upstream || null,
+    eventType: options.eventType || 'credential_disabled',
   });
   await invalidateTokenRuntimeState(token);
 }
@@ -85,6 +87,16 @@ async function throwDeepSeekErrorFromJson(json, slot) {
 
   if (!isDeepSeekJsonError(json)) return;
 
+  // 上游原始报文的精简快照，随事件落盘供事后归因。
+  // 只取关键字段而非整个 json：避免把无关内容（甚至对话片段）写进日志。
+  const upstream = {
+    code: code ?? null,
+    bizCode: json?.data?.biz_code ?? null,
+    bizMsg: json?.data?.biz_msg ?? null,
+    msg: json?.msg ?? null,
+    muteUntil: json?.data?.biz_data?.mute_until ?? null,
+  };
+
   if (code === 40003) {
     // token 失效：先让它累计错误（保留原有"多次失败才淘汰"的语义），
     // 达到阈值由 reportTokenError 统一转禁用；这里不再直接置死。
@@ -94,7 +106,7 @@ async function throwDeepSeekErrorFromJson(json, slot) {
   if (code === 40004) {
     const entry = getPoolInfo().find(t => slot.token.startsWith(t.token.replace('...', '')));
     console.error(`Account BANNED during completion: ${entry?.email || slot.token.slice(0, 12)}...`);
-    await markTokenUnavailable(slot.token, { reason: '账号被封禁 (40004)' });
+    await markTokenUnavailable(slot.token, { reason: '账号被封禁 (40004)', upstream, eventType: 'banned' });
     throw new Error('Account banned (40004)');
   }
   if (code === 40301) {
@@ -113,7 +125,7 @@ async function throwDeepSeekErrorFromJson(json, slot) {
   }
   if (code === 429) {
     // 上游限流：给该凭据设置冷却窗口并换其它凭据重试。
-    reportTokenRateLimited(slot.token);
+    reportTokenRateLimited(slot.token, upstream);
     const err = new Error('Rate limited (429)');
     err.credentialFailover = true;
     throw err;
@@ -126,6 +138,8 @@ async function throwDeepSeekErrorFromJson(json, slot) {
     await markTokenUnavailable(slot.token, {
       reason: `账号被禁言${rawUntil ? `（至 ${rawUntil}）` : ''}`,
       disabledUntil: muteUntilMs || Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+      upstream,
+      eventType: 'muted',
     });
     const err = new Error(`DeepSeek user muted (biz_code=5)${rawUntil ? ` until ${rawUntil}` : ''}: ${message}`);
     err.credentialFailover = true;
