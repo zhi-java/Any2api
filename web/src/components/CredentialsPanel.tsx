@@ -73,7 +73,9 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
   const [password, setPassword] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ChannelTestResult | null>(null);
-  const [filter, setFilter] = useState<'all' | 'active' | 'pending' | 'disabled'>('all');
+  // 默认展示「可用」：打开页面时最关心的是"现在有哪些凭据能真正干活"，
+  // 而不是被待登录/已禁用的条目淹没。
+  const [filter, setFilter] = useState<'active' | 'pending' | 'disabled' | 'all'>('active');
   const [showDisabled, setShowDisabled] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
 
@@ -85,7 +87,7 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
   useEffect(() => {
     setConfig(null);
     setType('token');
-    setFilter('all');
+    setFilter('active');
     void load();
   }, [load]);
 
@@ -246,10 +248,11 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
             <div className="mb-3 flex flex-wrap items-center gap-2">
               {(
                 [
-                  ['all', `全部 ${allRows.length}`],
+                  // 顺序：具体状态在前，"全部"作为兜底放在最后。
                   ['active', `可用 ${availableCount}`],
                   ['pending', `待登录 ${pendingCount}`],
                   ['disabled', `已禁用 ${disabledCount}`],
+                  ['all', `全部 ${allRows.length}`],
                 ] as const
               ).map(([key, label]) => (
                 <button
