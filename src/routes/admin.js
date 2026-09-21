@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { appVersion, srcPath } from '../utils/runtime-paths.js';
-import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck, setCredentialDisabledById, disableTokenByTokenString } from '../services/auth.js';
+import { getPoolInfo, getTotalCapacity, addTokenToPool, loginAndAddToken, removeTokenFromPool, syncTokenPoolFromConfig, testDeepSeekToken, startHealthCheck, stopHealthCheck, setCredentialDisabledById, disableTokenByTokenString, getCredentialRuntimeStatus } from '../services/auth.js';
 import { getSessionInfo } from '../services/session.js';
 import { getConversationInfo } from '../services/conversation.js';
 import { getQueueInfo } from '../services/queue.js';
@@ -89,6 +89,9 @@ function buildChannels() {
   const deepseekPool = getPoolInfo();
   const deepseekAlive = deepseekPool.filter(item => !item.disabled && item.token !== 'NONE').length;
   const deepseekDisabled = deepseekPool.filter(item => item.disabled).length;
+  // 「待登录」= 已配置但尚未取得 token 且未禁用。单列出来是为了让概览与
+  // 凭据面板能用同一套口径解释"为什么可用数小于总数"。
+  const deepseekPending = deepseekPool.filter(item => !item.disabled && item.token === 'NONE').length;
   const errors = summarizeRecentErrors();
   const { byChannel } = summarizeModelMetrics();
 
@@ -102,6 +105,7 @@ function buildChannels() {
       credentialCount: deepseekPool.length,
       availableCount: deepseekAlive,
       disabledCount: deepseekDisabled,
+      pendingCount: deepseekPending,
       activeRequests: deepseekPool.reduce((sum, item) => sum + (item.activeRequests || 0), 0),
       capacity: getTotalCapacity(),
       mode: config.deepseek.accounts.length > 0 ? 'account-pool' : 'token-pool',
@@ -158,6 +162,28 @@ function ensureChannel(channel) {
     error.statusCode = 404;
     throw error;
   }
+}
+
+/**
+ * 渠道公开配置 + 运行时状态注解。
+ *
+ * 为什么需要合并：配置侧（tokens/accounts）只知道"是否被标记禁用"，不知道
+ * 凭据**当前有没有 token**；而"有 token 才能参与调度"是运行时的事实。
+ * 不合并的话，一个"已配置但未登录/被封禁"的账号在凭据面板里会显示为可用，
+ * 在渠道概览里却计入不可用——同一件事两处数字不同。
+ *
+ * 注解字段：hasToken / disabled / pending（待登录），与 auth.js 的
+ * getCredentialRuntimeStatus 一一对应。
+ */
+function publicChannelConfigWithRuntime(channel) {
+  const config = getPublicChannelConfig(channel);
+  if (channel !== 'deepseek') return config;
+  const runtime = getCredentialRuntimeStatus();
+  const decorate = (list) => (list || []).map(item => {
+    const rt = runtime[item.id] || { hasToken: false, disabled: Boolean(item.disabled), pending: !item.disabled };
+    return { ...item, ...rt };
+  });
+  return { ...config, tokens: decorate(config.tokens), accounts: decorate(config.accounts) };
 }
 
 function applyChannelRuntime(channel) {
@@ -248,7 +274,7 @@ router.get('/api/channels/:channel/config', (req, res) => {
   try {
     const { channel } = req.params;
     ensureChannel(channel);
-    res.json({ channel, config: getPublicChannelConfig(channel) });
+    res.json({ channel, config: publicChannelConfigWithRuntime(channel) });
   } catch (error) {
     jsonError(res, error);
   }
@@ -260,7 +286,7 @@ router.put('/api/channels/:channel/config', (req, res) => {
     ensureChannel(channel);
     updateChannelConfig(channel, { ...getConfig()[channel], ...(req.body || {}) });
     applyChannelRuntime(channel);
-    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+    res.json({ success: true, channel, config: publicChannelConfigWithRuntime(channel) });
   } catch (error) {
     jsonError(res, error);
   }
@@ -272,7 +298,7 @@ router.post('/api/channels/:channel/credentials', (req, res) => {
     ensureChannel(channel);
     addChannelCredential(channel, req.body || {});
     applyChannelRuntime(channel);
-    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+    res.json({ success: true, channel, config: publicChannelConfigWithRuntime(channel) });
   } catch (error) {
     jsonError(res, error, 400);
   }
@@ -285,7 +311,7 @@ router.delete('/api/channels/:channel/credentials/:id', (req, res) => {
     const removed = removeChannelCredential(channel, id);
     if (!removed) return res.status(404).json({ error: { message: 'credential not found' } });
     applyChannelRuntime(channel);
-    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+    res.json({ success: true, channel, config: publicChannelConfigWithRuntime(channel) });
   } catch (error) {
     jsonError(res, error);
   }
@@ -310,7 +336,7 @@ router.patch('/api/channels/:channel/credentials/:id', (req, res) => {
     const target = setCredentialDisabledById(id, disabled);
     if (!target) return res.status(404).json({ error: { message: 'credential not found in runtime pool' } });
 
-    res.json({ success: true, channel, config: getPublicChannelConfig(channel) });
+    res.json({ success: true, channel, config: publicChannelConfigWithRuntime(channel) });
   } catch (error) {
     jsonError(res, error);
   }
@@ -329,17 +355,34 @@ router.post('/api/channels/:channel/test', async (req, res) => {
     const results = [];
 
     if (channel === 'deepseek') {
-      const { testDeepSeekToken, getDeepSeekPoolEntries, loginAndAddToken } = await import('../services/auth.js');
+      const { testDeepSeekToken, getDeepSeekPoolEntries, loginAndAddToken, disableAccountByEmail } = await import('../services/auth.js');
       let pool = getDeepSeekPoolEntries();
-      const needsLogin = pool.length === 0 || pool.some(entry => !entry.token);
-      if (needsLogin && config.deepseek.accounts.length > 0) {
-        for (const account of config.deepseek.accounts) {
+      // 只给**缺 token 的账号**登录。
+      //
+      // 旧实现是"只要有任意账号没 token，就给全部账号重登"。而 DeepSeek
+      // 每次登录都轮换 token，重登健康账号既无必要（还会作废旧 token 的会话），
+      // 又因 loginAndAddToken 的缺陷造成池条目重复（见该函数注释）。
+      // 有封禁账号时这个条件恒成立，等于每次点测试都在重复伤害健康账号。
+      const tokenlessAccounts = config.deepseek.accounts.filter(account => {
+        const entry = pool.find(e => e.email === String(account.email));
+        return !entry || !entry.token;
+      });
+      if (tokenlessAccounts.length > 0) {
+        for (const account of tokenlessAccounts) {
           try {
             await loginAndAddToken(String(account.email), String(account.password));
             results.push({ label: account.email, success: true, message: '账号登录成功，Token 已获取' });
           } catch (err) {
-            // 不删除账号 — 登录失败通常是上游 API 格式变更导致，不是账号无效
-            results.push({ label: account.email, success: false, message: `登录失败: ${err.message}（账号已保留）` });
+            const message = String(err?.message || '');
+            // 明确"被封禁"时标记禁用：这类账号不可自愈，若仍显示"等待自动登录"
+            // 会误导用户以为迟早会恢复。其它登录失败（WAF 拦截、上游格式变更等）
+            // 多为临时性，保持"保留待重试"。
+            if (/banned/i.test(message)) {
+              disableAccountByEmail(String(account.email), '账号被封禁（登录时上游明确返回）');
+              results.push({ label: account.email, success: false, message: '账号已被上游封禁，已标记禁用' });
+            } else {
+              results.push({ label: account.email, success: false, message: `登录失败: ${message}（账号已保留）` });
+            }
           }
         }
         pool = getDeepSeekPoolEntries();
@@ -375,7 +418,9 @@ router.post('/api/channels/:channel/test', async (req, res) => {
         success: results.some(r => r.success),
         channel,
         results,
-        disabled: true,
+        // 原本这里硬编码 true，导致即便没有凭据被禁用，前端也会弹出
+        // "失效凭据已禁用"的提示，与实际状态不符。
+        disabled: disabledCount > 0,
         disabledCount,
       });
     }

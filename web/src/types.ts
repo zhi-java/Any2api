@@ -21,6 +21,10 @@ export interface CredentialSummary {
   disabledSource?: 'auto' | 'manual' | null;
   /** 距自动恢复剩余毫秒，0 表示无自动恢复计划 */
   disabledRemainingMs?: number;
+  /** 运行时：是否已持有上游 token（账号型凭据需先登录才有） */
+  hasToken?: boolean;
+  /** 运行时：已配置但尚未取得 token 且未禁用 —— 即"待登录" */
+  pending?: boolean;
 }
 
 /** 外部 API Key 的公开摘要（比渠道凭据多 name / createdAt）。 */
@@ -46,6 +50,8 @@ export interface Channel {
   availableCount: number;
   /** 被禁用的凭据数 */
   disabledCount?: number;
+  /** 已配置但尚未取得 token 的凭据数（待登录） */
+  pendingCount?: number;
   activeRequests: number;
   capacity: number;
   mode: string;

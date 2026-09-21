@@ -51,6 +51,10 @@ interface CredentialRow {
   disabledReason?: string;
   disabledRemainingMs?: number;
   disabledSource?: 'auto' | 'manual' | null;
+  /** 运行时：是否已持有 token */
+  hasToken?: boolean;
+  /** 运行时：已配置但尚未取得 token 且未禁用 */
+  pending?: boolean;
 }
 
 function credentialsFor(config: Record<string, unknown>): CredentialRow[] {
@@ -69,7 +73,7 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
   const [password, setPassword] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ChannelTestResult | null>(null);
-  const [filter, setFilter] = useState<'all' | 'active' | 'disabled'>('all');
+  const [filter, setFilter] = useState<'all' | 'active' | 'pending' | 'disabled'>('all');
   const [showDisabled, setShowDisabled] = useState(true);
   const [elapsedSec, setElapsedSec] = useState(0);
 
@@ -87,12 +91,21 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
 
   const meta = CHANNEL_META[channel];
   const allRows = credentialsFor(config ?? {});
+
+  // 三态统计，与「渠道概览」使用同一口径（都来自服务端的运行时注解）：
+  //   可用   = 已持有 token 且未禁用 —— 真正能参与调度
+  //   待登录 = 已配置但尚无 token 且未禁用（账号模式下需先登录）
+  //   已禁用 = 被风控/人工标记禁用
+  // 旧实现只按"是否标记禁用"统计，把"待登录"也算作可用，导致与概览对不上。
+  const availableCount = allRows.filter(r => !r.disabled && r.hasToken).length;
+  const pendingCount = allRows.filter(r => !r.disabled && !r.hasToken).length;
   const disabledCount = allRows.filter(r => r.disabled).length;
 
   // 筛选优先；未筛选且禁用项折叠时，把禁用项从主列表隐藏（但仍然计数），
   // 避免风控批量禁用时（实测一次 8 个）列表被禁用项淹没、可用的反而难找。
   const rows = allRows.filter(row => {
-    if (filter === 'active') return !row.disabled;
+    if (filter === 'active') return !row.disabled && row.hasToken;
+    if (filter === 'pending') return !row.disabled && !row.hasToken;
     if (filter === 'disabled') return Boolean(row.disabled);
     return showDisabled ? true : !row.disabled;
   });
@@ -209,7 +222,11 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
         <Card>
           <PanelHeader
             title={`${meta.name} 凭据`}
-            hint={`${allRows.filter(r => !r.disabled).length} 可用 · ${disabledCount} 已禁用`}
+            hint={[
+              `${availableCount} 可用`,
+              pendingCount ? `${pendingCount} 待登录` : null,
+              disabledCount ? `${disabledCount} 已禁用` : null,
+            ].filter(Boolean).join(' · ')}
             action={
               <Button size="sm" variant="secondary" onClick={test} disabled={testing}>
                 {testing ? `测试中… ${elapsedSec}s` : '测试渠道'}
@@ -230,7 +247,8 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
               {(
                 [
                   ['all', `全部 ${allRows.length}`],
-                  ['active', `可用 ${allRows.length - disabledCount}`],
+                  ['active', `可用 ${availableCount}`],
+                  ['pending', `待登录 ${pendingCount}`],
                   ['disabled', `已禁用 ${disabledCount}`],
                 ] as const
               ).map(([key, label]) => (
@@ -296,8 +314,15 @@ export function CredentialsPanel({ channel }: { channel: ChannelId }) {
                                 : ' · 不自动恢复'}
                             </small>
                           </div>
+                        ) : item.hasToken ? (
+                          <Badge tone="ok">可用</Badge>
                         ) : (
-                          <Badge tone="ok">已启用</Badge>
+                          // 已配置但尚未取得 token：账号型凭据需先登录才能参与调度。
+                          // 直接显示"已启用"会与概览的可用数矛盾，也让人误以为可用。
+                          <div className="grid gap-1">
+                            <Badge tone="warn">待登录</Badge>
+                            <small className="text-[12px] text-ink-3">尚未取得 token，不能参与调度</small>
+                          </div>
                         )}
                       </td>
                       <td className="border-b border-line py-3 text-right">

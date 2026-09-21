@@ -70,7 +70,11 @@ export function ChannelsPage() {
               >
                 <strong className="text-sm">{channel.name || channel.id}</strong>
                 <span className="text-[12px] text-ink-2">
-                  {channel.availableCount || 0}/{channel.credentialCount || 0} 凭据可用
+                  <strong className="text-ink">{channel.availableCount || 0}</strong>
+                  /{channel.credentialCount || 0} 可用
+                  {/* 待登录与禁用单列：只显示"5/10"而不解释差额会让人疑惑。
+                      与「DeepSeek 凭据」面板使用同一套口径（可用/待登录/已禁用）。 */}
+                  {Number(channel.pendingCount ?? 0) > 0 ? ` · ${Number(channel.pendingCount)} 待登录` : ''}
                   {Number(channel.disabledCount ?? 0) > 0 ? ` · ${Number(channel.disabledCount)} 已禁用` : ''}
                 </span>
                 <span className="text-[12px] text-ink-3">

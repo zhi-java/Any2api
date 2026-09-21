@@ -814,6 +814,31 @@ function invalidateTokenSessions(token) {
   invalidateByTokenPrefix(prefix);
 }
 
+/**
+ * 运行时状态快照，按凭据 id 索引。
+ *
+ * 存在的意义：后台的「渠道概览」取自运行时池，「凭据面板」取自配置
+ * （config.deepseek.tokens/accounts）。两者对"可用"的定义原本不同——
+ * 概览要求"有 token 且未禁用"，面板只要求"未禁用"，于是"已配置但尚未
+ * 拿到 token"（待登录 / 被封禁）的账号在两个地方被算成了不同的结果，
+ * 数量自然对不上。这里把运行时的关键事实（是否有 token）暴露给配置侧，
+ * 让两处能按同一口径统计。
+ */
+export function getCredentialRuntimeStatus() {
+  const out = {};
+  for (const entry of tokenPool) {
+    const id = credentialIdOf(entry);
+    if (!id) continue;
+    out[id] = {
+      hasToken: Boolean(entry.token),
+      disabled: Boolean(entry.disabled),
+      // 已配置但尚无 token，且未被禁用 —— 即"等待登录"
+      pending: !entry.token && !entry.disabled,
+    };
+  }
+  return out;
+}
+
 // Legacy: pickToken returns just the token string
 let tokenIndex = 0;
 export function pickToken(preferVision = false) {
@@ -856,21 +881,41 @@ export async function getToken(preferVision = false) {
 }
 
 // Legacy: email/password login (adds to pool dynamically)
+/**
+ * 登录并把 token 归入池中该账号的条目（不新增条目）。
+ *
+ * 关键约束：**同一账号在池中只能占一个条目**。
+ *
+ * 旧实现先按「email 匹配且无 token」查找，找不到再按「新 token」查找。
+ * 这个顺序有致命缺陷：DeepSeek **每次登录都会轮换 token**，所以对已有
+ * token 的账号再登录一次时——第一次查找因"已有 token"落空，第二次查找
+ * 因"新 token 与旧的不同"也落空——于是 push 出一个重复条目。
+ *
+ * 实测后果：5 个被封禁账号使测试接口的 needsLogin 恒为 true，每次点
+ * 「测试渠道」都会为全部账号重登，健康账号被反复复制（15 条 = 10 账号 + 5 重复），
+ * 池统计虚高、并发额度被重复计入。
+ *
+ * 现在改为**只按 email 定位**：账号是稳定身份，token 只是它的可变属性。
+ */
 export async function loginAndAddToken(email, password) {
   const token = await login(email, password);
-  // 优先更新同一邮箱名下 token 为 null 的旧条目，避免 push 后出现双条目
-  // （一个旧 null-token + 一个新 token），导致 admin 测试回路报"无可用 Token"。
-  const nullEntry = tokenPool.find(t => t.email === email && !t.token);
-  if (nullEntry) {
-    nullEntry.token = token;
-    nullEntry.errorCount = 0;
+  const entry = tokenPool.find(t => t.email === email);
+  if (entry) {
+    const previousToken = entry.token;
+    entry.token = token;
+    if (password) entry.password = password;
+    entry.errorCount = 0;
     // 人工触发的登录成功即视为可用，清掉禁用态（含手动禁用的显式启用场景）。
-    Object.assign(nullEntry, emptyDisabledState());
+    Object.assign(entry, emptyDisabledState());
     const vision = await checkVisionCapability(token);
-    nullEntry.visionCapable = vision;
+    entry.visionCapable = vision;
+    // 上游轮换后旧 token 立即失效，其会话/对话亲和缓存必须一并作废，
+    // 否则后续请求会拿着过期 sessionId 去打上游。
+    if (previousToken && previousToken !== token) invalidateTokenSessions(previousToken);
     persistTokensToConfig();
     return token;
   }
+
   const existing = tokenPool.find(t => t.token === token);
   if (!existing) {
     const vision = await checkVisionCapability(token);
@@ -1179,5 +1224,23 @@ export function disableTokenByTokenString(token, reason) {
     reason,
     disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
     source: 'auto',
+  });
+}
+
+/**
+ * 按邮箱禁用账号型凭据（用于登录时明确返回"账号被封禁"的场景）。
+ *
+ * 为什么要单独处理：账号型凭据在拿到 token 前无法参与调度，若一直停留在
+ * "启用但无 token"的状态，后台会显示为"等待自动登录"——而封禁是不可自愈的，
+ * 这个措辞会误导用户以为迟早会好。标记为禁用后，原因与恢复预期才准确。
+ */
+export function disableAccountByEmail(email, reason, eventType = 'banned') {
+  const entry = tokenPool.find(t => t.email === email && t.password);
+  if (!entry) return false;
+  return disableToken(entry, {
+    reason,
+    disabledUntil: Date.now() + CREDENTIAL_DISABLE_DEFAULT_MS,
+    source: 'auto',
+    eventType,
   });
 }
